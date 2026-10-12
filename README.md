@@ -11,24 +11,30 @@
 
 ## 功能现状
 
-布局与交互对齐 WindTerm 主窗口：
+界面形态 0.7.0 起对齐 [Tabby](https://github.com/eugeny/tabby)（无边框窗口 + 标签内嵌标题栏 +
+图标活动栏 + 全页设置），配色令牌取自 Tabby 上游 `theme.vars.scss` / `colorSchemes.ts`；
+功能语义仍对齐 WindTerm 主窗口。
 
 | 模块 | 状态 |
 |---|---|
-| 菜单栏（Session/Edit/Search/Selection/Goto/View/Mode/Tool/Window/Help） | ✅ |
-| 工具栏 + 可拖宽 Dock 六窗格（Explorer / Filer / Outline / Sender / Transfer / Output） | ✅ |
-| 状态栏（Local/Remote 模式、同步输入、尺寸、编码、EOL、缩放、主题、时钟） | ✅ |
-| 多标签终端 + 左右/上下分屏 + OSC 标题跟随 | ✅ |
-| 主题 4 套（default / dige-black / dige-white / dige-black-and-white） | ✅ |
-| 命令面板（Ctrl+Shift+P）+ 动作注册表 | ✅ |
-| 触发器引擎 v0（正则 → 高亮 / 响铃 / 发送文本） | ✅ |
-| 会话管理（JSON 持久化，folder/command/args/host/port/user） | ✅ |
-| 本地文件浏览器（浏览 / 导航 / 在终端 cd） | ✅ |
+| 无边框标题栏：标签内嵌、拖拽区、自绘窗口控制（macOS 自绘红绿灯） | ✅ |
+| 左侧图标活动栏（会话 / 文件 / 发送 / 传输 / 大纲 / 日志 + 主题 / 设置） | ✅ |
+| 全页设置页（外观 / 终端 / 机器与连接 / 触发器 / 快捷键 / 关于），取代弹窗 | ✅ |
+| 窗口级标签栏：拖拽排序 / 右键菜单 / 颜色 / 固定 / 活动通知 / 行内重命名 | ✅ |
+| 主页快速连接 + 分组机器列表 | ✅ |
+| 可拖宽侧栏六窗格（Explorer / Filer / Outline / Sender / Transfer / Output） | ✅ |
+| 极简状态栏（模式、同步输入、尺寸、编码、EOL、缩放、主题、时钟），可在设置页关闭 | ✅ |
+| 多标签终端 + 左右/上下分屏（可拖分隔条）+ OSC 标题跟随 | ✅ |
+| 主题 6 套（tabby-dark / tabby-light + WindTerm 四套） | ✅ |
+| 命令面板（Ctrl+Shift+P，分组 + 图标）+ 浮动搜索卡 | ✅ |
+| 触发器引擎（后端 re/triggers.rs；前端映射高亮 / 响铃 / 发送文本） | ✅ |
+| 会话管理（JSON 持久化，folder/command/args/host/port/user/proxy/jumpHost） | ✅ |
+| SFTP 双栏文件浏览器 + 传输进度 | ✅ |
 | 发送窗格 + 同步输入广播 | ✅ |
 | 查找（Ctrl+F）、缩放（Ctrl±）、全屏（F11） | ✅ |
 | SSH（russh 实连）/ Telnet（协商引擎）/ 串口（termios 直驱）/ TCP（直连·Socks5·HTTP CONNECT·ProxyCommand） | ✅ |
-| 传输队列（SFTP / ZMODEM） | ⏳ P1 |
-| 语法高亮方案、命令库补全、vim 键位层、i18n | ⏳ P2/P3 |
+| X/Y/Zmodem、端口转发隧道、传输队列（re/ 已逆向完成，未接线到 command 层） | ⏳ |
+| 语法高亮方案、命令库补全、vim 键位层、i18n | ⏳ |
 
 ## 构建
 
@@ -65,21 +71,70 @@ git push origin v0.3.0
 | Linux x64 | ubuntu-22.04 | `.deb` / `.rpm` / `.AppImage` |
 | Windows x64 | windows-latest | `.msi` / NSIS `.exe` |
 | macOS arm64 | macos-latest | `.dmg` / `.app` |
-| macOS x64 | macos-13 | `.dmg` / `.app` |
+
+> **已知问题（macOS）**：CI 未配置 Apple 开发者证书与公证，产物为**未签名**包，从网络下载会被
+> Gatekeeper 拦截（`xattr -cr /Applications/hurricaneTerm.app` 可临时绕过）；且仅构建 arm64，
+> Intel Mac 无法运行。v0.6.0 的 macOS job 曾挂在 `bundle_dmg.sh`（AppleScript 在无 GUI 的
+> runner 上失败），导致该版本无 macOS 产物；详见 `tauri.conf.json` 的 `bundle.macOS` 说明。
 
 前端 `dist/` 由 `tauri.conf.json` 的 `beforeBuildCommand`（`npm run prepare-dist`）自动生成，CI 无需额外步骤。也可在 Actions 页面用 `workflow_dispatch` 手动触发。
+
+### macOS 签名与公证
+
+不配置时产物为**未签名**包，从浏览器/网盘下载会带 `com.apple.quarantine`，Gatekeeper 直接拦截
+（"已损坏，无法打开"）。临时绕过：`xattr -cr /Applications/hurricaneTerm.app`。
+要根治需要 Apple Developer 账号（$99/年；免费个人账号**不能**公证）：
+
+1. **建证书**：developer.apple.com → Certificates → 创建 **Developer ID Application**
+   （注意不是 "Apple Development"，后者过不了 Gatekeeper 分发校验）。
+   或 Xcode → Settings → Accounts → Manage Certificates → `+`。
+2. **导出 .p12**：钥匙串访问 → 选中该证书 → 右键 → 导出 → `.p12`，设置导出密码。
+3. **转 base64**：`base64 -w0 cert.p12`（macOS 用 `base64 -i cert.p12 | pbcopy`）。
+4. **配 6 个 secrets**（仓库 Settings → Secrets and variables → Actions；或命令行）：
+
+   | Secret | 值 |
+   |---|---|
+   | `APPLE_CERTIFICATE` | 第 3 步的 base64 串 |
+   | `APPLE_CERTIFICATE_PASSWORD` | .p12 导出密码 |
+   | `APPLE_SIGNING_IDENTITY` | 证书全名，如 `Developer ID Application: Your Name (TEAMID)`（`security find-identity -v` 可查） |
+   | `APPLE_ID` | Apple 账号邮箱 |
+   | `APPLE_PASSWORD` | **App 专用密码**（appleid.apple.com → 登录和安全 → App 专用密码），不是账号密码 |
+   | `APPLE_TEAM_ID` | 团队 ID（developer.apple.com → Membership） |
+
+   ```bash
+   gh secret set APPLE_CERTIFICATE          --repo edwardlewis35/hurricaneTerm < cert.b64
+   gh secret set APPLE_CERTIFICATE_PASSWORD --repo edwardlewis35/hurricaneTerm
+   gh secret set APPLE_SIGNING_IDENTITY     --repo edwardlewis35/hurricaneTerm
+   gh secret set APPLE_ID                   --repo edwardlewis35/hurricaneTerm
+   gh secret set APPLE_PASSWORD             --repo edwardlewis35/hurricaneTerm
+   gh secret set APPLE_TEAM_ID              --repo edwardlewis35/hurricaneTerm
+   ```
+
+5. 之后推 `v*` tag，`tauri-action` 会自动 **签名 → 公证 → staple**；secrets 缺失时自动跳过（保持现状）。
+6. **验证**：`spctl -a -vvv -t install hurricaneTerm.app` 应输出 `accepted`；
+   `codesign -dv --verbose=2 hurricaneTerm.app` 的 Authority 链应含 `Developer ID Application` → `Developer ID Certification Authority` → `Apple Root CA`。
+
+`release.yml` 已把这 6 个变量透传给 `tauri-action`，配好 secrets 即生效，无需再改 workflow。
 
 ## 架构
 
 ```
-src/            前端（无构建器，原生 ESM-free 脚本）
-  index.html    布局骨架（菜单/工具栏/Dock/终端区/状态栏/对话框）
-  style.css     主题变量 + 全量布局
+src/            前端（无构建器，原生脚本；prepare-dist 全量拷贝到 dist/）
+  index.html    布局骨架（无边框标题栏/活动栏/侧栏/终端区/状态栏/命令面板）
+  style.css     Tabby 设计令牌 + 全量布局
   core.js       Tauri 桥 / 持久化 / 引导 / JS 错误自捕获
+  icons.js      内联 SVG 图标集（离线，无图标字体）
+  titlebar.js   无边框窗口控制（min/max/close、macOS 红绿灯、拖拽区）
+  tabbar.js     窗口级标签栏（拖拽/右键菜单/颜色/固定/活动通知/重命名）
+  actbar.js     左侧图标活动栏（点按开合侧栏窗格）
+  settings.js   全页设置（六分区，取代 <dialog>）
+  profiles.js   机器管理（左列表右表单）
+  home.js       主页快速连接 + 分组机器列表
   term.js       终端管理：多标签、分屏、主题、搜索、触发器、缩放、广播
-  ui.js         菜单 / 工具栏 / Dock 六窗格 / 状态栏 / 命令面板 / 对话框
+  ui.js         侧栏六窗格 / 状态栏 / 命令面板 / 浮动搜索 / Toast
 src-tauri/      Rust 后端
-  src/main.rs   PTY（spawn/write/resize/kill）+ fs_list + 会话与 UI 状态持久化
+  src/main.rs   PTY（spawn/write/resize/kill）+ SSH/Telnet/串口/TCP + SFTP + 触发器接线
+  src/re/       WindTerm 引擎逆向重写（ssh/telnet/serial/tcp/expect/xmodem/zmodem/tunnel/triggers…）
 ```
 
 运行时数据目录：`~/.config/io.github.edwardlewis35.hurricaneterm/`

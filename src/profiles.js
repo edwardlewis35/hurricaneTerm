@@ -16,9 +16,11 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const toast = (m) => { try { if (window.UI && typeof window.UI.toast === 'function') window.UI.toast(m); } catch (_) {} };
 
-  const ICONS = { local: '▣', ssh: '🔒', telnet: '📡', serial: '🔌', tcp: '🌐' };
+  const ICON_NAMES = { local: 'terminal', ssh: 'lock', telnet: 'telnet', serial: 'serial', tcp: 'globe' };
+  const iconSvg = (p) => (window.Icons ? window.Icons.svg(ICON_NAMES[(p || 'local').toLowerCase()] || 'terminal') : '');
   const PROTO_OPTS = [['local', '本地'], ['ssh', 'SSH'], ['telnet', 'Telnet'], ['serial', '串口'], ['tcp', 'TCP']];
-  const COLORS = ['#e5484d', '#ff8d2b', '#f5c518', '#46a758', '#12a594', '#3daee9', '#8e4ec6', '#d6409f'];
+  // 与 tabbar.js 的标签色板保持同一组，profile 颜色 = 标签颜色
+  const COLORS = ['#d9534f', '#f0ad4e', '#ffd500', '#5cb85c', '#5bc0de', '#0275d8', '#4fadff', '#ff5b77', '#613d7c'];
   const AUTH_OPTS = [['publickey', 'publickey（密钥）'], ['password', 'password（密码）'], ['keyboard-interactive', 'keyboard-interactive'], ['none', 'none（不认证）']];
   const PROXY_OPTS = [['', '无'], ['Socks5', 'Socks5'], ['Http', 'Http'], ['ProxyCommand', 'ProxyCommand']];
   const BAUD_OPTS = ['9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600'];
@@ -63,7 +65,9 @@
 .ht-pm-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; }
 .ht-pm-row:hover { background: var(--bg2); }
 .ht-pm-row.sel { background: var(--bg2); outline: 1px solid var(--accent); }
-.ht-pm-ico { width: 18px; text-align: center; flex: none; }
+.ht-pm-ico { width: 17px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--fg2); }
+.ht-pm-ico svg { width: 14px; height: 14px; }
+.ht-pm-row:hover .ht-pm-ico, .ht-pm-row.sel .ht-pm-ico { color: var(--accent); }
 .ht-pm-col { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .ht-pm-col b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ht-pm-col i { font-style: normal; font-size: 11px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -71,7 +75,7 @@
 .ht-pm-empty { padding: 16px; color: var(--fg2); font-size: 12px; line-height: 1.7; }
 .ht-pm-bubble { position: absolute; left: 12px; right: 12px; top: 92px; background: var(--bg2); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 10px; display: flex; gap: 8px; align-items: center; justify-content: space-between; box-shadow: 0 6px 20px rgba(0,0,0,.5); z-index: 5; font-size: 12px; }
 .ht-pm-bubble-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ht-pm-bubble-ok { background: #e5484d; border-color: #e5484d; color: #fff; padding: 2px 10px; font-size: 12px; }
+.ht-pm-bubble-ok { background: var(--danger); border-color: var(--danger); color: #fff; padding: 2px 10px; font-size: 12px; }
 .ht-pm-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .ht-pm-formhead { padding: 10px 18px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--fg2); }
 .ht-pm-form { flex: 1; overflow: auto; min-height: 0; padding: 14px 20px; }
@@ -169,7 +173,7 @@
       html += `<div class="ht-pm-grp">▸ ${esc(g)}</div>`;
       for (const s of groups[g]) {
         html += `<div class="ht-pm-row${s.name === S.selName ? ' sel' : ''}" data-name="${encodeURIComponent(s.name || '')}">
-          <span class="ht-pm-ico">${ICONS[s.protocol] || '▣'}</span>
+          <span class="ht-pm-ico">${iconSvg(s.protocol)}</span>
           <span class="ht-pm-col"><b>${esc(s.name)}</b><i>${esc(subOf(s))}</i></span>
           ${s.color ? `<span class="ht-pm-dot" style="background:${esc(s.color)}"></span>` : ''}</div>`;
       }

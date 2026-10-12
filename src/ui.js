@@ -1,29 +1,48 @@
-/* WT — UI shell: menubar, toolbar, dock panes, statusbar, command palette, dialogs.
- * Structure mirrors WindTerm's main window (Explorer/Filer/Outline/Sender/Transfer/Output
- * panes, Local/Remote mode indicator, theme list, trigger center). Original code (MIT). */
+/* hurricaneTerm — ui.js：侧栏窗格、状态栏、命令面板、浮动搜索、Toast
+ * 原创代码 (Apache-2.0)。
+ *
+ * 0.7.0 改版：删除 0.6.0 的老式菜单栏（#menubar，10 个下拉）与 emoji 工具栏（#toolbar）；
+ *   所有入口迁到「左侧图标活动栏（actbar.js）+ 全页设置（settings.js）+ 命令面板 + 右键菜单」。
+ *   <dialog> 弹窗（会话表单 / 触发器 / 关于）一并移除：表单归 profiles.js，其余归 settings.js。
+ *   窗格内容结构仍对齐 WindTerm（Explorer/Filer/Outline/Sender/Transfer/Output）。
+ */
 (function () {
   const T = window.WT;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
+  const svg = (n) => (window.Icons ? window.Icons.svg(n) : '');
+
+  const PANES = [
+    ['explorer', '会话'], ['filer', '文件浏览器'], ['sender', '发送'],
+    ['transfer', '传输'], ['outline', '大纲'], ['output', '日志'],
+  ];
 
   const UI = {
     lastQuery: '',
     logs: [],
-    _toastTimer: null,
+    transfers: [],
 
     /* ---------- basic ---------- */
     log(msg) {
       this.logs.push({ t: new Date(), msg });
       if (this.logs.length > 300) this.logs.shift();
       this.renderOutput();
+      if (window.ActBar) ActBar.bump('output');
     },
-    toast(msg, ms) {
-      const el = $('#toast');
+
+    // kind: '' | 'ok' | 'err'
+    toast(msg, ms, kind) {
+      const host = $('#toasts');
+      if (!host) return;
+      const el = document.createElement('div');
+      el.className = 'toast' + (kind ? ' ' + kind : '');
       el.textContent = msg;
-      el.hidden = false;
-      clearTimeout(this._toastTimer);
-      this._toastTimer = setTimeout(() => { el.hidden = true; }, ms || 2200);
+      host.appendChild(el);
+      // 最多同时 4 条，超出丢最旧
+      while (host.children.length > 4) host.firstElementChild.remove();
+      setTimeout(() => { el.remove(); }, ms || 2400);
     },
+
     beep() {
       try {
         const ctx = this._ac || (this._ac = new (window.AudioContext || window.webkitAudioContext)());
@@ -34,298 +53,228 @@
         o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.2);
       } catch (e) {}
     },
+
     status() {
       const info = T.term.statusInfo();
-      $('#st-mode').textContent = T.s.mode === 'Local' ? '本地模式' : '远程模式';
-      $('#st-mode').classList.toggle('on', T.s.mode === 'Local');
-      $('#st-sync').textContent = '同步输入：' + (T.s.sync ? '开' : '关');
-      $('#st-sync').classList.toggle('on', !!T.s.sync);
-      $('#st-size').textContent = `${info.cols} × ${info.rows}`;
-      $('#st-theme').textContent = '主题：' + T.s.theme;
-      $('#st-zoom').textContent = T.s.fontSize + ' px';
-      $('#st-enc').textContent = 'UTF-8';
-      $('#st-eol').textContent = 'LF';
+      const set = (id, txt) => { const e = $(id); if (e) e.textContent = txt; };
+      set('#st-mode', T.s.mode === 'Local' ? '本地模式' : '远程模式');
+      const m = $('#st-mode'); if (m) m.classList.toggle('on', T.s.mode === 'Local');
+      set('#st-sync', '同步输入：' + (T.s.sync ? '开' : '关'));
+      const sy = $('#st-sync'); if (sy) sy.classList.toggle('on', !!T.s.sync);
+      set('#st-size', `${info.cols} × ${info.rows}`);
+      set('#st-theme', T.s.theme);
+      set('#st-zoom', T.s.fontSize + ' px');
+      set('#st-enc', 'UTF-8');
+      set('#st-eol', 'LF');
     },
-    clock() { $('#st-clock').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); },
+    clock() { const e = $('#st-clock'); if (e) e.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); },
 
-    /* ---------- menubar ---------- */
-    buildMenu() {
-      const menus = [
-        ['会话 Session', [
-          ['新建会话', 'Ctrl+T', () => T.term.create(null)],
-          ['添加机器…', '', () => this.editProfile(null)],
-          ['机器管理…', '', () => (window.Profiles ? Profiles.openManager() : this.toast('机器管理模块未加载'))],
-          ['打开主页', '', () => T.term.openHome()],
-          ['保存会话…', '', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session)],
-          ['打开配置目录…', '', () => this.toast('配置目录：~/.config/cn.rea.wtp0')],
-          ['关闭会话', 'Ctrl+W', () => T.term.active && T.term.close(T.term.active)],
-          ['—', ''],
-          ['退出', '', () => T.invoke('plugin:window|close').catch(() => window.close())],
-        ]],
-        ['编辑 Edit', [
-          ['复制', 'Ctrl+Shift+C', () => this.copy()],
-          ['粘贴', 'Ctrl+Shift+V', () => this.paste()],
-          ['全选', '', () => T.term.activeTab() && T.term.activeTab().term.selectAll()],
-          ['查找…', 'Ctrl+F', () => this.openSearch()],
-        ]],
-        ['查找 Search', [
-          ['查找下一个', 'F3', () => T.term.searchNext(this.lastQuery)],
-          ['查找上一个', 'Shift+F3', () => T.term.searchPrev(this.lastQuery)],
-          ['关闭查找栏', 'Esc', () => this.closeSearch()],
-        ]],
-        ['选择 Selection', [
-          ['全选', '', () => T.term.activeTab() && T.term.activeTab().term.selectAll()],
-          ['复制选中', '', () => this.copy()],
-          ['清空选择', '', () => T.term.activeTab() && T.term.activeTab().term.clearSelection()],
-        ]],
-        ['跳转 Goto', [
-          ['滚动到顶部', 'Ctrl+Home', () => T.term.activeTab() && T.term.activeTab().term.scrollToTop()],
-          ['滚动到底部', 'Ctrl+End', () => T.term.activeTab() && T.term.activeTab().term.scrollToBottom()],
-          ['聚焦终端', '', () => T.term.activeTab() && T.term.activeTab().term.focus()],
-        ]],
-        ['视图 View', [
-          ['放大', 'Ctrl+=', () => T.term.zoom(1)],
-          ['缩小', 'Ctrl+-', () => T.term.zoom(-1)],
-          ['重置缩放', '', () => T.term.zoomReset()],
-          ['—', ''],
-          ['主题 ▸', Object.keys(T.term.THEMES).map((n) => [n, n === T.s.theme ? '●' : '', () => T.term.applyTheme(n)])],
-          ['—', ''],
-          ['显示/隐藏 Dock', 'Ctrl+B', () => this.toggleDock()],
-          ['全屏', 'F11', () => this.toggleFullscreen()],
-        ]],
-        ['模式 Mode', [
-          ['本地模式', T.s.mode === 'Local' ? '●' : '', () => this.setMode('Local')],
-          ['远程模式', T.s.mode === 'Remote' ? '●' : '', () => this.setMode('Remote')],
-          ['—', ''],
-          ['同步输入', T.s.sync ? '●' : '', () => this.toggleSync()],
-        ]],
-        ['工具 Tool', [
-          ['命令面板…', 'Ctrl+Shift+P', () => this.openPalette()],
-          ['触发器…', '', () => this.openTriggers()],
-          ['发送文本（Sender）', '', () => this.setDockPane('sender')],
-          ['文件浏览器（Filer）', '', () => this.setDockPane('filer')],
-        ]],
-        ['窗口 Window', [
-          ['左右分屏', '', () => T.term.split('h')],
-          ['上下分屏', '', () => T.term.split('v')],
-          ['取消分屏', '', () => T.term.unsplit()],
-          ['—', ''],
-          ['最小化', '', () => this.win().then((w) => w.minimize())],
-          ['最大化/还原', '', () => this.win().then((w) => w.toggleMaximize())],
-        ]],
-        ['帮助 Help', [
-          ['关于 hurricaneTerm', '', () => this.openDlg('#dlg-about')],
-          ['分析报告 REPORT.md', '', () => this.toast('workspace-rea/windterm-analysis/REPORT.md')],
-          ['许可说明', '', () => this.toast('原创代码 Apache-2.0；不含 WindTerm 专有文件')],
-        ]],
-      ];
-
-      const bar = $('#menubar');
-      bar.innerHTML = '';
-      for (const [label, items] of menus) {
-        const b = document.createElement('div');
-        b.className = 'menu';
-        b.textContent = label;
-        const dd = document.createElement('div');
-        dd.className = 'dropdown';
-        for (const it of items) {
-          if (it[0] === '—') { dd.appendChild(Object.assign(document.createElement('div'), { className: 'sep' })); continue; }
-          if (Array.isArray(it[1])) {
-            const sub = document.createElement('div');
-            sub.className = 'submenu';
-            const head = document.createElement('div');
-            head.className = 'item sub';
-            head.textContent = it[0];
-            const body = document.createElement('div');
-            body.className = 'subbody';
-            for (const [sl, mark, run] of it[1]) {
-              const si = document.createElement('div');
-              si.className = 'item';
-              si.innerHTML = `<span>${sl}</span><span class="key">${mark || ''}</span>`;
-              si.onclick = (e) => { e.stopPropagation(); run(); this.closeMenus(); };
-              body.appendChild(si);
-            }
-            sub.append(head, body);
-            dd.appendChild(sub);
-            continue;
-          }
-          const el = document.createElement('div');
-          el.className = 'item';
-          el.innerHTML = `<span>${it[0]}</span><span class="key">${it[1] || ''}</span>`;
-          el.onclick = (e) => { e.stopPropagation(); it[2](); this.closeMenus(); };
-          dd.appendChild(el);
-        }
-        b.appendChild(dd);
-        b.onclick = (e) => {
-          e.stopPropagation();
-          const open = b.classList.contains('open');
-          this.closeMenus();
-          if (!open) b.classList.add('open');
-        };
-        bar.appendChild(b);
-      }
-      document.addEventListener('click', () => this.closeMenus());
+    win() {
+      const w = window.__TAURI__ && window.__TAURI__.window;
+      return Promise.resolve(w && typeof w.getCurrentWindow === 'function' ? w.getCurrentWindow() : null);
     },
-    closeMenus() { $$('#menubar .menu').forEach((m) => m.classList.remove('open')); },
 
-    /* ---------- toolbar ---------- */
-    buildToolbar() {
-      const btns = [
-        ['＋', '新建会话 (Ctrl+T)', () => T.term.create(null)],
-        ['🖥', '添加机器', () => this.editProfile(null)],
-        ['💾', '另存为机器', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session)],
-        ['⧉', '复制', () => this.copy()],
-        ['⇩', '粘贴', () => this.paste()],
-        ['▥', '左右分屏', () => T.term.split('h')],
-        ['▤', '上下分屏', () => T.term.split('v')],
-        ['🔍', '查找 (Ctrl+F)', () => this.openSearch()],
-        ['🎨', '切换主题', () => this.cycleTheme()],
-        ['⚡', '触发器', () => this.openTriggers()],
-        ['⌘', '命令面板 (Ctrl+Shift+P)', () => this.openPalette()],
-      ];
-      const bar = $('#toolbar');
-      bar.innerHTML = '';
-      for (const [txt, title, run] of btns) {
-        const b = document.createElement('button');
-        b.textContent = txt; b.title = title; b.onclick = run;
-        bar.appendChild(b);
-      }
-      const spacer = document.createElement('div');
-      spacer.className = 'spacer';
-      const title = document.createElement('div');
-      title.className = 'app-title';
-      title.textContent = 'hurricaneTerm · Tauri 重构';
-      bar.append(spacer, title);
-    },
-    cycleTheme() {
-      const names = Object.keys(T.term.THEMES);
-      const i = names.indexOf(T.s.theme);
-      T.term.applyTheme(names[(i + 1) % names.length]);
-      this.toast('主题：' + T.s.theme);
-    },
-    win() { return Promise.resolve(window.__TAURI__.window.getCurrentWindow()); },
-
-    /* ---------- dock ---------- */
+    /* ---------- 侧栏（活动栏驱动） ---------- */
     buildDock() {
-      const panes = [
-        ['explorer', '资源管理器'],
-        ['filer', '文件浏览器'],
-        ['outline', '大纲'],
-        ['sender', '发送'],
-        ['transfer', '传输'],
-        ['output', '输出'],
-      ];
-      const tabs = $('#dock-tabs');
-      tabs.innerHTML = '';
-      for (const [id, label] of panes) {
-        const b = document.createElement('div');
-        b.className = 'dock-tab' + (id === T.s.dockPane ? ' active' : '');
-        b.textContent = label;
-        b.dataset.id = id;
-        b.onclick = () => this.setDockPane(id);
-        tabs.appendChild(b);
-      }
       this.renderDock();
-      // resizer
+      this.applyDockVisibility();
+
+      // 侧栏宽度拖拽
       const rz = $('#dock-resizer');
-      let dragging = false;
-      rz.addEventListener('mousedown', (e) => { dragging = true; e.preventDefault(); document.body.classList.add('dragging'); });
-      window.addEventListener('mousemove', (e) => {
-        if (!dragging) return;
-        const w = Math.max(180, Math.min(560, e.clientX - 8));
-        document.documentElement.style.setProperty('--dock-w', w + 'px');
-      });
-      window.addEventListener('mouseup', () => { dragging = false; document.body.classList.remove('dragging'); const t = T.term.activeTab(); if (t) { try { t.fit.fit(); } catch (e) {} } });
+      if (rz) {
+        let dragging = false;
+        rz.addEventListener('mousedown', (e) => { dragging = true; e.preventDefault(); document.body.classList.add('dragging'); });
+        window.addEventListener('mousemove', (e) => {
+          if (!dragging) return;
+          const w = Math.max(190, Math.min(620, e.clientX - 46));
+          document.documentElement.style.setProperty('--dock-w', w + 'px');
+        });
+        window.addEventListener('mouseup', () => {
+          if (!dragging) return;
+          dragging = false; document.body.classList.remove('dragging');
+          this.fitActive();
+        });
+      }
+
+      // 分屏分隔条拖拽
+      const gut = $('#gutter');
+      if (gut) {
+        let gdrag = false, start = 0, startSize = 0;
+        gut.addEventListener('mousedown', (e) => {
+          gdrag = true; e.preventDefault();
+          const g0 = $('#groups .group[data-g="0"]');
+          const dir = $('#groups').dataset.dir;
+          start = dir === 'v' ? e.clientY : e.clientX;
+          startSize = dir === 'v' ? g0.offsetHeight : g0.offsetWidth;
+          document.body.classList.add('dragging');
+        });
+        window.addEventListener('mousemove', (e) => {
+          if (!gdrag) return;
+          const g0 = $('#groups .group[data-g="0"]');
+          const host = $('#groups');
+          const dir = host.dataset.dir;
+          const total = dir === 'v' ? host.offsetHeight : host.offsetWidth;
+          const cur = startSize + ((dir === 'v' ? e.clientY : e.clientX) - start);
+          const pct = Math.max(12, Math.min(88, (cur / Math.max(1, total)) * 100));
+          g0.style.flex = `0 0 ${pct}%`;
+        });
+        window.addEventListener('mouseup', () => {
+          if (!gdrag) return;
+          gdrag = false; document.body.classList.remove('dragging');
+          this.fitAll();
+        });
+      }
     },
+
+    applyDockVisibility() {
+      const dock = $('#dock'), rz = $('#dock-resizer');
+      const vis = !!T.s.dockVisible;
+      if (dock) dock.hidden = !vis;
+      if (rz) rz.hidden = !vis;
+      if (window.ActBar) ActBar.render();
+    },
+
     setDockPane(id) {
       T.s.dockPane = id;
       T.s.dockVisible = true;
+      this.applyDockVisibility();
       this.renderDock();
       T.persistSettings();
+      this.fitActive(40);
     },
+
     toggleDock() {
       T.s.dockVisible = !T.s.dockVisible;
-      document.getElementById('dock').hidden = !T.s.dockVisible;
-      $('#dock-resizer').hidden = !T.s.dockVisible;
+      this.applyDockVisibility();
+      if (T.s.dockVisible) this.renderDock();
       T.persistSettings();
-      const t = T.term.activeTab(); if (t) setTimeout(() => { try { t.fit.fit(); } catch (e) {} }, 30);
+      this.fitActive(40);
     },
+
     renderDock() {
-      $$('#dock-tabs .dock-tab').forEach((b) => b.classList.toggle('active', b.dataset.id === T.s.dockPane));
-      if (T.s.dockPane === 'explorer') this.renderExplorer();
-      else if (T.s.dockPane === 'filer') this.renderFiler();
-      else if (T.s.dockPane === 'outline') this.renderOutline();
-      else if (T.s.dockPane === 'sender') this.renderSender();
-      else if (T.s.dockPane === 'transfer') this.renderTransfer();
+      if (!T.s.dockVisible) return;
+      const p = T.s.dockPane;
+      if (p === 'explorer') this.renderExplorer();
+      else if (p === 'filer') this.renderFiler();
+      else if (p === 'outline') this.renderOutline();
+      else if (p === 'sender') this.renderSender();
+      else if (p === 'transfer') this.renderTransfer();
       else this.renderOutput();
     },
 
-    /* ---------- panes ---------- */
+    fitActive(delay) {
+      const go = () => { const t = T.term.activeTab(); if (t) { try { t.fit.fit(); } catch (e) {} } };
+      delay ? setTimeout(go, delay) : go();
+    },
+    fitAll() { for (const t of Object.values(T.term.tabs)) { try { t.fit.fit(); } catch (e) {} } },
+
+    /* ---------- 窗格：会话 ---------- */
+    protoIcon(p) {
+      return { ssh: 'lock', telnet: 'telnet', serial: 'serial', tcp: 'globe', local: 'terminal' }[(p || '').toLowerCase()] || 'terminal';
+    },
+
     renderExplorer() {
       const body = $('#dock-body');
+      if (!body) return;
       const groups = {};
-      for (const s of T.s.sessions) (groups[s.folder || '（未分组）'] ||= []).push(s);
+      for (const s of (T.s.sessions || [])) (groups[s.folder || '（未分组）'] ||= []).push(s);
       let html = `<div class="pane-head"><span>会话</span>
-        <span><button id="sess-add">🖥 机器管理</button><button id="sess-refresh">⟳</button></span></div>`;
+        <span><button id="sess-add" title="机器管理 (Ctrl+M)">管理</button><button id="sess-refresh" title="刷新">⟳</button></span></div>`;
       for (const g of Object.keys(groups).sort()) {
         html += `<div class="grp">▸ ${g}</div>`;
-        for (let i = 0; i < groups[g].length; i++) {
-          const s = groups[g][i];
+        for (const s of groups[g]) {
           const sub = s.protocol === 'serial' ? (s.target || s.host || '串口')
             : s.protocol === 'tcp' ? (s.target || `${s.host}:${s.port}`)
-            : (s.command || (s.host ? `${s.user || ''}@${s.host}` : '默认 shell'));
-          html += `<div class="row sess" data-name="${encodeURIComponent(s.name)}"><span class="ico">▣</span>
+              : (s.command || (s.host ? `${s.user || ''}@${s.host}` : '默认 shell'));
+          html += `<div class="row sess" data-name="${encodeURIComponent(s.name)}">
+            <span class="ico">${svg(this.protoIcon(s.protocol))}</span>
             <span class="col"><b>${escapeHtml(s.name)}</b><i>${escapeHtml(sub)}</i></span>
-            <span class="x" data-del="${encodeURIComponent(s.name)}">×</span></div>`;
+            <span class="x" data-del="${encodeURIComponent(s.name)}" title="删除">×</span></div>`;
         }
       }
-      if (!T.s.sessions.length) html += '<div class="empty">尚无保存的会话。点「＋ 保存当前」把当前 shell 存成会话；SSH 字段（host/port/user）已预留，P1 接线。</div>';
-      html += `<div class="pane-foot">双击行打开 · SSH 支持属 P1</div>`;
+      if (!(T.s.sessions || []).length) html += '<div class="empty">还没有机器。点「管理」新建，或在主页用快速连接直接连。</div>';
+      html += '<div class="pane-foot">单击连接 · 右键另存/编辑</div>';
       body.innerHTML = html;
-      body.querySelector('#sess-add').onclick = () => (window.Profiles ? Profiles.openManager() : this.openSessionDialog());
+      body.querySelector('#sess-add').onclick = () => this.openProfiles();
       body.querySelector('#sess-refresh').onclick = () => this.renderExplorer();
       body.querySelectorAll('.sess').forEach((row) => {
-        row.onclick = (e) => {
-          if (e.target.dataset.del) return;
-          const name = decodeURIComponent(row.dataset.name);
-          const s = T.s.sessions.find((x) => x.name === name);
-          if (s) T.term.create(s);
+        const name = decodeURIComponent(row.dataset.name);
+        const s = (T.s.sessions || []).find((x) => x.name === name);
+        row.onclick = (e) => { if (!e.target.dataset.del && s) T.term.create(s); };
+        row.oncontextmenu = (e) => {
+          e.preventDefault();
+          this.sessionMenu(e.clientX, e.clientY, s);
         };
-        row.ondblclick = row.onclick;
       });
       body.querySelectorAll('[data-del]').forEach((x) => {
         x.onclick = async (e) => {
           e.stopPropagation();
           const name = decodeURIComponent(x.dataset.del);
-          T.s.sessions = T.s.sessions.filter((s) => s.name !== name);
+          T.s.sessions = (T.s.sessions || []).filter((s) => s.name !== name);
           await T.persistSessions();
           this.renderExplorer();
-          this.toast('已删除会话：' + name);
+          if (window.Home) Home.render();
+          this.toast('已删除机器：' + name);
         };
       });
     },
 
+    // 会话行右键：连接 / 编辑 / 复制 / 删除
+    sessionMenu(x, y, s) {
+      if (!s || !window.TabBar || !window.TabBar.openMenu) return;
+      TabBar.openMenu(x, y, (m, mi, msep) => {
+        mi(m, { label: '连接', svg: 'plug', onClick: () => T.term.create(s) });
+        mi(m, { label: '在新分屏中连接', svg: 'splitH', onClick: async () => { await T.term.splitActive('right'); T.term.create(s); } });
+        msep(m);
+        mi(m, { label: '编辑机器…', svg: 'server', onClick: () => this.editProfile(s) });
+        mi(m, {
+          label: '删除机器', svg: 'trash', danger: true, onClick: async () => {
+            T.s.sessions = (T.s.sessions || []).filter((z) => z !== s);
+            await T.persistSessions();
+            this.renderExplorer();
+            if (window.Home) Home.render();
+            this.toast('已删除机器：' + s.name);
+          },
+        });
+      });
+    },
+
+    openProfiles() {
+      if (window.Profiles) window.Profiles.openManager();
+      else this.toast('机器管理模块未加载');
+    },
+
+    /* ---------- 窗格：文件浏览器（SFTP 双栏） ---------- */
     async renderFiler() {
       const body = $('#dock-body');
+      if (!body) return;
       const tab = T.term.activeTab();
       const isSsh = tab && tab.session && tab.session.protocol === 'ssh' && !tab.exited;
       const mode = T.s.filerMode || (isSsh ? 'both' : 'local');
       const lpath = T.s.filerPath || null;
       const rpath = T.s.remotePath || '/';
       body.innerHTML = `<div class="pane-head"><span>文件浏览器</span><span>
-        ${isSsh ? `<button data-m="local" class="${mode==='local'?'on':''}">本地</button>
-        <button data-m="remote" class="${mode==='remote'?'on':''}">远端</button>
-        <button data-m="both" class="${mode==='both'?'on':''}">双栏</button>` : ''}
+        ${isSsh ? `<button data-m="local" class="${mode === 'local' ? 'on' : ''}">本地</button>
+        <button data-m="remote" class="${mode === 'remote' ? 'on' : ''}">远端</button>
+        <button data-m="both" class="${mode === 'both' ? 'on' : ''}">双栏</button>` : ''}
       </span></div>
       <div class="filer-cols">
-        ${mode !== 'remote' ? `<div class="filer-col"><div class="pane-head"><span>本地 ${escapeHtml(lpath||'~')}</span>
-          <span><button id="f-up">↑</button><button id="f-home">🏠</button><button id="f-upl">上传→远端</button></span></div>
+        ${mode !== 'remote' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(lpath || '~')}</span>
+          <span><button id="f-up" title="上级目录">↑</button><button id="f-home" title="主目录">⌂</button><button id="f-upl" title="上传选中项">上传 →</button></span></div>
           <div id="f-list" class="list"></div></div>` : ''}
-        ${isSsh && mode !== 'local' ? `<div class="filer-col"><div class="pane-head"><span>远端 ${escapeHtml(rpath)}</span>
-          <span><button id="r-up">↑</button><button id="r-dwl">←下载到本地</button></span></div>
+        ${isSsh && mode !== 'local' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(rpath)}</span>
+          <span><button id="r-up" title="上级目录">↑</button><button id="r-dwl" title="下载选中项">← 下载</button></span></div>
           <div id="r-list" class="list"><div class="empty">加载中…</div></div></div>` : ''}
       </div>`;
-      body.querySelectorAll('.pane-head button[data-m]').forEach(b => b.onclick = () => { T.s.filerMode = b.dataset.m; this.renderFiler(); });
+      body.querySelectorAll('.pane-head button[data-m]').forEach((b) => { b.onclick = () => { T.s.filerMode = b.dataset.m; this.renderFiler(); }; });
+
+      const rowOf = (e) => {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = `<span class="ico">${svg(e.is_dir ? 'folder' : 'output')}</span>
+          <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)}</i></span>`;
+        return row;
+      };
 
       // —— 本地列 ——
       const flist = body.querySelector('#f-list');
@@ -334,23 +283,24 @@
         try { entries = await T.invoke('fs_list', { path: lpath }); }
         catch (e) { flist.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`; }
         for (const e of entries) {
-          const row = document.createElement('div');
-          row.className = 'row';
-          row.innerHTML = `<span class="ico">${e.is_dir ? '📁' : '📄'}</span>
-            <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)}</i></span>`;
+          const row = rowOf(e);
           row.ondblclick = () => { if (e.is_dir) { T.s.filerPath = e.path; this.renderFiler(); } };
-          row.onclick = () => { this._filerSel = e.path; this._filerSelName = e.name;
-            flist.querySelectorAll('.row').forEach(r => r.classList.remove('sel')); row.classList.add('sel'); };
+          row.onclick = () => {
+            this._filerSel = e.path; this._filerSelName = e.name;
+            flist.querySelectorAll('.row').forEach((r) => r.classList.remove('sel'));
+            row.classList.add('sel');
+          };
           flist.appendChild(row);
         }
+        if (!entries.length && !flist.children.length) flist.innerHTML = '<div class="empty">空目录</div>';
         body.querySelector('#f-up').onclick = () => { if (lpath) { T.s.filerPath = lpath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); } };
         body.querySelector('#f-home').onclick = () => { T.s.filerPath = null; this.renderFiler(); };
         body.querySelector('#f-upl').onclick = () => {
-          if (!isSsh) { this.toast('需要 SSH 会话'); return; }
-          if (!this._filerSel) { this.toast('先选中本地文件'); return; }
+          if (!isSsh) { this.toast('需要 SSH 会话', 2400, 'err'); return; }
+          if (!this._filerSel) { this.toast('先选中本地文件', 2400, 'err'); return; }
           const remote = (rpath === '/' ? '' : rpath) + '/' + this._filerSelName;
-          this.toast('上传中: ' + this._filerSelName);
-          T.invoke('sftp_upload', { id: tab.id, local: this._filerSel, remote }).catch(e => this.toast('上传失败: ' + e));
+          this.toast('上传中：' + this._filerSelName);
+          T.invoke('sftp_upload', { id: tab.id, local: this._filerSel, remote }).catch((e) => this.toast('上传失败：' + e, 3200, 'err'));
         };
       }
 
@@ -361,117 +311,155 @@
           const ents = await T.invoke('sftp_list', { id: tab.id, path: rpath });
           rlist.innerHTML = '';
           for (const e of ents) {
-            const row = document.createElement('div');
-            row.className = 'row';
-            row.innerHTML = `<span class="ico">${e.is_dir ? '📁' : '📄'}</span>
-              <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)}</i></span>`;
+            const row = rowOf(e);
             row.ondblclick = () => {
               if (e.is_dir) { T.s.remotePath = e.path; this.renderFiler(); }
               else {
-                const base = T.s.filerPath || '';
-                const local = (base || '') + '/' + e.name;
-                this.toast('下载中: ' + e.name);
-                T.invoke('sftp_download', { id: tab.id, remote: e.path, local }).catch(err => this.toast('下载失败: ' + err));
+                const local = (T.s.filerPath || '') + '/' + e.name;
+                this.toast('下载中：' + e.name);
+                T.invoke('sftp_download', { id: tab.id, remote: e.path, local })
+                  .catch((err) => this.toast('下载失败：' + err, 3200, 'err'));
               }
             };
-            row.onclick = () => { this._remoteSel = e; rlist.querySelectorAll('.row').forEach(r => r.classList.remove('sel')); row.classList.add('sel'); };
+            row.onclick = () => {
+              this._remoteSel = e;
+              rlist.querySelectorAll('.row').forEach((r) => r.classList.remove('sel'));
+              row.classList.add('sel');
+            };
             rlist.appendChild(row);
           }
           if (!ents.length) rlist.innerHTML = '<div class="empty">空目录</div>';
-        } catch (err) { rlist.innerHTML = `<div class="empty">SFTP 失败: ${escapeHtml(String(err))}</div>`; }
+        } catch (err) { rlist.innerHTML = `<div class="empty">SFTP 失败：${escapeHtml(String(err))}</div>`; }
         body.querySelector('#r-up').onclick = () => { T.s.remotePath = rpath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); };
         body.querySelector('#r-dwl').onclick = () => {
-          if (!this._remoteSel) { this.toast('先选中远端文件'); return; }
-          const local = ((T.s.filerPath || '') + '/' + this._remoteSel.name);
-          this.toast('下载中: ' + this._remoteSel.name);
-          T.invoke('sftp_download', { id: tab.id, remote: this._remoteSel.path, local }).catch(e2 => this.toast('下载失败: ' + e2));
+          if (!this._remoteSel) { this.toast('先选中远端文件', 2400, 'err'); return; }
+          const local = (T.s.filerPath || '') + '/' + this._remoteSel.name;
+          this.toast('下载中：' + this._remoteSel.name);
+          T.invoke('sftp_download', { id: tab.id, remote: this._remoteSel.path, local })
+            .catch((e2) => this.toast('下载失败：' + e2, 3200, 'err'));
         };
       }
-      if (isSsh && mode === 'local') this.toast('切到远端/双栏查看 SFTP 目录');
     },
 
+    /* ---------- 窗格：发送 ---------- */
     senderSet(text, direct) {
       const ta = $('#dock-body textarea');
       if (ta) { ta.value = text.replace(/\r$/, ''); ta.focus(); }
-      else this.toast('切到「发送」窗格后可见待发文本');
-      if (direct) { T.term.broadcast(text, false); }
-    },
-
-    renderOutline() {
-      if (T.s.dockPane !== 'outline') return;
-      const body = $('#dock-body');
-      const t = T.term.activeTab();
-      let html = `<div class="pane-head"><span>输入大纲</span><span>${t ? t.outline.length + ' 条' : '无会话'}</span></div>`;
-      if (!t || !t.outline.length) {
-        html += '<div class="empty">回车提交的命令会出现在这里（点击跳转）。完整输出结构大纲属 P2。</div>';
-      } else {
-        for (const o of t.outline.slice(-80)) html += `<div class="row"><span class="ico">¶</span><span class="col"><b>#${o.n}</b><i>行 ${o.y}</i></span></div>`;
-      }
-      body.innerHTML = html;
-      body.querySelectorAll('.row').forEach((row, i) => {
-        row.onclick = () => { const o = t.outline.slice(-80)[i]; if (o) t.term.scrollToLine(o.y); };
-      });
+      else { this.setDockPane('sender'); this.toast('已切到「发送」窗格'); }
+      if (direct) T.term.broadcast(text, false);
     },
 
     renderSender() {
       const body = $('#dock-body');
-      body.innerHTML = `<div class="pane-head"><span>发送文本</span><span>WindTerm SenderPane / 同步输入</span></div>
+      if (!body) return;
+      body.innerHTML = `<div class="pane-head"><span>发送文本</span><span>WindTerm SenderPane</span></div>
         <div class="sender">
-          <textarea id="send-text" placeholder="输入要发送到终端的文本（Ctrl+Enter 发送）"></textarea>
+          <textarea id="send-text" placeholder="输入要发送到终端的文本（Ctrl+Enter 发送）" spellcheck="false"></textarea>
           <div class="sender-btns">
             <button id="send-cur">发送到当前</button>
             <button id="send-all">发送到全部</button>
-            <label><input type="checkbox" id="send-sync" ${T.s.sync ? 'checked' : ''}> 键盘同步输入</label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <button class="sw-toggle${T.s.sync ? ' on' : ''}" id="send-sync" role="switch" aria-checked="${!!T.s.sync}"></button>
+              键盘同步输入</label>
           </div>
         </div>`;
       const ta = body.querySelector('#send-text');
-      ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); T.term.broadcast(ta.value + '\r', false); } });
+      ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); T.term.broadcast(ta.value + '\r', false); }
+      });
       body.querySelector('#send-cur').onclick = () => T.term.broadcast(ta.value + '\r', false);
       body.querySelector('#send-all').onclick = () => T.term.broadcast(ta.value + '\r', true);
-      body.querySelector('#send-sync').onchange = (e) => { T.s.sync = e.target.checked; T.persistSettings(); this.status(); };
+      const sw = body.querySelector('#send-sync');
+      sw.onclick = () => this.toggleSync();
     },
 
-    transfers: [],
+    /* ---------- 窗格：传输 ---------- */
     transferProgress(name, done, total, dir, last) {
-      let t = this.transfers.find(x => x.name === name && x.dir === dir);
+      let t = this.transfers.find((x) => x.name === name && x.dir === dir);
       if (!t) { t = { name, dir, done: 0, total: 0, last: false }; this.transfers.push(t); }
       t.done = done; t.total = total; t.last = !!last;
       if (this.transfers.length > 40) this.transfers.shift();
-      if (T.s.dockPane === 'transfer') this.renderTransfer();
+      if (T.s.dockPane === 'transfer' && T.s.dockVisible) this.renderTransfer();
+      if (window.ActBar) ActBar.bump('transfer');
     },
     renderTransfer() {
+      const body = $('#dock-body');
+      if (!body) return;
       let html = `<div class="pane-head"><span>传输</span><span>${this.transfers.length} 项</span></div>`;
-      if (!this.transfers.length) html += '<div class="empty">SFTP 上传/下载进度会出现在这里（transfer-progress 事件）。</div>';
+      if (!this.transfers.length) html += '<div class="empty">SFTP 上传/下载进度会出现在这里。<br>X/Y/Zmodem 的队列（re/transfer.rs）尚未接线到 command 层。</div>';
       for (const t of this.transfers.slice(-20)) {
         const pct = t.total ? Math.min(100, Math.round(t.done * 100 / t.total)) : 0;
         html += `<div class="trow2"><span class="col"><b>${t.dir === 'up' ? '↑' : '↓'} ${escapeHtml(t.name)}</b>
           <i>${fmtSize(t.done)} / ${fmtSize(t.total)}${t.last ? ' · 完成' : ''}</i></span>
           <div class="pbar"><div style="width:${pct}%"></div></div></div>`;
       }
-      $('#dock-body').innerHTML = html;
+      body.innerHTML = html;
     },
 
+    /* ---------- 窗格：大纲 ---------- */
+    renderOutline() {
+      if (T.s.dockPane !== 'outline') return;
+      const body = $('#dock-body');
+      if (!body) return;
+      const t = T.term.activeTab();
+      let html = `<div class="pane-head"><span>输入大纲</span><span>${t ? t.outline.length + ' 条' : '无会话'}</span></div>`;
+      if (!t || !t.outline.length) {
+        html += '<div class="empty">回车提交的命令会出现在这里，点击可跳到对应行。</div>';
+      } else {
+        for (const o of t.outline.slice(-80)) html += `<div class="row ol"><span class="ico">${svg('terminal')}</span><span class="col"><b>#${o.n}</b><i>行 ${o.y}</i></span></div>`;
+      }
+      body.innerHTML = html;
+      body.querySelectorAll('.ol').forEach((row, i) => {
+        row.onclick = () => { const o = t.outline.slice(-80)[i]; if (o) t.term.scrollToLine(o.y); };
+      });
+    },
+
+    /* ---------- 窗格：日志 ---------- */
     renderOutput() {
       if (T.s.dockPane !== 'output') return;
       const body = $('#dock-body');
-      let html = `<div class="pane-head"><span>输出</span><span>${this.logs.length} 条</span></div><div class="list">`;
+      if (!body) return;
+      let html = `<div class="pane-head"><span>日志</span>
+        <span><button id="log-clear" title="清空">清空</button></span></div><div class="list" style="flex:1;overflow:auto">`;
       for (const l of this.logs.slice(-200)) html += `<div class="logrow"><span class="ts">${l.t.toLocaleTimeString('zh-CN', { hour12: false })}</span><span>${escapeHtml(l.msg)}</span></div>`;
       html += '</div>';
       body.innerHTML = html;
-      body.querySelector('.list').scrollTop = 1e6;
+      const list = body.querySelector('.list');
+      if (list) list.scrollTop = 1e6;
+      const c = body.querySelector('#log-clear');
+      if (c) c.onclick = () => { this.logs = []; this.renderOutput(); };
     },
 
-    /* ---------- search ---------- */
+    /* ---------- 浮动搜索 ---------- */
     openSearch() {
-      $('#searchbar').hidden = false;
+      const bar = $('#search-float');
+      if (!bar) return;
+      bar.hidden = false;
       const inp = $('#search-input');
-      inp.value = this.lastQuery; inp.focus();
+      inp.value = this.lastQuery;
+      this.updateSearchCount();
+      inp.focus();
+      inp.select();
     },
-    closeSearch() { $('#searchbar').hidden = true; const t = T.term.activeTab(); if (t) t.term.focus(); },
+    closeSearch() {
+      const bar = $('#search-float');
+      if (bar) bar.hidden = true;
+      const t = T.term.activeTab();
+      if (t) t.term.focus();
+    },
     doSearch(next) {
-      const q = $('#search-input').value;
+      const inp = $('#search-input');
+      const q = inp ? inp.value : this.lastQuery;
       this.lastQuery = q;
-      if (next) T.term.searchNext(q); else T.term.searchPrev(q);
+      if (!q) return;
+      const found = next ? T.term.searchNext(q) : T.term.searchPrev(q);
+      this.updateSearchCount(found);
+    },
+    updateSearchCount(found) {
+      const el = $('#search-count');
+      if (!el) return;
+      el.textContent = found == null ? '' : (found ? '已定位' : '无匹配');
+      el.style.color = found ? '' : 'var(--danger)';
     },
 
     /* ---------- clipboard ---------- */
@@ -479,190 +467,248 @@
       const t = T.term.activeTab();
       if (!t) return;
       const sel = t.term.getSelection();
-      if (!sel) { this.toast('无选中文本'); return; }
-      try { await navigator.clipboard.writeText(sel); this.toast('已复制 ' + sel.length + ' 字符'); }
-      catch (e) { this.toast('复制失败：' + e); }
+      if (!sel) { this.toast('无选中文本', 1600, 'err'); return; }
+      try { await navigator.clipboard.writeText(sel); this.toast('已复制 ' + sel.length + ' 字符', 1600, 'ok'); }
+      catch (e) { this.toast('复制失败：' + e, 3000, 'err'); }
     },
     async paste() {
       try {
         const txt = await navigator.clipboard.readText();
         const t = T.term.activeTab();
         if (t && txt) T.invoke('write', { id: t.id, data: txt });
-      } catch (e) { this.toast('粘贴需要手动 Ctrl+Shift+V（WebKit 剪贴板限制）'); }
+      } catch (e) { this.toast('粘贴请用 Ctrl+Shift+V（WebKit 剪贴板限制）', 3000, 'err'); }
     },
 
-    /* ---------- mode / sync ---------- */
-    setMode(m) { T.s.mode = m; T.persistSettings(); this.status(); this.toast('模式：' + (m === 'Local' ? '本地' : '远程')); },
-    toggleSync() { T.s.sync = !T.s.sync; T.persistSettings(); this.status(); this.toast('同步输入：' + (T.s.sync ? '开' : '关')); if (T.s.dockPane === 'sender') this.renderSender(); },
+    /* ---------- mode / sync / view ---------- */
+    setMode(m) {
+      T.s.mode = m; T.persistSettings(); this.status();
+      this.toast('模式：' + (m === 'Local' ? '本地' : '远程'));
+      if (T.s.dockVisible) this.renderDock();
+    },
+    toggleSync() {
+      T.s.sync = !T.s.sync; T.persistSettings(); this.status();
+      this.toast('同步输入：' + (T.s.sync ? '开' : '关'));
+      if (T.s.dockPane === 'sender' && T.s.dockVisible) this.renderSender();
+      if (window.Settings && window.Settings.isOpen()) Settings.render();
+    },
+    toggleStatusBar() {
+      T.s.statusBar = T.s.statusBar === false;
+      document.body.classList.toggle('no-status', T.s.statusBar === false);
+      T.persistSettings();
+      this.fitActive(40);
+      if (window.Settings && window.Settings.isOpen()) Settings.render();
+    },
+    cycleTheme() {
+      if (window.Settings) { Settings.cycleLightDark(); return; }
+      const names = Object.keys(T.term.THEMES);
+      const i = names.indexOf(T.s.theme);
+      T.term.applyTheme(names[(i + 1) % names.length]);
+      this.toast('主题：' + T.s.theme);
+    },
     async toggleFullscreen() {
-      try { const w = await this.win(); const f = await w.isFullscreen(); w.setFullscreen(!f); } catch (e) { this.toast('全屏不可用：' + e); }
+      try {
+        const w = await this.win();
+        if (!w) { this.toast('当前环境无窗口控制', 2000, 'err'); return; }
+        const f = await w.isFullscreen();
+        w.setFullscreen(!f);
+      } catch (e) { this.toast('全屏不可用：' + e, 3000, 'err'); }
     },
 
-    /* ---------- dialogs ---------- */
-    openDlg(sel) { const d = $(sel); if (d.showModal) d.showModal(); else d.hidden = false; },
-    closeDlg(sel) { const d = $(sel); if (d.close) d.close(); else d.hidden = true; },
-
-    /* Tabby 风格入口：优先走 Profiles 模块（src/profiles.js），未加载时回退旧会话表单 */
+    /* Tabby 入口：机器编辑统一走 profiles.js */
     editProfile(session) {
       if (window.Profiles) { Profiles.edit(session || null); return; }
-      this.openSessionDialog();
+      this.toast('机器管理模块未加载', 2400, 'err');
+    },
+    openSettings(section) {
+      if (window.Settings) Settings.open(section);
+      else this.toast('设置模块未加载', 2400, 'err');
     },
 
-    openSessionDialog() {
-      const d = $('#dlg-session');
-      d.querySelectorAll('input').forEach((i) => { i.value = ''; });
-      d.querySelectorAll('select').forEach((s) => { s.value = ''; });
-      this.openDlg('#dlg-session');
-    },
-    async saveSessionFromDialog() {
-      const v = (id) => ($('#' + id).value || '').trim();
-      const name = v('sf-name') || 'session-' + (T.s.sessions.length + 1);
-      const iv = (id) => parseInt(v(id) || '0', 10) || 0;
-      const ph = v('sf-proxyhost');
-      const phSplit = ph.includes(':') ? [ph.slice(0, ph.lastIndexOf(':')), ph.slice(ph.lastIndexOf(':') + 1)] : [ph, ''];
-      const s = {
-        name, folder: v('sf-folder'), command: v('sf-command'), args: v('sf-args') ? v('sf-args').split(/\s+/) : [],
-        host: v('sf-host'), port: iv('sf-port'), user: v('sf-user'), protocol: v('sf-proto'), password: v('sf-password'),
-        // 串口（项5）：target=端口名；参数名对齐 WindTerm 属性表 serial.*
-        target: v('sf-target'), baudRate: iv('sf-baud'), dataBits: iv('sf-databits'),
-        parity: v('sf-parity'), stopBits: iv('sf-stopbits'), flowControl: v('sf-flow'),
-        // TCP 代理（项5）：类型串对齐二进制实读（Socks5/Http/ProxyCommand/System）
-        proxyType: v('sf-proxytype'), proxyHost: phSplit[0], proxyPort: parseInt(phSplit[1] || '0', 10) || 0,
-        proxyUser: v('sf-proxyuser'), proxyPassword: v('sf-proxypass'), proxyCommand: v('sf-proxycmd'),
-      };
-      T.s.sessions = T.s.sessions.filter((x) => x.name !== name).concat([s]);
-      await T.persistSessions();
-      this.closeDlg('#dlg-session');
-      this.setDockPane('explorer');
-      this.toast('已保存会话：' + name);
-    },
-
-    openTriggers() { this.renderTriggers(); this.openDlg('#dlg-triggers'); },
-    renderTriggers() {
-      const box = $('#trigger-list');
-      box.innerHTML = T.s.triggers.length ? '' : '<div class="empty">还没有触发器。WindTerm 的 TriggerCenter 用正则匹配输出 → 动作；这里是同构的 v0。</div>';
-      T.s.triggers.forEach((r, i) => {
-        const row = document.createElement('div');
-        row.className = 'trow';
-        row.innerHTML = `<label><input type="checkbox" ${r.enabled !== false ? 'checked' : ''}></label>
-          <b>${escapeHtml(r.name || r.pattern)}</b>
-          <code>/${escapeHtml(r.pattern)}/</code>
-          <span class="act">${r.action}${r.arg ? ' → ' + escapeHtml(r.arg) : ''}</span>
-          <span class="x">×</span>`;
-        row.querySelector('input').onchange = (e) => { r.enabled = e.target.checked; T.persistSettings(); };
-        row.querySelector('.x').onclick = () => { T.s.triggers.splice(i, 1); T.persistSettings(); this.renderTriggers(); };
-        box.appendChild(row);
-      });
-    },
-    addTrigger() {
-      const name = $('#tr-name').value.trim();
-      const pattern = $('#tr-pattern').value.trim();
-      const action = $('#tr-action').value;
-      const arg = $('#tr-arg').value;
-      if (!pattern) { this.toast('正则不能为空'); return; }
-      try { new RegExp(pattern); } catch (e) { this.toast('正则无效：' + e); return; }
-      T.s.triggers.push({ name, pattern, action, arg, enabled: true });
-      T.persistSettings();
-      $('#tr-name').value = ''; $('#tr-pattern').value = ''; $('#tr-arg').value = '';
-      this.renderTriggers();
-    },
-
-    /* ---------- command palette ---------- */
+    /* ---------- 命令面板 ---------- */
     paletteEntries() {
       const A = [];
-      const add = (label, keys, run) => A.push({ label, keys, run });
-      add('新建会话', 'Ctrl+T', () => T.term.create(null));
-      add('关闭当前会话', 'Ctrl+W', () => T.term.active && T.term.close(T.term.active));
-      add('保存会话…', '', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session));
-      add('添加机器…', '', () => this.editProfile(null));
-      add('机器管理…', '', () => (window.Profiles ? Profiles.openManager() : this.toast('机器管理模块未加载')));
-      add('打开主页', '', () => T.term.openHome());
-      add('左右分屏', '', () => T.term.split('h'));
-      add('上下分屏', '', () => T.term.split('v'));
-      add('取消分屏', '', () => T.term.unsplit());
-      add('查找…', 'Ctrl+F', () => this.openSearch());
-      add('放大字号', 'Ctrl+=', () => T.term.zoom(1));
-      add('缩小字号', 'Ctrl+-', () => T.term.zoom(-1));
-      add('重置字号', '', () => T.term.zoomReset());
-      add('切换显示 Dock', 'Ctrl+B', () => this.toggleDock());
-      add('全屏切换', 'F11', () => this.toggleFullscreen());
-      add('切换本地/远程模式', '', () => this.setMode(T.s.mode === 'Local' ? 'Remote' : 'Local'));
-      add('切换同步输入', '', () => this.toggleSync());
-      add('触发器…', '', () => this.openTriggers());
-      add('复制', 'Ctrl+Shift+C', () => this.copy());
-      add('粘贴', 'Ctrl+Shift+V', () => this.paste());
-      for (const n of Object.keys(T.term.THEMES)) add('主题：' + n, '', () => T.term.applyTheme(n));
-      for (const [id, label] of [['explorer', '资源管理器'], ['filer', '文件浏览器'], ['outline', '大纲'], ['sender', '发送'], ['transfer', '传输'], ['output', '输出']])
-        add('窗格：' + label, '', () => this.setDockPane(id));
+      const add = (group, label, keys, icon, run) => A.push({ group, label, keys, icon, run });
+      const S = () => window.Settings;
+
+      add('会话', '新建本地会话', 'Ctrl+T', 'plus', () => T.term.newLocal());
+      add('会话', '打开主页', '', 'home', () => T.term.openHome());
+      add('会话', '机器管理…', 'Ctrl+M', 'server', () => this.openProfiles());
+      add('会话', '添加机器…', '', 'server', () => this.editProfile(null));
+      add('会话', '把当前会话另存为机器…', '', 'copy', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session));
+      add('会话', '关闭当前会话', 'Ctrl+W', 'x', () => T.term.active && T.term.close(T.term.active));
+      add('会话', '关闭其他会话', '', 'x', () => T.term.active && T.term.closeOthers(T.term.active));
+      add('会话', '重命名当前标签', 'F2', 'output', () => window.TabBar && TabBar.renameActive());
+
+      add('窗格', '切换侧栏', 'Ctrl+B', 'folder', () => this.toggleDock());
+      for (let i = 0; i < PANES.length; i++) {
+        const [id, label] = PANES[i];
+        add('窗格', '侧栏：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));
+      }
+
+      add('分屏', '左右分屏', 'Ctrl+Shift+E', 'splitH', () => T.term.splitActive('right'));
+      add('分屏', '上下分屏', 'Ctrl+Shift+D', 'splitV', () => T.term.splitActive('down'));
+      add('分屏', '取消分屏', 'Ctrl+Shift+W', 'x', () => T.term.unsplit());
+      add('分屏', '聚焦下一个窗格', '', 'terminal', () => T.term.focusNextGroup());
+
+      add('编辑', '复制选中', 'Ctrl+Shift+C', 'copy', () => this.copy());
+      add('编辑', '粘贴', 'Ctrl+Shift+V', 'send', () => this.paste());
+      add('编辑', '全选', '', 'output', () => { const t = T.term.activeTab(); if (t) t.term.selectAll(); });
+      add('编辑', '查找…', 'Ctrl+F', 'search', () => this.openSearch());
+      add('编辑', '查找下一个', 'F3', 'search', () => this.doSearch(true));
+      add('编辑', '查找上一个', 'Shift+F3', 'search', () => this.doSearch(false));
+      add('编辑', '滚动到顶部 / 底部', 'Ctrl+Home', 'up', () => { const t = T.term.activeTab(); if (t) t.term.scrollToTop(); });
+
+      add('视图', '放大字号', 'Ctrl+=', 'zoomIn', () => T.term.zoom(1));
+      add('视图', '缩小字号', 'Ctrl+-', 'zoomOut', () => T.term.zoom(-1));
+      add('视图', '重置字号', '', 'zoomOut', () => T.term.zoomReset());
+      add('视图', '全屏切换', 'F11', 'maximize', () => this.toggleFullscreen());
+      add('视图', '深浅色一键切换', '', 'theme', () => this.cycleTheme());
+      add('视图', '显示/隐藏状态栏', '', 'output', () => this.toggleStatusBar());
+      for (const n of Object.keys(T.term.THEMES)) add('主题', '主题：' + n, '', 'palette', () => T.term.applyTheme(n));
+
+      add('模式', '切到本地模式', '', 'terminal', () => this.setMode('Local'));
+      add('模式', '切到远程模式', '', 'globe', () => this.setMode('Remote'));
+      add('模式', '切换同步输入（群控）', '', 'transfer', () => this.toggleSync());
+
+      for (const s of SECTIONS_OF_SETTINGS) add('设置', '设置：' + s.label, '', s.icon, () => S() && S().open(s.id));
+      add('设置', '命令面板', 'Ctrl+Shift+P', 'search', () => {});
+
       return A;
     },
+
     openPalette() {
       const p = $('#palette');
+      if (!p) return;
       p.hidden = false;
-      p.onclick = (e) => { if (e.target === p) this.closePalette(); };  // 点遮罩关闭
+      p.onclick = (e) => { if (e.target === p) this.closePalette(); };
       const inp = $('#palette-input');
-      inp.value = ''; inp.focus();
+      inp.value = '';
       this._pal = this.paletteEntries();
       this.filterPalette('');
+      setTimeout(() => inp.focus(), 0);
     },
-    closePalette() { $('#palette').hidden = true; const t = T.term.activeTab(); if (t) t.term.focus(); },
+    closePalette() {
+      const p = $('#palette');
+      if (p) p.hidden = true;
+      const t = T.term.activeTab();
+      if (t) t.term.focus();
+    },
     filterPalette(q) {
       const list = $('#palette-list');
-      list.innerHTML = '';
-      const items = this._pal.filter((e) => !q || e.label.toLowerCase().includes(q.toLowerCase()));
+      if (!list) return;
+      list.textContent = '';
+      const ql = (q || '').trim().toLowerCase();
+      const items = this._pal.filter((e) => !ql || (e.label + ' ' + e.group).toLowerCase().includes(ql));
       this._palShown = items;
+      let lastGroup = null;
       items.forEach((e, i) => {
+        if (e.group !== lastGroup) {
+          lastGroup = e.group;
+          const g = document.createElement('div');
+          g.className = 'pg';
+          g.textContent = e.group;
+          list.appendChild(g);
+        }
         const row = document.createElement('div');
         row.className = 'pitem' + (i === 0 ? ' sel' : '');
-        row.innerHTML = `<span>${escapeHtml(e.label)}</span><span class="key">${e.keys || ''}</span>`;
+        row.innerHTML = `<span class="pi">${svg(e.icon)}</span><span class="pl">${escapeHtml(e.label)}</span><span class="key">${escapeHtml(e.keys || '')}</span>`;
         row.onclick = () => { e.run(); this.closePalette(); };
         list.appendChild(row);
       });
+      if (!items.length) list.innerHTML = '<div class="empty">没有匹配的命令</div>';
     },
     runPalette() {
-      const sel = $('#palette-list .sel') || $('#palette-list .pitem');
-      if (sel) { const i = Array.from($('#palette-list').children).indexOf(sel); this._palShown[i] && this._palShown[i].run(); }
+      const sel = $('#palette-list .pitem.sel') || $('#palette-list .pitem');
+      if (sel) {
+        const items = $$('#palette-list .pitem');
+        const i = items.indexOf(sel);
+        if (this._palShown[i]) this._palShown[i].run();
+      }
       this.closePalette();
     },
     paletteMove(d) {
       const items = $$('#palette-list .pitem');
       if (!items.length) return;
       let i = items.findIndex((x) => x.classList.contains('sel'));
-      i = Math.max(0, Math.min(items.length - 1, i + d));
+      i = i < 0 ? 0 : Math.max(0, Math.min(items.length - 1, i + d));
       items.forEach((x) => x.classList.remove('sel'));
       items[i].classList.add('sel');
       items[i].scrollIntoView({ block: 'nearest' });
     },
   };
 
+  // 设置页分区（与 settings.js 的 SECTIONS 对齐，用于命令面板直达）
+  const SECTIONS_OF_SETTINGS = [
+    { id: 'appearance', icon: 'palette', label: '外观' },
+    { id: 'terminal', icon: 'terminal', label: '终端' },
+    { id: 'profiles', icon: 'server', label: '机器与连接' },
+    { id: 'triggers', icon: 'bell', label: '触发器' },
+    { id: 'hotkeys', icon: 'keyboard', label: '快捷键' },
+    { id: 'about', icon: 'info', label: '关于' },
+  ];
+
   function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-  function fmtSize(n) { if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB'; return (n / 1073741824).toFixed(2) + ' GB'; }
+  function fmtSize(n) {
+    if (n == null) return '—';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+  }
 
   window.UI = UI;
   window.WT.ui = UI;
 
-  /* ---------- keyboard shortcuts ---------- */
+  /* ---------- 全局快捷键 ---------- */
   document.addEventListener('keydown', (e) => {
     const k = e.key;
-    const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && e.shiftKey && (k === 'P' || k === 'p')) { e.preventDefault(); UI.openPalette(); return; }
-    if (ctrl && !e.shiftKey && (k === 't' || k === 'T')) { e.preventDefault(); T.term.create(null); return; }
-    if (ctrl && !e.shiftKey && (k === 'w' || k === 'W')) { e.preventDefault(); if (T.term.active) T.term.close(T.term.active); return; }
-    if (ctrl && !e.shiftKey && (k === 'f' || k === 'F')) { e.preventDefault(); UI.openSearch(); return; }
-    if (ctrl && (k === '=' || k === '+')) { e.preventDefault(); T.term.zoom(1); return; }
-    if (ctrl && k === '-') { e.preventDefault(); T.term.zoom(-1); return; }
-    if (ctrl && (k === 'b' || k === 'B')) { e.preventDefault(); UI.toggleDock(); return; }
-    if (ctrl && e.shiftKey && (k === 'C' || k === 'c')) { e.preventDefault(); UI.copy(); return; }
-    if (ctrl && e.shiftKey && (k === 'V' || k === 'v')) { e.preventDefault(); UI.paste(); return; }
+    const mod = e.ctrlKey || e.metaKey;
+    const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '');
+
+    if (mod && e.shiftKey && (k === 'P' || k === 'p')) { e.preventDefault(); UI.openPalette(); return; }
+    if (mod && e.shiftKey && (k === 'E' || k === 'e')) { e.preventDefault(); T.term.splitActive('right'); return; }
+    if (mod && e.shiftKey && (k === 'D' || k === 'd')) { e.preventDefault(); T.term.splitActive('down'); return; }
+    if (mod && e.shiftKey && (k === 'W' || k === 'w')) { e.preventDefault(); T.term.unsplit(); return; }
+    if (mod && e.shiftKey && (k === 'C' || k === 'c')) { e.preventDefault(); UI.copy(); return; }
+    if (mod && e.shiftKey && (k === 'V' || k === 'v')) { e.preventDefault(); UI.paste(); return; }
+    if (mod && !e.shiftKey && (k === 't' || k === 'T')) { e.preventDefault(); T.term.newLocal(); return; }
+    if (mod && !e.shiftKey && (k === 'w' || k === 'W')) { e.preventDefault(); if (T.term.active) T.term.close(T.term.active); return; }
+    if (mod && !e.shiftKey && (k === 'f' || k === 'F')) { e.preventDefault(); UI.openSearch(); return; }
+    if (mod && !e.shiftKey && (k === 'b' || k === 'B')) { e.preventDefault(); UI.toggleDock(); return; }
+    if (mod && !e.shiftKey && (k === 'm' || k === 'M')) { e.preventDefault(); UI.openProfiles(); return; }
+    if (mod && !e.shiftKey && k === ',') { e.preventDefault(); window.Settings ? Settings.toggle() : null; return; }
+    if (mod && (k === '=' || k === '+')) { e.preventDefault(); T.term.zoom(1); return; }
+    if (mod && k === '-') { e.preventDefault(); T.term.zoom(-1); return; }
+    // Ctrl+1..6 → 侧栏窗格
+    if (mod && !e.shiftKey && k >= '1' && k <= '6') {
+      e.preventDefault();
+      const p = PANES[+k - 1];
+      if (p) UI.setDockPane(p[0]);
+      return;
+    }
     if (k === 'F11') { e.preventDefault(); UI.toggleFullscreen(); return; }
     if (k === 'F3') { e.preventDefault(); UI.doSearch(!e.shiftKey); return; }
-    if (!$('#palette').hidden) {
+
+    const pal = $('#palette');
+    const sf = $('#search-float');
+    if (pal && !pal.hidden) {
       if (k === 'Escape') { e.preventDefault(); UI.closePalette(); }
       else if (k === 'ArrowDown') { e.preventDefault(); UI.paletteMove(1); }
       else if (k === 'ArrowUp') { e.preventDefault(); UI.paletteMove(-1); }
       else if (k === 'Enter') { e.preventDefault(); UI.runPalette(); }
-    } else if (!$('#searchbar').hidden && k === 'Enter') { e.preventDefault(); UI.doSearch(!e.shiftKey); }
-    else if (!$('#searchbar').hidden && k === 'Escape') { e.preventDefault(); UI.closeSearch(); }
-    else if (k === 'Escape' && !$('#dlg-triggers').hidden) UI.closeDlg('#dlg-triggers');
+      return;
+    }
+    if (sf && !sf.hidden && !inField) {
+      if (k === 'Escape') { e.preventDefault(); UI.closeSearch(); }
+      return;
+    }
+    if (k === 'Escape') {
+      // 依次收：右键菜单 → 设置页 → 主页
+      if (window.TabBar && TabBar.menuOpen()) TabBar.closeMenu();
+      else if (window.Settings && Settings.isOpen()) Settings.close();
+      else if (!$('#home').hidden && T.term.order.length) Home.hide();
+      return;
+    }
+    if (k === 'F2' && !mod) { e.preventDefault(); if (window.TabBar) TabBar.renameActive(); return; }
   });
 })();

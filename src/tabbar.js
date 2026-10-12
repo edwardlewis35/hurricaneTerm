@@ -1,94 +1,87 @@
-/* hurricaneTerm — Tabby 风格「窗口级标签栏」组件
+/* hurricaneTerm — tabbar.js：Tabby 风格「窗口级标签栏」
  * 原创代码 (Apache-2.0)，UI 形态参考 Tabby，未复制其代码。
  *
+ * 0.7.0 改版：标签栏内嵌无边框标题栏；圆角无边框标签，活动标签底色与终端区连成一体；
+ *            emoji 图标换成内联 SVG；浮层菜单样式上移到 style.css 统一管理。
+ *
  * 导出：window.TabBar = { mount(el), render() }
- *   mount(el)  把全局标签条渲染进给定容器（父层建 #tabbar 置于工作区顶部）
+ *   mount(el)  渲染进给定容器（父层把 #tabbar 放在 #titlebar 内）
  *   render()   从 T.term.order / T.term.tabs / T.term.active 全量重绘
  *
  * 数据字段（父层补充）：tab.pinned / tab.activity / tab.notify / tab.color / tab.exited / tab.session
- * 依赖 T.term 新方法（父层稍后实现；缺失时 typeof 守卫 + toast「未接线」）：
- *   moveTab(id, toIndex)        —— 契约：先从 order 移除 id，再插入到剩余数组的 toIndex 处
- *   splitActive(dir)            —— dir: 'right' | 'left' | 'down' | 'up'
- *   closeOthers(id) closeRight(id) closeLeft(id)
- *   togglePin(id) toggleNotify(id) setTabColor(id, color|null) renameTab(id, title)
- *   duplicate(id) newLocal() openHome()
- * 另调用：T.term.activate(id) close(id) create(session)（已存在）；
- *         Profiles.edit(session) / Profiles.openManager()（T.Profiles 或 window.Profiles，typeof 守卫）
+ * 依赖 T.term：moveTab(id,toIndex) splitActive(dir) closeOthers/closeRight/closeLeft(id)
+ *              togglePin/toggleNotify/setTabColor/renameTab(id,…) duplicate(id) newLocal() openHome()
+ *              activate(id) close(id) create(session)
+ * 以及 Profiles.edit(session) / Profiles.openManager()（T.Profiles 或 window.Profiles）
  */
 (function () {
   'use strict';
   const T = window.WT;
 
   /* ---------- 常量 ---------- */
-  const ICONS = { '': '▣', local: '▣', ssh: '🔒', telnet: '📡', serial: '🔌', tcp: '🌐' };
-  const COLORS = ['#e06c75', '#e5c07b', '#98c379', '#56b6c2', '#61afef', '#c678dd', '#ff8f40', '#d070b0'];
+  // 协议 → icons.js 里的图标名
+  const ICONS = { '': 'terminal', local: 'terminal', ssh: 'lock', telnet: 'telnet', serial: 'serial', tcp: 'globe' };
+  // 标签色板：取自 Tabby 上游 theme.vars.scss 的 $theme-colors / 基础色
+  const COLORS = ['#d9534f', '#f0ad4e', '#ffd500', '#5cb85c', '#5bc0de', '#0275d8', '#4fadff', '#ff5b77', '#613d7c'];
 
-  /* 注意：不用 CSS 作变量名，避免遮蔽全局 CSS 命名空间（CSS.escape） */
   const STYLE_TEXT = `
-.ht-tabbar { display:flex; align-items:stretch; height:34px; background:var(--bg2); border-bottom:1px solid var(--border); user-select:none; font-size:12px; }
-.ht-tabs { display:flex; align-items:stretch; flex:1 1 auto; min-width:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+.ht-tabbar { display:flex; align-items:flex-end; flex:1 1 auto; min-width:0; height:var(--titlebar-h);
+  user-select:none; font-size:12.5px; }
+.ht-tabs { display:flex; align-items:flex-end; flex:1 1 auto; min-width:0; height:100%;
+  padding-top:5px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
 .ht-tabs::-webkit-scrollbar { display:none; }
-.ht-tab { position:relative; display:flex; align-items:center; gap:5px; flex:0 1 auto; min-width:96px; max-width:180px;
-  padding:0 6px 0 11px; cursor:default; color:var(--fg2); background:var(--bg2); border-right:1px solid var(--border); }
-.ht-tab::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--htc, transparent); }
-.ht-tab:hover { background:var(--bg3); color:var(--fg); }
-.ht-tab.ht-active { background:var(--bg3); color:var(--fg); box-shadow:inset 0 2px 0 var(--accent); }
-.ht-tab.ht-exited .ht-title { text-decoration:line-through; opacity:.6; }
-.ht-ico { flex:0 0 auto; font-size:11px; opacity:.85; }
+.ht-brand { display:flex; align-items:center; gap:8px; padding:0 14px; height:100%; color:var(--fg2);
+  font-size:12.5px; letter-spacing:.02em; white-space:nowrap; user-select:none; }
+.ht-brand b { color:var(--fg3); font-weight:600; }
+.ht-brand i { color:var(--accent); font-style:normal; font-weight:700; }
+
+.ht-tab { position:relative; display:flex; align-items:center; gap:7px; flex:0 1 auto;
+  min-width:104px; max-width:190px; height:calc(var(--titlebar-h) - 5px);
+  padding:0 7px 0 12px; cursor:default; color:var(--fg2); background:transparent;
+  border-radius:8px 8px 0 0; transition:background .12s ease, color .12s ease; }
+.ht-tab:hover { background:var(--surface-hover); color:var(--fg3); }
+.ht-tab.ht-active { background:var(--term-bg, var(--bg)); color:var(--fg3); }
+.ht-tab.ht-active::after { content:''; position:absolute; left:11px; right:11px; top:0; height:2px;
+  border-radius:0 0 2px 2px; background:var(--htc, var(--accent)); }
+.ht-tab.ht-exited .ht-title { text-decoration:line-through; opacity:.55; }
+.ht-ico { flex:0 0 auto; width:15px; display:flex; align-items:center; justify-content:center; color:var(--fg2); }
+.ht-ico svg { width:13px; height:13px; stroke-width:1.5; }
+.ht-tab.ht-active .ht-ico { color:var(--htc, var(--accent)); }
 .ht-title { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.ht-dot { flex:0 0 auto; width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 5px var(--accent); }
-.ht-pin { flex:0 0 auto; font-size:10px; opacity:.85; }
-.ht-x { flex:0 0 auto; width:16px; height:16px; line-height:15px; text-align:center; border-radius:3px; opacity:0; color:var(--fg2); }
-.ht-tab:hover .ht-x, .ht-tab.ht-active .ht-x { opacity:.7; }
-.ht-x:hover { background:rgba(224,108,117,.28); color:#e06c75; opacity:1; }
-.ht-tab.ht-dragging { opacity:.4; }
+.ht-dot { flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px var(--accent); }
+.ht-pin { flex:0 0 auto; width:12px; display:flex; align-items:center; color:var(--fg2); }
+.ht-pin svg { width:11px; height:11px; }
+.ht-x { flex:0 0 auto; width:17px; height:17px; display:flex; align-items:center; justify-content:center;
+  border-radius:var(--r-sm); opacity:0; color:var(--fg2); transition:opacity .1s, background .1s; }
+.ht-x svg { width:9px; height:9px; stroke-width:1.8; }
+.ht-tab:hover .ht-x, .ht-tab.ht-active .ht-x { opacity:.75; }
+.ht-x:hover { background:rgba(217,83,79,.28); color:#ff9d99; opacity:1; }
+.ht-tab.ht-dragging { opacity:.35; }
 .ht-tab.ht-drop-l { box-shadow:inset 2px 0 0 var(--accent); }
 .ht-tab.ht-drop-r { box-shadow:inset -2px 0 0 var(--accent); }
-.ht-tab input.ht-rename { flex:1 1 auto; min-width:0; background:var(--bg); color:var(--fg); border:1px solid var(--accent);
-  border-radius:3px; padding:1px 4px; font:inherit; }
-.ht-actions { display:flex; align-items:center; gap:2px; flex:0 0 auto; padding:0 6px; border-left:1px solid var(--border); }
-.ht-plus, .ht-caret { display:flex; align-items:center; justify-content:center; border-radius:4px; cursor:default; color:var(--fg2); }
-.ht-plus { width:26px; height:24px; font-size:15px; }
-.ht-caret { width:18px; height:24px; font-size:9px; }
-.ht-plus:hover, .ht-caret:hover { background:var(--bg3); color:var(--fg); }
-.ht-tabbar .ht-toast { position:fixed; top:40px; right:14px; z-index:400; background:var(--bg3); border:1px solid var(--accent);
-  color:var(--fg); padding:6px 12px; border-radius:6px; font-size:12px; box-shadow:0 6px 20px rgba(0,0,0,.4);
-  animation: ht-in .15s ease-out; }
-@keyframes ht-in { from { opacity:0; transform:translateY(-4px); } }
-.ht-menu { position:fixed; z-index:300; min-width:190px; background:var(--bg3); border:1px solid var(--border); border-radius:6px;
-  box-shadow:0 8px 28px rgba(0,0,0,.5); padding:4px 0; font-size:12.5px; color:var(--fg); user-select:none; }
-.ht-menu .mi { display:flex; align-items:center; gap:8px; padding:5px 12px; cursor:default; position:relative; }
-.ht-menu .mi:hover { background:var(--accent); color:#08131a; }
-.ht-menu .mi.danger:hover { background:#e06c75; color:#fff; }
-.ht-menu .mi .chk { flex:0 0 auto; width:13px; text-align:center; }
-.ht-menu .mi .mic { flex:0 0 auto; width:16px; text-align:center; font-size:11px; }
-.ht-menu .mi .lab { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.ht-menu .mi .arrow { flex:0 0 auto; opacity:.6; font-size:10px; }
-.ht-menu .sep { height:1px; background:var(--border); margin:4px 0; }
-.ht-menu .head { padding:5px 12px 3px; font-size:11px; opacity:.65; }
-.ht-menu .mi.dis { opacity:.5; }
-.ht-menu .mi.sub .subbody { display:none; position:absolute; left:100%; top:-5px; }
-.ht-menu .mi.sub:hover .subbody { display:block; }
-.ht-menu .swatches { display:flex; align-items:center; gap:5px; padding:5px 12px 7px; }
-.ht-menu .sw { width:16px; height:16px; border-radius:4px; border:1px solid rgba(128,128,128,.4); cursor:default; }
-.ht-menu .sw:hover { transform:scale(1.18); }
-.ht-menu .sw.sel { outline:2px solid var(--fg); outline-offset:1px; }
-.ht-menu .sw.clear { display:flex; align-items:center; justify-content:center; background:transparent; color:var(--fg2); font-size:12px; }
-.ht-menu .sw.clear:hover { color:#e06c75; }
+.ht-tab input.ht-rename { flex:1 1 auto; min-width:0; background:var(--input-bg); color:var(--fg3);
+  border:1px solid var(--accent); border-radius:var(--r-sm); padding:0 4px; height:19px; font:inherit; }
+
+.ht-actions { display:flex; align-items:center; gap:1px; flex:0 0 auto; height:100%; padding:0 5px 0 3px; }
+.ht-plus, .ht-caret { display:flex; align-items:center; justify-content:center; border-radius:var(--r);
+  cursor:default; color:var(--fg2); transition:var(--t); }
+.ht-plus { width:26px; height:26px; }
+.ht-caret { width:19px; height:26px; }
+.ht-plus svg, .ht-caret svg { width:13px; height:13px; }
+.ht-plus:hover, .ht-caret:hover { background:var(--surface-hover); color:var(--fg3); }
 `;
 
   /* ---------- 状态 ---------- */
   let root = null, tabsEl = null;
   let dragId = null;
   let menuEl = null;
-  let selfToastTimer = null;
 
   function cssEscape(s) {
     if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(s);
     return String(s).replace(/[^A-Za-z0-9_-]/g, (ch) => '\\' + ch);
   }
+  function svg(name) { return window.Icons ? window.Icons.svg(name) : ''; }
 
-  /* ---------- 小工具 ---------- */
   function ensureStyle() {
     if (document.getElementById('ht-tabbar-style')) return;
     const s = document.createElement('style');
@@ -100,12 +93,7 @@
   function toast(msg) {
     const U = window.UI;
     if (U && typeof U.toast === 'function') { U.toast(msg); return; }
-    if (!root) return;
-    let el = root.querySelector('.ht-toast');
-    if (!el) { el = document.createElement('div'); el.className = 'ht-toast'; root.appendChild(el); }
-    el.textContent = msg;
-    clearTimeout(selfToastTimer);
-    selfToastTimer = setTimeout(() => el.remove(), 2400);
+    console.warn('[tabbar]', msg);
   }
 
   /* 调用父层将实现的 T.term 方法；缺失时守卫 + 提示 */
@@ -137,7 +125,7 @@
 
   function protoIcon(session) {
     const p = ((session && session.protocol) || '').toLowerCase();
-    return ICONS[p] || '▣';
+    return ICONS[p] || ICONS[''];
   }
 
   function displayOrder() {
@@ -176,15 +164,20 @@
     return m;
   }
 
+  /* opt: { label, svg?, checked?, danger?, disabled?, key?, submenu?, onClick? } */
   function mi(menu, opt) {
     const d = document.createElement('div');
     d.className = 'mi' + (opt.danger ? ' danger' : '') + (opt.submenu ? ' sub' : '') + (opt.disabled ? ' dis' : '');
     const chk = document.createElement('span'); chk.className = 'chk';
     chk.textContent = opt.checked ? '✓' : '';
     d.appendChild(chk);
-    if (opt.icon) { const ic = document.createElement('span'); ic.className = 'mic'; ic.textContent = opt.icon; d.appendChild(ic); }
+    if (opt.svg) {
+      const ic = document.createElement('span'); ic.className = 'mic'; ic.innerHTML = svg(opt.svg);
+      d.appendChild(ic);
+    }
     const lab = document.createElement('span'); lab.className = 'lab'; lab.textContent = opt.label;
     d.appendChild(lab);
+    if (opt.key) { const k = document.createElement('span'); k.className = 'key'; k.textContent = opt.key; d.appendChild(k); }
     if (opt.submenu) {
       const a = document.createElement('span'); a.className = 'arrow'; a.textContent = '▸';
       d.appendChild(a);
@@ -208,8 +201,16 @@
     const ids = displayOrder();
     const idx = ids.indexOf(id);
     openMenu(x, y, (m) => {
-      mi(m, { label: '重命名', onClick: () => startInlineRename(id) });
-      mhead(m, '颜色');
+      mi(m, { label: '重命名', svg: 'output', onClick: () => startInlineRename(id) });
+      mi(m, { label: '复制标签', svg: 'copy', onClick: () => call('duplicate', id) });
+      mi(m, { label: '分屏', svg: 'splitH', submenu: [
+        { label: '向右分屏', key: 'Ctrl+Shift+E', onClick: () => call('splitActive', 'right') },
+        { label: '向左分屏', onClick: () => call('splitActive', 'left') },
+        { label: '向下分屏', key: 'Ctrl+Shift+D', onClick: () => call('splitActive', 'down') },
+        { label: '向上分屏', onClick: () => call('splitActive', 'up') },
+      ] });
+      msep(m);
+      mhead(m, '标签颜色');
       const swrap = document.createElement('div'); swrap.className = 'swatches';
       for (const c of COLORS) {
         const s = document.createElement('div'); s.className = 'sw' + (tab.color === c ? ' sel' : '');
@@ -222,24 +223,17 @@
       swrap.appendChild(clr);
       m.appendChild(swrap);
       msep(m);
-      mi(m, { label: '复制标签', onClick: () => call('duplicate', id) });
-      mi(m, { label: '分屏', submenu: [
-        { label: '右侧', onClick: () => call('splitActive', 'right') },
-        { label: '左侧', onClick: () => call('splitActive', 'left') },
-        { label: '下方', onClick: () => call('splitActive', 'down') },
-        { label: '上方', onClick: () => call('splitActive', 'up') },
-      ] });
       if (ids.length > 1) {
-        mi(m, { label: '关闭其他', onClick: () => call('closeOthers', id) });
-        if (idx < ids.length - 1) mi(m, { label: '关闭右侧', onClick: () => call('closeRight', id) });
-        if (idx > 0) mi(m, { label: '关闭左侧', onClick: () => call('closeLeft', id) });
+        mi(m, { label: '关闭其他标签', onClick: () => call('closeOthers', id) });
+        if (idx < ids.length - 1) mi(m, { label: '关闭右侧标签', onClick: () => call('closeRight', id) });
+        if (idx > 0) mi(m, { label: '关闭左侧标签', onClick: () => call('closeLeft', id) });
+        msep(m);
       }
+      mi(m, { label: '固定标签', svg: 'pin', checked: !!tab.pinned, onClick: () => call('togglePin', id) });
+      mi(m, { label: '活动时通知', svg: 'bell', checked: !!tab.notify, onClick: () => call('toggleNotify', id) });
       msep(m);
-      mi(m, { label: '固定标签', checked: !!tab.pinned, onClick: () => call('togglePin', id) });
-      mi(m, { label: '活动时通知', checked: !!tab.notify, onClick: () => call('toggleNotify', id) });
-      msep(m);
-      mi(m, { label: '另存为机器', onClick: () => callProfiles('edit', tab.session) });
-      mi(m, { label: tab.exited ? '关闭标签' : '断开', danger: true, onClick: () => callExisting('close', id) });
+      mi(m, { label: '另存为机器', svg: 'server', onClick: () => callProfiles('edit', tab.session) });
+      mi(m, { label: tab.exited ? '关闭标签' : '断开连接', svg: 'x', danger: true, key: 'Ctrl+W', onClick: () => callExisting('close', id) });
     });
   }
 
@@ -299,19 +293,26 @@
     el.title = tab.title || '';
     if (tab.color) el.style.setProperty('--htc', tab.color);
 
-    const ico = document.createElement('span'); ico.className = 'ht-ico'; ico.textContent = protoIcon(tab.session);
+    const ico = document.createElement('span'); ico.className = 'ht-ico'; ico.innerHTML = svg(protoIcon(tab.session));
     const title = document.createElement('span'); title.className = 'ht-title'; title.textContent = tab.title || '';
     el.append(ico, title);
-    if (tab.activity) { const dot = document.createElement('span'); dot.className = 'ht-dot'; dot.title = '有活动'; el.appendChild(dot); }
-    if (tab.pinned) { const pin = document.createElement('span'); pin.className = 'ht-pin'; pin.textContent = '📌'; el.appendChild(pin); }
-    const x = document.createElement('span'); x.className = 'ht-x'; x.textContent = '×'; x.title = '关闭';
+    if (tab.activity && T.s.activityDot !== false) {
+      const dot = document.createElement('span'); dot.className = 'ht-dot'; dot.title = '有活动'; el.appendChild(dot);
+    }
+    if (tab.pinned) {
+      const pin = document.createElement('span'); pin.className = 'ht-pin';
+      pin.innerHTML = svg('pin'); pin.title = '已固定'; el.appendChild(pin);
+    }
+    const x = document.createElement('span'); x.className = 'ht-x'; x.innerHTML = svg('x'); x.title = '关闭';
     x.addEventListener('click', (e) => { e.stopPropagation(); callExisting('close', id); });
     el.appendChild(x);
 
     el.addEventListener('click', (e) => { if (e.button === 0) callExisting('activate', id); });
-    el.addEventListener('dblclick', () => startInlineRename(id));
+    el.addEventListener('dblclick', (e) => { e.stopPropagation(); startInlineRename(id); });
     el.addEventListener('mousedown', (e) => {
       if (e.button === 1) { e.preventDefault(); callExisting('close', id); }
+      // 阻止标题栏拖拽吞掉标签上的按下事件
+      e.stopPropagation();
     });
     el.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
     el.addEventListener('contextmenu', (e) => {
@@ -349,6 +350,14 @@
     return el;
   }
 
+  /* ---------- 无标签时的品牌位（同时也是拖拽区） ---------- */
+  function brandEl() {
+    const b = document.createElement('div');
+    b.className = 'ht-brand';
+    b.innerHTML = '<span>hurricane<b>Term</b></span><i>·</i><span>Ctrl+T 新建 · Ctrl+Shift+P 命令面板</span>';
+    return b;
+  }
+
   /* ---------- 「＋」区（新建 + 下拉：最近机器 / 添加机器 / 打开主页） ---------- */
   function buildPlusMenu(m) {
     mhead(m, '最近使用的机器');
@@ -361,15 +370,16 @@
     } else {
       for (const s of list) {
         mi(m, {
-          icon: protoIcon(s),
+          svg: protoIcon(s),
           label: s.name || s.host || s.target || '未命名机器',
           onClick: () => callExisting('create', s),
         });
       }
     }
     msep(m);
-    mi(m, { label: '添加机器…', onClick: () => callProfiles('openManager') });
-    mi(m, { label: '打开主页', onClick: () => call('openHome') });
+    mi(m, { label: '新建本地会话', svg: 'terminal', key: 'Ctrl+T', onClick: () => call('newLocal') });
+    mi(m, { label: '添加机器…', svg: 'server', key: 'Ctrl+M', onClick: () => callProfiles('openManager') });
+    mi(m, { label: '打开主页', svg: 'home', onClick: () => call('openHome') });
   }
 
   /* ---------- 渲染 ---------- */
@@ -377,11 +387,18 @@
     if (!tabsEl) return;
     const activeId = T.term ? T.term.active : null;
     tabsEl.textContent = '';
-    for (const id of displayOrder()) tabsEl.appendChild(tabEl(id));
+    const ids = displayOrder();
+    if (!ids.length) tabsEl.appendChild(brandEl());
+    for (const id of ids) tabsEl.appendChild(tabEl(id));
     if (activeId) {
       const act = tabsEl.querySelector('.ht-tab[data-id="' + cssEscape(activeId) + '"]');
       if (act) requestAnimationFrame(() => act.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
     }
+    // 主区窗口标题跟随活动标签
+    try {
+      const t = activeId && T.term.tabs[activeId];
+      document.title = t && t.title ? `${t.title} — hurricaneTerm` : 'hurricaneTerm';
+    } catch (e) {}
   }
 
   function mount(el) {
@@ -401,26 +418,27 @@
       const from = dragId; dragId = null; clearDropMarks();
       call('moveTab', from, base.length);
     });
-    tabsEl.addEventListener('contextmenu', (e) => { /* 空白区右键：给「新建本地」快捷入口 */
-      if (e.target !== tabsEl) return;
+    tabsEl.addEventListener('contextmenu', (e) => { /* 空白区右键：新建入口 */
+      if (e.target.closest('.ht-tab')) return;
       e.preventDefault();
       openMenu(e.clientX, e.clientY, (m) => {
-        mi(m, { label: '新建本地会话', icon: '▣', onClick: () => call('newLocal') });
-        mi(m, { label: '打开主页', onClick: () => call('openHome') });
+        mi(m, { label: '新建本地会话', svg: 'terminal', key: 'Ctrl+T', onClick: () => call('newLocal') });
+        mi(m, { label: '添加机器…', svg: 'server', key: 'Ctrl+M', onClick: () => callProfiles('openManager') });
+        mi(m, { label: '打开主页', svg: 'home', onClick: () => call('openHome') });
       });
     });
 
     const actions = document.createElement('div');
     actions.className = 'ht-actions';
     const plus = document.createElement('div');
-    plus.className = 'ht-plus'; plus.textContent = '＋'; plus.title = '新建本地会话';
-    plus.addEventListener('click', () => call('newLocal'));
+    plus.className = 'ht-plus'; plus.innerHTML = svg('plus'); plus.title = '新建本地会话 (Ctrl+T)';
+    plus.addEventListener('click', (e) => { e.stopPropagation(); call('newLocal'); });
     const caret = document.createElement('div');
-    caret.className = 'ht-caret'; caret.textContent = '▾'; caret.title = '最近机器 / 添加机器';
+    caret.className = 'ht-caret'; caret.innerHTML = svg('caret'); caret.title = '最近机器 / 添加机器';
     caret.addEventListener('click', (e) => {
       e.stopPropagation();
       const r = caret.getBoundingClientRect();
-      openMenu(r.left - 120, r.bottom + 2, buildPlusMenu);
+      openMenu(Math.max(2, r.left - 150), r.bottom + 2, buildPlusMenu);
     });
     actions.append(plus, caret);
 
@@ -429,5 +447,13 @@
     render();
   }
 
-  window.TabBar = { mount, render };
+  window.TabBar = {
+    mount,
+    render,
+    closeMenu,
+    menuOpen: () => !!menuEl,
+    // 对外暴露的浮层菜单：build(m, mi, msep, mhead)，供侧栏/状态栏复用同一套样式与交互
+    openMenu: (x, y, build) => openMenu(x, y, (m) => build(m, mi, msep, mhead)),
+    renameActive: () => { const id = T.term && T.term.active; if (id) startInlineRename(id); },
+  };
 })();

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "hurricaneTerm",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "identifier": "io.github.edwardlewis35.hurricaneterm",
   "build": {
     "frontendDist": "../dist",
@@ -13,9 +13,14 @@
     "windows": [
       {
         "title": "hurricaneTerm",
-        "width": 1000,
-        "height": 640,
-        "resizable": true
+        "width": 1180,
+        "height": 740,
+        "minWidth": 720,
+        "minHeight": 440,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "backgroundColor": "#0e151d"
       }
     ],
     "security": {
@@ -38,6 +43,11 @@
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"],
         "section": "utils"
       }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "hardenedRuntime": true,
+      "signingIdentity": null
     }
   }
 }
