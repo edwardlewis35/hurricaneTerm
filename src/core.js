@@ -3,7 +3,18 @@ window.WT = (function () {
   const core = window.__TAURI__.core;
   const ev = window.__TAURI__.event;
 
+  // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
+  const VERSION = '0.7.3';
+
+  function cmpVer(a, b) {
+    const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
+    const pb = String(b).split('.').map((x) => parseInt(x, 10) || 0);
+    for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1; }
+    return 0;
+  }
+
   const WT = {
+    VERSION,
     invoke: (c, a) => core.invoke(c, a),
     listen: (e, cb) => ev.listen(e, cb),
 
@@ -24,6 +35,10 @@ window.WT = (function () {
       homeOnStart: true,
       activityDot: true,
       builtinHighlight: true,      // WindTerm 风格内置输出高亮
+      copyOnSelect: true,          // 选中自动复制
+      rightClickPaste: true,       // PuTTY 习惯：右键粘贴
+      lastUpdateCheck: 0,
+      updateInfo: null,
     },
 
     async init() {
@@ -39,7 +54,8 @@ window.WT = (function () {
 
     persistSettings() {
       const keys = ['theme', 'fontSize', 'fontFamily', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
-        'statusBar', 'tooltips', 'homeOnStart', 'activityDot', 'builtinHighlight'];
+        'statusBar', 'tooltips', 'homeOnStart', 'activityDot', 'builtinHighlight',
+        'copyOnSelect', 'rightClickPaste', 'lastUpdateCheck', 'updateInfo'];
       const o = {};
       for (const k of keys) o[k] = WT.s[k];
       WT.invoke('ui_state_save', { name: 'settings', value: JSON.stringify(o) }).catch(() => {});
@@ -49,6 +65,31 @@ window.WT = (function () {
 
     persistSessions() {
       return WT.invoke('sessions_save', { sessions: WT.s.sessions }).catch(() => {});
+    },
+
+    /* 内部更新检查：release 为草稿时公开 API 看不到附件，但 tags 是公开的，
+     * 用最新 tag 与内置 VERSION 比较；发现新版本仅提示 + 在设置页给出 tag 地址。 */
+    async checkUpdate(manual) {
+      try {
+        const r = await fetch('https://api.github.com/repos/edwardlewis35/hurricaneTerm/tags?per_page=1',
+          { headers: { Accept: 'application/vnd.github+json' } });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const list = await r.json();
+        const latest = String((list[0] && list[0].name) || '').replace(/^v/, '');
+        WT.s.updateInfo = { latest, current: WT.VERSION, checkedAt: Date.now() };
+        WT.s.lastUpdateCheck = Date.now();
+        WT.persistSettings();
+        if (latest && cmpVer(latest, WT.VERSION) > 0) {
+          WT.ui.toast('发现新版本 v' + latest + '（当前 v' + WT.VERSION + '），设置→关于可查看详情', 6000, 'ok');
+          if (window.Settings && Settings.isOpen()) Settings.render();
+          return latest;
+        }
+        if (manual) WT.ui.toast('已是最新（v' + WT.VERSION + '）', 2400, 'ok');
+        return null;
+      } catch (e) {
+        if (manual) WT.ui.toast('检查更新失败：' + (e && e.message ? e.message : e), 3200, 'err');
+        return null;
+      }
     },
   };
 
@@ -167,6 +208,9 @@ window.WT = (function () {
       WT.ui.status();
       if (window.TitleBar) TitleBar.refresh();
     });
+
+    // 每天至多一次的非阻塞更新检查
+    if (Date.now() - (WT.s.lastUpdateCheck || 0) > 86400000) WT.checkUpdate(false);
 
     WT.ui.log('hurricaneTerm 启动完成 · 模式 ' + WT.s.mode + ' · 主题 ' + WT.s.theme);
     // Tabby 语义：启动不自动开终端，无标签时展示主页

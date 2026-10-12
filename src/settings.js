@@ -103,6 +103,8 @@
         `<select data-sel="mode"><option value="Remote"${T.s.mode === 'Remote' ? ' selected' : ''}>远程模式</option>
           <option value="Local"${T.s.mode === 'Local' ? ' selected' : ''}>本地模式</option></select>`)
       + row('同步输入', '打开后键盘输入广播到所有会话（群控）', toggle('sync', !!T.s.sync))
+      + row('选中自动复制', '鼠标选中即进剪贴板（xterm 选中事件驱动）', toggle('copyOnSelect', T.s.copyOnSelect !== false))
+      + row('右键粘贴（PuTTY 习惯）', '关闭后右键恢复为浏览器/终端上下文菜单；中键始终粘贴', toggle('rightClickPaste', T.s.rightClickPaste !== false))
     );
     h += card('行为',
       row('启动时打开主页', '关闭则启动直接落到上次的终端', toggle('homeOnStart', T.s.homeOnStart !== false))
@@ -195,7 +197,15 @@
   }
 
   function renderAbout() {
-    let h = `<h2 class="st-h">关于</h2><p class="st-sub">hurricaneTerm 0.7.2</p>`;
+    const ui = T.s.updateInfo;
+    const newer = ui && ui.latest && window.WT && WT.VERSION && cmp(ui.latest, WT.VERSION) > 0;
+    let h = `<h2 class="st-h">关于</h2><p class="st-sub">hurricaneTerm ${esc(window.WT && WT.VERSION || '')}</p>`;
+    h += card('更新', `
+      <div class="st-row"><div class="st-l"><b>当前版本</b><i>v${esc(window.WT && WT.VERSION || '')}</i></div>
+        <div class="st-c"><button data-check-update>检查更新</button></div></div>
+      <div class="st-row"><div class="st-l"><b>最新_release tag</b>
+        <i>${ui && ui.latest ? 'v' + esc(ui.latest) + (newer ? ' · 有新版本' : ' · 已是最新') : '尚未检查'}</i></div>
+        <div class="st-c">${newer ? `<button class="primary" data-open-tag>打开 v${esc(ui.latest)} 标签页</button>` : ''}</div></div>`);
     h += card('', `
       <div class="st-row"><div class="st-l"><b>来历</b><i>WindTerm 2.6.0 逆向分析 → Tauri 2 洁净室重写</i></div></div>
       <div class="st-row"><div class="st-l"><b>架构</b><i>Tauri 2 + Rust（russh / portable-pty / russh-sftp）后端 + xterm.js 前端</i></div></div>
@@ -203,6 +213,13 @@
       <div class="st-row"><div class="st-l"><b>许可</b><i>原创代码 Apache-2.0，不含任何 WindTerm 专有文件或数据</i></div></div>
       <div class="st-row"><div class="st-l"><b>仓库</b><i>github.com/edwardlewis35/hurricaneTerm</i></div></div>`);
     return h;
+  }
+
+  function cmp(a, b) {
+    const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
+    const pb = String(b).split('.').map((x) => parseInt(x, 10) || 0);
+    for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1; }
+    return 0;
   }
 
   const RENDERERS = {
@@ -287,6 +304,15 @@
         toast('已删除触发器');
       };
     });
+    const cu = bodyEl.querySelector('[data-check-update]');
+    if (cu) cu.onclick = () => T.checkUpdate(true);
+    const ot = bodyEl.querySelector('[data-open-tag]');
+    if (ot) ot.onclick = () => {
+      const v = T.s.updateInfo && T.s.updateInfo.latest;
+      const url = 'https://github.com/edwardlewis35/hurricaneTerm/releases/tag/v' + v;
+      try { window.open ? window.open(url, '_blank') : null; } catch (e) {}
+      toast('已打开 ' + url);
+    };
     const addBtn = bodyEl.querySelector('[data-tradd]');
     if (addBtn) addBtn.onclick = addTrigger;
     const patIn = bodyEl.querySelector('[data-tr="pattern"]');

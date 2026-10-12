@@ -134,7 +134,16 @@ fn spawn(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cb = CommandBuilder::new(command.filter(|c| !c.is_empty()).unwrap_or_else(default_shell));
+    let shell_cmd = command.filter(|c| !c.is_empty());
+    let is_default_shell = shell_cmd.is_none();
+    let mut cb = CommandBuilder::new(shell_cmd.unwrap_or_else(default_shell));
+    // login shell：会读 /etc/zprofile、~/.zprofile（`brew shellenv` 通常写在这里）。
+    // macOS 从 Finder/Dock 启动的 GUI 进程不继承终端 PATH，而非 login shell 又跳过 zprofile，
+    // 两者叠加即 `zsh: command not found: brew`（0.7.x 实机反馈根因）。
+    #[cfg(unix)]
+    if is_default_shell {
+        cb.arg("-l");
+    }
     for a in args.unwrap_or_default() {
         cb.arg(a);
     }

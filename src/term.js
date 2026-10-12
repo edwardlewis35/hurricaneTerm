@@ -13,7 +13,7 @@
     const v = {
       '--bg': c.bg, '--bg2': c.bg2, '--bg3': c.bg3, '--bg4': c.bg4,
       '--fg': c.fg, '--fg2': c.fg2, '--fg3': c.fg3,
-      '--accent': c.accent, '--accent-bg': c.accentBg,
+      '--accent': c.accent, '--accent-bg': c.accentBg, '--accent-soft': c.accentSoft,
       '--border': c.border, '--border-solid': c.borderSolid,
       '--input-bg': c.inputBg, '--surface': c.surface, '--surface-hover': c.surfaceHover,
       '--danger': c.danger, '--warn': c.warn, '--ok': c.ok,
@@ -26,7 +26,7 @@
   const CHROME_DARK = {
     bg: '#131d27', bg2: '#1d272d', bg3: '#0e151d', bg4: '#20333e',
     fg: '#cccccc', fg2: 'rgba(255,255,255,.5)', fg3: '#ced9e2',
-    accent: '#4fadff', accentBg: 'rgba(0,89,165,.35)',
+    accent: '#3ecf8e', accentBg: 'rgba(62,207,142,.16)', accentSoft: 'rgba(62,207,142,.32)',
     border: 'rgba(255,255,255,.1)', borderSolid: '#24313c',
     inputBg: '#181e23', surface: 'rgba(255,255,255,.025)', surfaceHover: 'rgba(255,255,255,.05)',
     danger: '#d9534f', warn: '#f0ad4e', ok: '#5cb85c',
@@ -35,7 +35,7 @@
     scheme: 'light',
     bg: '#f2f3f5', bg2: '#ffffff', bg3: '#e6e8eb', bg4: '#dfe2e6',
     fg: '#2b2b2b', fg2: 'rgba(0,0,0,.5)', fg3: '#1f2328',
-    accent: '#0275d8', accentBg: 'rgba(2,117,216,.14)',
+    accent: '#0e9f6e', accentBg: 'rgba(14,159,110,.14)', accentSoft: 'rgba(14,159,110,.3)',
     border: 'rgba(0,0,0,.1)', borderSolid: '#d6d9dd',
     inputBg: '#ffffff', surface: 'rgba(0,0,0,.03)', surfaceHover: 'rgba(0,0,0,.06)',
     danger: '#c82829', warn: '#b58900', ok: '#718c00',
@@ -44,7 +44,7 @@
   // Tabby Default（终端）
   const TABBY_DARK_TERM = {
     background: '#171717', foreground: '#cacaca', cursor: '#bbbbbb', cursorAccent: '#171717',
-    selectionBackground: 'rgba(79,173,255,.28)',
+    selectionBackground: 'rgba(62,207,142,.26)',
     black: '#000000', red: '#ff615a', green: '#b1e969', yellow: '#ebd99c', blue: '#5da9f6',
     magenta: '#e86aff', cyan: '#82fff7', white: '#dedacf',
     brightBlack: '#313131', brightRed: '#f58c80', brightGreen: '#ddf88f', brightYellow: '#eee5b2',
@@ -53,7 +53,7 @@
   // Tabby Default Light（终端）
   const TABBY_LIGHT_TERM = {
     background: '#ffffff', foreground: '#4d4d4c', cursor: '#4d4d4c', cursorAccent: '#ffffff',
-    selectionBackground: 'rgba(2,117,216,.18)',
+    selectionBackground: 'rgba(14,159,110,.18)',
     black: '#000000', red: '#c82829', green: '#718c00', yellow: '#eab700', blue: '#4271ae',
     magenta: '#8959a8', cyan: '#3e999f', white: '#ffffff',
     brightBlack: '#000000', brightRed: '#c82829', brightGreen: '#718c00', brightYellow: '#eab700',
@@ -247,6 +247,29 @@
       });
       wrap.addEventListener('mousedown', () => this.activate(id));
 
+      // 选中自动复制（设置页可关）
+      term.onSelectionChange(() => {
+        if (T.s.copyOnSelect === false) return;
+        const sel = term.getSelection();
+        if (!sel) return;
+        try { navigator.clipboard && navigator.clipboard.writeText(sel).catch(() => {}); } catch (e) {}
+      });
+
+      // PuTTY 习惯：中键粘贴；右键粘贴（可关，关闭时右键留给上下文菜单）
+      const pasteHere = async () => {
+        try {
+          const txt = await navigator.clipboard.readText();
+          if (txt) T.invoke('write', { id, data: txt }).catch(() => {});
+        } catch (e) {}
+      };
+      wrap.addEventListener('mousedown', (e) => {
+        if (e.button === 1) { e.preventDefault(); pasteHere(); }
+      });
+      wrap.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+      wrap.addEventListener('contextmenu', (e) => {
+        if (T.s.rightClickPaste !== false) { e.preventDefault(); pasteHere(); }
+      });
+
       // —— P2 Tab 补全 ——
       let pop = null;
       const popEl = document.createElement('div');
@@ -285,11 +308,12 @@
         if (ev.key === 'Tab' && !ev.shiftKey && !ev.ctrlKey) {
           ev.preventDefault();
           T.invoke('complete_input', { line: inputLine, caret: inputLine.length }).then((res) => {
-            if (!res.items.length) return;
+            // 无候选时把 Tab 交还给 shell（PuTTY/普通终端习惯：shell 自身补全），不能吞键
+            if (!res.items.length) { T.invoke('write', { id, data: '\t' }).catch(() => {}); return; }
             if (res.items.length === 1) { applyDiff(res, res.items[0]); return; }
             pop = { items: res.items.slice(0, 12), start: res.start, sel: 0 };
             renderPop();
-          }).catch(() => {});
+          }).catch(() => { T.invoke('write', { id, data: '\t' }).catch(() => {}); });
           return false;
         }
         return true;
@@ -297,6 +321,8 @@
 
       this.orderWrites(id);
       this.activate(id);
+      // MobaXterm 习惯：SSH 一连上就把文件窗格切到双栏并列出远端家目录（须在 activate 之后）
+      if (proto === 'ssh' && window.UI && typeof UI.onSshConnected === 'function') UI.onSshConnected(tab);
       this.renderTabbar();
       UI.log(`会话已创建 ${id.slice(0, 8)} ${session && session.name ? '· ' + session.name : ''}`);
       return tab;

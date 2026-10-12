@@ -429,7 +429,7 @@
     });
 
     const actions = document.createElement('div');
-    actions.className = 'ht-actions';
+    actions.className = 'ht-actions ht-actions-l';   // 0.7.3：新建/最近机器移到标签条左侧
     const plus = document.createElement('div');
     plus.className = 'ht-plus'; plus.innerHTML = svg('plus'); plus.title = '新建本地会话 (Ctrl+T)';
     plus.addEventListener('click', (e) => { e.stopPropagation(); call('newLocal'); });
@@ -438,11 +438,11 @@
     caret.addEventListener('click', (e) => {
       e.stopPropagation();
       const r = caret.getBoundingClientRect();
-      openMenu(Math.max(2, r.left - 150), r.bottom + 2, buildPlusMenu);
+      openMenu(r.left, r.bottom + 2, buildPlusMenu);
     });
     actions.append(plus, caret);
 
-    root.append(tabsEl, actions);
+    root.append(actions, tabsEl);
     el.appendChild(root);
     render();
   }

@@ -14,7 +14,7 @@
   --fg2: rgba(255, 255, 255, .5);   /* $text-muted */
   --fg3: #ced9e2;             /* $headings-color */
   --accent: #4fadff;          /* $component-active-color */
-  --accent-bg: rgba(0, 89, 165, .35); /* $component-active-bg */
+  --accent-bg: rgba(62, 207, 142, .16);
   --border: rgba(255, 255, 255, .1);  /* $table-border-color：Tabby 用半透明白而非实色 */
   --border-solid: #24313c;
   --surface: rgba(255, 255, 255, .025);       /* $table-bg */
@@ -54,7 +54,7 @@ body { display: grid; grid-template-rows: var(--titlebar-h) 1fr auto; height: 10
 /* 作者样式里的 display 会覆盖 [hidden] 的 UA 规则，必须显式压死 */
 [hidden] { display: none !important; }
 
-::selection { background: rgba(79, 173, 255, .3); }
+::selection { background: var(--accent-soft, rgba(62,207,142,.32)); }
 
 /* 细滚动条（Tabby 观感） */
 *::-webkit-scrollbar { width: 9px; height: 9px; }
@@ -72,8 +72,8 @@ button {
 button:hover { background: var(--surface-hover); color: #fff; }
 button:active { background: rgba(255, 255, 255, .08); }
 button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-bg); }
-button.primary { background: var(--accent-bg); color: var(--accent); border-color: rgba(79, 173, 255, .35); font-weight: 600; }
-button.primary:hover { background: rgba(0, 89, 165, .55); color: #fff; }
+button.primary { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-soft, transparent); font-weight: 600; }
+button.primary:hover { background: var(--accent-soft, var(--accent-bg)); color: #06121f; }
 button.danger:hover { background: rgba(217, 83, 79, .25); color: #ff8f8a; }
 button.icon { padding: 0; background: transparent; display: inline-flex; align-items: center; justify-content: center; }
 
@@ -102,7 +102,6 @@ svg.ico { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColo
 }
 #titlebar > *:not(.tb-drag) { -webkit-app-region: no-drag; app-region: no-drag; }
 .tb-drag { flex: 0 0 8px; }
-body.is-mac .tb-drag.tb-drag-l { flex-basis: 74px; }   /* 让开原生红绿灯 */
 
 #tabbar { flex: 1 1 auto; min-width: 0; display: flex; }
 
@@ -116,6 +115,7 @@ body.is-mac .tb-drag.tb-drag-l { flex-basis: 74px; }   /* 让开原生红绿灯 
 .tb-btn.on { color: var(--accent); background: var(--accent-bg); }
 
 #tb-winctl { border-left: 1px solid var(--border); }
+.ht-actions-l { border-right: 1px solid var(--border); border-left: 0; padding: 0 4px 0 6px; }
 .wc { width: 44px; height: var(--titlebar-h); display: flex; align-items: center; justify-content: center; color: var(--fg2); cursor: default; transition: background .12s; }
 .wc:hover { background: var(--surface-hover); color: #fff; }
 .wc.wc-close:hover { background: #e81123; color: #fff; }
@@ -132,7 +132,7 @@ body.is-mac.no-native-lights #mac-lights { display: flex; }
 #workspace { display: flex; min-height: 0; border-left: 2px solid transparent; }
 /* WindTerm 借鉴：Local/Remote 模式用窗口左缘色带表示（蓝=远程，绿=本地） */
 body.mode-remote #workspace { border-left-color: var(--accent); }
-body.mode-local #workspace { border-left-color: var(--ok); }
+body.mode-local #workspace { border-left-color: var(--warn); }
 /* 同步输入开启时所有窗格加描边，提示键盘会广播 */
 body.sync-on #groups .group { outline: 1px solid rgba(240, 173, 78, .45); outline-offset: -1px; }
 
@@ -217,7 +217,7 @@ body.dragging { cursor: col-resize; user-select: none; }
 #groups .group { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 /* 聚焦窗格描边（Tabby 的 focused pane 提示）：仅分屏时显示，单窗格保持干净 */
 #groups[data-dir="h"] .group.focused,
-#groups[data-dir="v"] .group.focused { box-shadow: inset 0 0 0 1px rgba(79, 173, 255, .3); }
+#groups[data-dir="v"] .group.focused { box-shadow: inset 0 0 0 1px var(--accent-soft, rgba(62,207,142,.32)); }
 /* 分屏分隔条：静态 1px 线，拖拽/悬停加粗成强调色 */
 #gutter { flex: 0 0 5px; position: relative; cursor: col-resize; z-index: 4; background: transparent; }
 #gutter::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 1px; background: var(--border); }
@@ -278,7 +278,7 @@ body.dragging { cursor: col-resize; user-select: none; }
 .sw-toggle.on { background: var(--accent-bg); }
 .sw-toggle.on::after { left: 20px; background: var(--accent); }
 .sw-toggle:hover { background: var(--bg4); }
-.sw-toggle.on:hover { background: rgba(0, 89, 165, .55); }
+.sw-toggle.on:hover { background: var(--accent-soft, var(--accent-bg)); }
 
 /* 色板 / 主题卡 */
 .st-swatches { display: flex; gap: 8px; flex-wrap: wrap; }

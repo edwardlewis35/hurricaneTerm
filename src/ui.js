@@ -248,6 +248,15 @@
       else this.toast('机器管理模块未加载');
     },
 
+    /* MobaXterm 习惯：SSH 连上后自动把文件窗格切到双栏并列出远端家目录（'.' = SFTP 家目录） */
+    onSshConnected(tab) {
+      if (!tab || !tab.session || tab.session.protocol !== 'ssh') return;
+      T.s.remotePath = '.';
+      T.s.filerMode = 'both';
+      this.setDockPane('filer');
+      this.toast('已连接 ' + (tab.session.host || '') + '，文件窗格显示远端目录');
+    },
+
     /* ---------- 窗格：文件浏览器（SFTP 双栏） ---------- */
     async renderFiler() {
       const body = $('#dock-body');
@@ -256,7 +265,7 @@
       const isSsh = tab && tab.session && tab.session.protocol === 'ssh' && !tab.exited;
       const mode = T.s.filerMode || (isSsh ? 'both' : 'local');
       const lpath = T.s.filerPath || null;
-      const rpath = T.s.remotePath || '/';
+      const rpath = T.s.remotePath || '.';   // '.' = SFTP 家目录（服务端 cwd）
       body.innerHTML = `<div class="pane-head"><span>文件浏览器</span><span>
         ${isSsh ? `<button data-m="local" class="${mode === 'local' ? 'on' : ''}">本地</button>
         <button data-m="remote" class="${mode === 'remote' ? 'on' : ''}">远端</button>
@@ -266,7 +275,7 @@
         ${mode !== 'remote' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(lpath || '~')}</span>
           <span><button id="f-up" title="上级目录">↑</button><button id="f-home" title="主目录">⌂</button><button id="f-upl" title="上传选中项">上传 →</button></span></div>
           <div id="f-list" class="list"></div></div>` : ''}
-        ${isSsh && mode !== 'local' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(rpath)}</span>
+        ${isSsh && mode !== 'local' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(rpath === '.' ? '~' : rpath)}</span>
           <span><button id="r-up" title="上级目录">↑</button><button id="r-dwl" title="下载选中项">← 下载</button></span></div>
           <div id="r-list" class="list"><div class="empty">加载中…</div></div></div>` : ''}
       </div>`;
@@ -284,7 +293,7 @@
       const flist = body.querySelector('#f-list');
       if (flist) {
         let entries = [];
-        try { entries = await T.invoke('fs_list', { path: lpath }); }
+        try { entries = await T.invoke('fs_list', { path: lpath }).then((v) => (Array.isArray(v) ? v : [])); }
         catch (e) { flist.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`; }
         for (const e of entries) {
           const row = rowOf(e);
@@ -312,7 +321,7 @@
       const rlist = body.querySelector('#r-list');
       if (rlist && isSsh) {
         try {
-          const ents = await T.invoke('sftp_list', { id: tab.id, path: rpath });
+          const ents = await T.invoke('sftp_list', { id: tab.id, path: rpath }).then((v) => (Array.isArray(v) ? v : []));
           rlist.innerHTML = '';
           for (const e of ents) {
             const row = rowOf(e);
@@ -334,7 +343,11 @@
           }
           if (!ents.length) rlist.innerHTML = '<div class="empty">空目录</div>';
         } catch (err) { rlist.innerHTML = `<div class="empty">SFTP 失败：${escapeHtml(String(err))}</div>`; }
-        body.querySelector('#r-up').onclick = () => { T.s.remotePath = rpath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); };
+        body.querySelector('#r-up').onclick = () => {
+          if (rpath === '.') { this.toast('已在家目录'); return; }
+          T.s.remotePath = rpath.replace(/\/+[^/]+\/?$/, '') || '.';
+          this.renderFiler();
+        };
         body.querySelector('#r-dwl').onclick = () => {
           if (!this._remoteSel) { this.toast('先选中远端文件', 2400, 'err'); return; }
           const local = (T.s.filerPath || '') + '/' + this._remoteSel.name;

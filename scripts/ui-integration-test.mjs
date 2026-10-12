@@ -16,15 +16,24 @@ const { document } = window;
 
 // ---- 环境 stub ----
 let ptyN = 0;
+window.__invokes = [];
 window.__TAURI__ = {
-  core: { invoke: (c, a) => Promise.resolve(
+  core: { invoke: (c, a) => { window.__invokes.push([c, a]); return Promise.resolve(
     c === 'ui_state_load' ? null :
     c === 'sessions_load' ? [
       { name: 'lab-server', protocol: 'ssh', host: '10.0.0.5', port: 22, user: 'root', folder: 'lab' },
       { name: '串口控制台', protocol: 'serial', target: '/dev/ttyUSB0', baudRate: 115200 },
     ] :
     (c === 'spawn' || c.startsWith('connect_')) ? 'pty-' + (++ptyN) :
-    c === 'complete_input' ? { items: [], start: 0 } : null) },
+    c === 'complete_input' ? { items: [], start: 0 } :
+    c === 'fs_list' ? [
+      { name: 'src', is_dir: true, path: './src', size: 0 },
+      { name: 'README.md', is_dir: false, path: './README.md', size: 4213 },
+    ] :
+    c === 'sftp_list' ? [
+      { name: 'etc', is_dir: true, path: './etc', size: 0 },
+      { name: 'app.log', is_dir: false, path: './app.log', size: 90210 },
+    ] : null); } },
   event: { listen: () => Promise.resolve(() => {}) },
 };
 class FakeTerm {
@@ -32,8 +41,9 @@ class FakeTerm {
   open() {} loadAddon() {} write() {} focus() {} dispose() {} resize() {} selectAll() {} scrollToTop() {} scrollToBottom() {}
   getSelection() { return ''; } clearSelection() {} scrollToLine() {}
   onData(cb) { this._onData = cb; } onResize() {} onTitleChange() {}
+  onSelectionChange(cb) { this._onSel = cb; } input(d) { this._onData && this._onData(d); }
   registerMarker() { return {}; } registerDecoration() { return { onRender() {}, dispose() {} }; }
-  attachCustomKeyEventHandler() {}
+  attachCustomKeyEventHandler(cb) { this._ckeh = cb; }
 }
 window.Terminal = FakeTerm;
 window.FitAddon = { FitAddon: class { fit() {} } };
@@ -220,7 +230,7 @@ const before = T.s.theme;
 TM.applyTheme('tabby-light');
 await flush();
 ok('J5 可切到 Tabby 浅色主题', T.s.theme === 'tabby-light' && before === 'tabby-dark');
-ok('J6 主题写入 CSS 变量', document.documentElement.style.getPropertyValue('--accent') === '#0275d8');
+ok('J6 主题写入 CSS 变量', document.documentElement.style.getPropertyValue('--accent') === '#0e9f6e');
 ok('J7 --term-bg 驱动标签/主区连体', document.documentElement.style.getPropertyValue('--term-bg') === '#ffffff');
 TM.applyTheme('tabby-dark');
 await flush();
@@ -255,6 +265,30 @@ const before9 = (tabH._hls || []).length;
 TM.runHighlights(tabH, 'E'.repeat(200) + ' Error ' + 'x'.repeat(200));
 ok('L9 超宽换行行盖满全部视觉行（cols=80 → 6 行）', (tabH._hls || []).length - before9 === 6);
 await TM.close(tabH.id);
+await flush();
+
+/* ============ M. 0.7.3 批次：图标/布局/配色/PuTTY 习惯/更新检查 ============ */
+const exIco = $('#actbar .ab-btn[data-pane="explorer"]').innerHTML;
+const pfIco = $('#actbar .ab-btn.ab-profiles').innerHTML;
+ok('M1 会话与机器管理图标不再重复', exIco !== pfIco && exIco.includes('svg') && pfIco.includes('svg'));
+ok('M2 新建/最近机器按钮在标签条左侧', !!$('.ht-tabbar .ht-actions-l') && $('.ht-tabbar').firstElementChild.classList.contains('ht-actions-l'));
+ok('M3 强调色为玉绿（非蓝）', document.documentElement.style.getPropertyValue('--accent') === '#3ecf8e');
+ok('M4 PuTTY 习惯默认开：选中复制 + 右键粘贴', T.s.copyOnSelect !== false && T.s.rightClickPaste !== false);
+const tabM = await TM.create(sess);
+await flush();
+ok('M5 SSH 连接后文件窗格自动双栏+远端家目录', T.s.dockPane === 'filer' && T.s.remotePath === '.' && !$('#dock').hidden);
+ok('M6 远端列以 ~ 表示家目录且列出远端条目', $('#dock-body').textContent.includes('~') && $('#dock-body').textContent.includes('app.log'));
+// Tab 无候选时交还 shell
+window.__invokes.length = 0;
+const ckeh = tabM.term._ckeh;
+ok('M7 xterm 自定义键处理已挂载', typeof ckeh === 'function');
+if (ckeh) { ckeh({ type: 'keydown', key: 'Tab', shiftKey: false, ctrlKey: false, preventDefault() {} }); }
+await flush();
+ok('M8 Tab 无候选时把 \t 写回 pty（shell 补全不被吞）', window.__invokes.some(([c, a]) => c === 'write' && a && a.data === '\t'));
+// 更新检查：无网络环境应静默失败不抛错
+const up = await T.checkUpdate(false);
+ok('M9 更新检查离线静默失败', up === null && !!T.s.updateInfo === false || up === null);
+await TM.close(tabM.id);
 await flush();
 
 // 报告

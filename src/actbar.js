@@ -9,9 +9,9 @@
 
   const T = window.WT;
 
-  // 侧栏窗格（顺序即活动栏顺序）
+  // 侧栏窗格（顺序即活动栏顺序）；图标互不重复（0.7.3：会话≠机器管理）
   const PANES = [
-    { id: 'explorer', icon: 'server', label: '会话', key: 'Ctrl+1' },
+    { id: 'explorer', icon: 'plug', label: '会话', key: 'Ctrl+1' },
     { id: 'filer', icon: 'folder', label: '文件浏览器 (SFTP)', key: 'Ctrl+2' },
     { id: 'sender', icon: 'send', label: '发送文本', key: 'Ctrl+3' },
     { id: 'transfer', icon: 'transfer', label: '传输', key: 'Ctrl+4' },
