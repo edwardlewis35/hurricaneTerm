@@ -108,7 +108,14 @@
       this.tabs[id] = tab;
       this.order.push(id);
 
+      let inputLine = '';   // 输入镜像（Tab 补全上下文；方向键编辑不追踪，v1 够用）
       term.onData((data) => {
+        for (const ch of data) {
+          if (ch === '\r') inputLine = '';
+          else if (ch === '\x7f') inputLine = inputLine.slice(0, -1);
+          else if (ch === '\x03') inputLine = '';
+          else if (ch >= ' ') inputLine += ch;
+        }
         if (T.s.sync && T.s.mode === 'Remote') {
           for (const t of Object.values(this.tabs)) T.invoke('write', { id: t.id, data }).catch(() => {});
         } else {
@@ -127,6 +134,54 @@
         if (t && t.trim()) { tab.title = t.trim().slice(0, 28); this.renderTabbar(); }
       });
       wrap.addEventListener('mousedown', () => this.activate(id));
+
+      // —— P2 Tab 补全 ——
+      let pop = null;
+      const popEl = document.createElement('div');
+      popEl.className = 'complete-pop';
+      popEl.style.display = 'none';
+      wrap.appendChild(popEl);
+      const closePop = () => { pop = null; popEl.style.display = 'none'; };
+      const applyDiff = (res, it) => {
+        const del = Math.max(0, inputLine.length - res.start);
+        const text = '\x7f'.repeat(del) + it.value;
+        T.invoke('write', { id, data: text });
+        inputLine = inputLine.slice(0, res.start) + it.value;
+      };
+      const renderPop = () => {
+        popEl.innerHTML = '';
+        pop.items.forEach((it, i) => {
+          const d = document.createElement('div');
+          d.className = 'ci' + (i === pop.sel ? ' sel' : '');
+          const b = document.createElement('b'); b.textContent = it.value;
+          const em = document.createElement('i'); em.textContent = it.info;
+          d.append(b, em);
+          d.onmousedown = (e) => { e.preventDefault(); applyDiff(pop, it); closePop(); };
+          popEl.appendChild(d);
+        });
+        popEl.style.display = 'block';
+      };
+      term.attachCustomKeyEventHandler((ev) => {
+        if (ev.type !== 'keydown') return pop === null;
+        if (pop) {
+          if (ev.key === 'Escape') { closePop(); return false; }
+          if (ev.key === 'ArrowDown') { pop.sel = (pop.sel + 1) % pop.items.length; renderPop(); return false; }
+          if (ev.key === 'ArrowUp') { pop.sel = (pop.sel + pop.items.length - 1) % pop.items.length; renderPop(); return false; }
+          if (ev.key === 'Tab' || ev.key === 'Enter') { applyDiff(pop, pop.items[pop.sel]); closePop(); return ev.key !== 'Tab'; }
+          return true;
+        }
+        if (ev.key === 'Tab' && !ev.shiftKey && !ev.ctrlKey) {
+          ev.preventDefault();
+          T.invoke('complete_input', { line: inputLine, caret: inputLine.length }).then((res) => {
+            if (!res.items.length) return;
+            if (res.items.length === 1) { applyDiff(res, res.items[0]); return; }
+            pop = { items: res.items.slice(0, 12), start: res.start, sel: 0 };
+            renderPop();
+          }).catch(() => {});
+          return false;
+        }
+        return true;
+      });
 
       this.orderWrites(id);
       this.activate(id);

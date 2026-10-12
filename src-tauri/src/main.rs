@@ -13,7 +13,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -529,6 +529,125 @@ async fn sftp_upload(
     remote: String,
 ) -> Result<(), String> {
     sftp_call(&state, id, |reply| ssh_live::SftpReq::Upload { local, remote, reply }).await
+}
+
+// ================= P2 命令补全 =================
+
+#[derive(Clone, serde::Serialize)]
+pub struct Completion { pub value: String, pub info: String }
+#[derive(Clone, serde::Serialize)]
+pub struct CompleteResult { pub start: usize, pub items: Vec<Completion> }
+
+fn path_bins() -> &'static Vec<String> {
+    static BINS: OnceLock<Vec<String>> = OnceLock::new();
+    BINS.get_or_init(|| {
+        let mut set: std::collections::BTreeSet<String> = Default::default();
+        for dir in std::env::var("PATH").unwrap_or_default().split(':') {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    if e.path().is_file() {
+                        if let Some(n) = e.file_name().to_str() { set.insert(n.to_string()); }
+                    }
+                }
+            }
+        }
+        for b in ["cd","echo","export","alias","source","history","pwd","set","unset"] {
+            set.insert(b.to_string());
+        }
+        set.into_iter().collect()
+    })
+}
+
+fn option_table() -> &'static std::collections::HashMap<&'static str, Vec<(&'static str, &'static str)>> {
+    static T: OnceLock<std::collections::HashMap<&'static str, Vec<(&'static str, &'static str)>>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut m: std::collections::HashMap<&'static str, Vec<(&'static str, &'static str)>> = Default::default();
+        let mut add = |k: &'static str, v: Vec<(&'static str, &'static str)>| { m.insert(k, v); };
+        add("git commit", vec![("-m","message"),("-a","all"),("--amend","amend"),("--no-edit","no-edit"),("-v","verbose"),("-F","file"),("--allow-empty",  "")]);
+        add("git push", vec![("-u","set-upstream"),("--force-with-lease","safe-force"),("--tags","tags"),("--dry-run","dry-run")]);
+        add("git log", vec![("--oneline","one-line"),("-p","patch"),("--graph","graph"),("-n","count"),("--author","author"),("--since","since")]);
+        add("git checkout", vec![("-b","new-branch"),("--","--"),("-t","track")]);
+        add("docker run", vec![("-d","detach"),("--rm","auto-remove"),("-it","interactive-tty"),("-p","publish"),("-v","volume"),("--name","name"),("-e","env"),("--network","network")]);
+        add("docker compose", vec![("-f","file"),("up","up"),("down","down"),("logs","logs"),("ps","ps"),("exec","exec"),("build","build")]);
+        add("ssh", vec![("-p","port"),("-i","identity"),("-L","local-fwd"),("-R","remote-fwd"),("-J","jump"),("-N","no-cmd"),("-v","verbose"),("-o","option")]);
+        add("curl", vec![("-o","output"),("-O","remote-name"),("-X","method"),("-s","silent"),("-I","head"),("-L","location"),("-H","header"),("--data","body"),("--fail-with-body","fail")]);
+        add("tar", vec![("-x","extract"),("-c","create"),("-z","gzip"),("-j","bzip2"),("-f","file"),("-v","verbose"),("-C","chdir"),("--exclude","exclude")]);
+        add("grep", vec![("-r","recursive"),("-i","ignore-case"),("-n","line-number"),("-E","extended"),("-C","context"),("-v","invert"),("-w","word"),("--include","include")]);
+        add("find", vec![("-name","name"),("-type","type"),("-exec","exec"),("-mtime","mtime"),("-size","size"),("-delete","delete"),("-maxdepth","depth")]);
+        add("systemctl", vec![("--now","now"),("--user","user"),("--no-pager","no-pager"),("--force","force")]);
+        add("kubectl get", vec![("-n","namespace"),("-o","output"),("-w","watch"),("-A","all-namespaces")]);
+        add("apt", vec![("-y","assume-yes"),("--no-install-recommends","lean")]);
+        add("ls", vec![("-l","long"),("-a","all"),("-h","human"),("-t","time-sort"),("-S","size-sort"),("-r","reverse"),("-1","one"),("--color","color")]);
+        add("cargo", vec![("--release","release"),("-p","package"),("--features","features")]);
+        add("scp", vec![("-P","port"),("-r","recursive"),("-i","identity"),("-C","compress")]);
+        add("rsync", vec![("-a","archive"),("-z","compress"),("-v","verbose"),("--progress","progress"),("-e","rsh"),("--delete","delete")]);
+        m
+    })
+}
+
+/// 补全入口：基于 re/scheme 的分词上下文。返回替换起点 + 候选。
+#[tauri::command]
+fn complete_input(line: String, caret: usize) -> CompleteResult {
+    use re::scheme::{completion_context, subcommand_tools, CompletionCtx};
+    let caret = caret.min(line.len());
+    let mut items: Vec<Completion> = Vec::new();
+    let mut start = caret;
+    match completion_context(&line, caret) {
+        CompletionCtx::Command { prompt } => {
+            start = prompt;
+            let prefix = &line[prompt..caret];
+            for b in path_bins() {
+                if b.starts_with(prefix) {
+                    items.push(Completion { value: b.clone(), info: "command".into() });
+                    if items.len() >= 40 { break; }
+                }
+            }
+        }
+        CompletionCtx::SubCommand { tool, sub_prefix } => {
+            if let Some(subs) = subcommand_tools().get(tool.as_str()) {
+                start = caret.saturating_sub(sub_prefix.len());
+                for sc in subs {
+                    if sc.starts_with(&sub_prefix) {
+                        items.push(Completion { value: sc.to_string(), info: format!("{tool} subcommand") });
+                    }
+                }
+            }
+        }
+        CompletionCtx::Option { tool, sub, word_start } => {
+            start = word_start;
+            let key = match &sub { Some(s) => format!("{tool} {s}"), None => tool.clone() };
+            let prefix = line[word_start.min(line.len())..caret].to_string();
+            if let Some(opts) = option_table().get(key.as_str()) {
+                for (v, i) in opts {
+                    if v.starts_with(&prefix) {
+                        items.push(Completion { value: v.to_string(), info: i.to_string() });
+                    }
+                }
+            }
+        }
+        CompletionCtx::Word { word, word_start } => {
+            // 文件/目录补全
+            start = word_start;
+            let (dir, prefix) = match word.rfind('/') {
+                Some(k) => (word[..=k].to_string(), word[k + 1..].to_string()),
+                None => (String::new(), word.clone()),
+            };
+            let base = if dir.is_empty() { ".".to_string() } else { dir.clone() };
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                let mut entries: Vec<_> = rd.flatten().collect();
+                entries.sort_by_key(|e| e.file_name());
+                for e in entries {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if !name.starts_with(&prefix) { continue; }
+                    let is_dir = e.path().is_dir();
+                    let value = format!("{dir}{name}{}", if is_dir { "/" } else { "" });
+                    items.push(Completion { value, info: if is_dir { "dir".into() } else { "file".into() } });
+                    if items.len() >= 60 { break; }
+                }
+            }
+        }
+    }
+    CompleteResult { start, items }
 }
 
 #[tauri::command]
