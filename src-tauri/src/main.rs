@@ -367,10 +367,12 @@ fn connect_serial(
 ) -> Result<String, String> {
     #[cfg(not(unix))]
     {
-        let _ = (path, settings);
+        let _ = (&target, &baud_rate, &data_bits, &parity, &stop_bits, &flow_control, &app, &state);
         return Err("串口会话当前仅支持 Unix 平台（termios 实现）".to_string());
     }
     #[cfg(unix)]
+    {
+
         let mut opts: BTreeMap<String, re::serial::OptVal> = BTreeMap::new();
     if let Some(v) = baud_rate.filter(|v| *v > 0) {
         opts.insert("serial.baudRate".into(), re::serial::OptVal::Int(v as i64));
@@ -406,7 +408,9 @@ fn connect_serial(
         },
     );
     Ok(id)
+    }
 }
+
 
 /// 裸 TCP 会话：实连层；代理分流/选项映射走 re::tcp 语义路径（Socks5/Http CONNECT/ProxyCommand/直连哨兵）
 #[tauri::command]
