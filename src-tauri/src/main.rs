@@ -3,6 +3,8 @@
 // (dock panes / menu / statusbar / triggers), code is our own.
 #![allow(unused)]
 
+mod re;
+
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -18,7 +20,8 @@ type BoxedChild = Box<dyn Child + Send + Sync>;
 struct Entry {
     writer: BoxedWriter,
     resize: BoxedResize,
-    child: Arc<Mutex<BoxedChild>>,
+    child: Option<Arc<Mutex<BoxedChild>>>,
+    closer: Option<Box<dyn Fn() + Send>>,
 }
 
 #[derive(Default)]
@@ -147,7 +150,88 @@ fn spawn(
         .0
         .lock()
         .unwrap()
-        .insert(id.clone(), Entry { writer, resize, child });
+        .insert(
+            id.clone(),
+            Entry {
+                writer: Box::new(writer),
+                resize,
+                child: Some(child),
+                closer: None,
+            },
+        );
+    Ok(id)
+}
+
+/// Telnet 会话：协商引擎语义重写自 WindTerm TelnetCommander（见 re/telnet.rs 证据注释）
+#[tauri::command]
+fn connect_telnet(
+    app: AppHandle,
+    state: State<PtyState>,
+    host: String,
+    port: u16,
+) -> Result<String, String> {
+    use std::io::Write as _;
+    use std::net::TcpStream;
+    let stream = TcpStream::connect((host.as_str(), port))
+        .map_err(|e| format!("连接失败 {host}:{port}: {e}"))?;
+    let mut reader = stream.try_clone().map_err(|e| e.to_string())?;
+    let mut resp_writer = stream.try_clone().map_err(|e| e.to_string())?;
+    let killer = stream.try_clone().map_err(|e| e.to_string())?;
+    let writer = stream;
+
+    let id = Uuid::new_v4().to_string();
+    let mut nego = re::telnet::Negotiator::client_default();
+
+    // initOptions 等价：对带 0x10 标志的选项发 WILL/DO
+    let init = nego.initial_requests();
+    let _ = resp_writer.write_all(&init);
+
+    {
+        let id2 = id.clone();
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
+                        break;
+                    }
+                    Ok(n) => {
+                        let o = nego.on_data(&buf[..n]);
+                        if !o.responses.is_empty() && resp_writer.write_all(&o.responses).is_err() {
+                            break;
+                        }
+                        for l in &o.log {
+                            let _ = app2.emit(
+                                "re-log",
+                                OutPayload { id: id2.clone(), data: l.clone() },
+                            );
+                        }
+                        if !o.data.is_empty() {
+                            let data = String::from_utf8_lossy(&o.data).to_string();
+                            let _ = app2.emit(
+                                "pty-output",
+                                OutPayload { id: id2.clone(), data },
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    state.0.lock().unwrap().insert(
+        id.clone(),
+        Entry {
+            writer: Box::new(writer),
+            resize: Box::new(|_r, _c| Ok(())),
+            child: None,
+            closer: Some(Box::new(move || {
+                let _ = killer.shutdown(std::net::Shutdown::Both);
+            })),
+        },
+    );
     Ok(id)
 }
 
@@ -158,7 +242,6 @@ fn write(state: State<PtyState>, id: String, data: String) -> Result<(), String>
     e.writer.write_all(data.as_bytes()).map_err(|x| x.to_string())?;
     e.writer.flush().map_err(|x| x.to_string())
 }
-
 #[tauri::command]
 fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<(), String> {
     let map = state.0.lock().map_err(|e| e.to_string())?;
@@ -170,7 +253,12 @@ fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<()
 fn kill(state: State<PtyState>, id: String) -> Result<(), String> {
     let mut map = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(e) = map.remove(&id) {
-        let _ = e.child.lock().unwrap().kill();
+        if let Some(c) = &e.child {
+            let _ = c.lock().unwrap().kill();
+        }
+        if let Some(cl) = &e.closer {
+            cl();
+        }
     }
     Ok(())
 }
@@ -266,6 +354,7 @@ pub fn run() {
             write,
             resize,
             kill,
+            connect_telnet,
             sessions_load,
             sessions_save,
             ui_state_save,

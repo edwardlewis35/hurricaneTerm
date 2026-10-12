@@ -65,7 +65,7 @@
       });
 
       const tab = {
-        id, title: (session && session.name) || `shell ${this.order.length + 1}`,
+        id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
         term, fit, search, wrap, group: g, exited: false, outline: [], session: session || null,
       };
       this.tabs[id] = tab;
