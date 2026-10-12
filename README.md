@@ -51,6 +51,24 @@ npm run build-deb        # dist 准备 + tauri build --bundles deb
 npm run tauri dev
 ```
 
+## 发布（GitHub Actions 自动构建）
+
+仓库自带 `.github/workflows/release.yml`：**推送 `v*` 标签即自动构建三平台安装包并创建 Release（草稿）**。
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+| 平台 | Runner | 产物 |
+|---|---|---|
+| Linux x64 | ubuntu-22.04 | `.deb` / `.rpm` / `.AppImage` |
+| Windows x64 | windows-latest | `.msi` / NSIS `.exe` |
+| macOS arm64 | macos-latest | `.dmg` / `.app` |
+| macOS x64 | macos-13 | `.dmg` / `.app` |
+
+前端 `dist/` 由 `tauri.conf.json` 的 `beforeBuildCommand`（`npm run prepare-dist`）自动生成，CI 无需额外步骤。也可在 Actions 页面用 `workflow_dispatch` 手动触发。
+
 ## 架构
 
 ```

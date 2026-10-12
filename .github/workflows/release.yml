@@ -1,0 +1,105 @@
+# hurricaneTerm 发布工作流
+#
+# 触发：推送 v* 标签（如 v0.3.0）→ 自动构建三平台安装包并创建 Release。
+#       也可在 Actions 页面手动触发（workflow_dispatch）。
+#
+# 产物：
+#   Linux  : .deb / .rpm / .AppImage
+#   Windows: .msi / .exe (NSIS)
+#   macOS  : .dmg / .app（Apple Silicon 与 Intel 双架构）
+#
+# 说明：前端 dist/ 由 tauri.conf.json 的 beforeBuildCommand 自动生成
+#       （npm run prepare-dist 从 node_modules 拷贝 xterm 等静态资源）。
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---- macOS：双架构 ----
+          - platform: macos-latest        # Apple Silicon
+            args: '--target aarch64-apple-darwin'
+            label: macOS-arm64
+          - platform: macos-13            # Intel
+            args: '--target x86_64-apple-darwin'
+            label: macOS-x64
+          # ---- Linux ----
+          - platform: ubuntu-22.04
+            args: '--bundles deb,rpm,appimage'
+            label: Linux-x64
+          # ---- Windows ----
+          - platform: windows-latest
+            args: ''
+            label: Windows-x64
+
+    runs-on: ${{ matrix.platform }}
+    name: build (${{ matrix.label }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust 构建缓存
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: 安装 Linux 系统依赖
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libxdo-dev \
+            patchelf \
+            rpm \
+            build-essential curl wget file
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'hurricaneTerm ${{ github.ref_name }}'
+          releaseBody: |
+            hurricaneTerm ${{ github.ref_name }} — WindTerm 逆向分析 → Tauri 重构
+
+            附件为各平台安装包：
+            - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
+            - Windows：`.msi`、NSIS `.exe`
+            - macOS：`.dmg`（arm64 / x64）
+
+            原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
