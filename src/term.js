@@ -581,17 +581,44 @@
         d.onRender((el) => el.classList.add(cls));
         tab._hls = tab._hls || [];
         tab._hls.push(d);
-        // 上限保护：超出丢弃最旧的装饰，避免长会话内存增长
-        if (tab._hls.length > 240) { const old = tab._hls.shift(); try { old.dispose(); } catch (e) {} }
-      } catch (e) {}
+        return d;
+      } catch (e) { return null; }
     },
 
-    // 必须在 term.write 的回调里调用：xterm 解析是异步的，回调时光标才落在正确行
+    // 必须在 term.write 的回调里调用：xterm 解析是异步的，回调时光标才落在正确行。
+    // 超宽行会换行成多个视觉行：按 ceil(len/cols) 逐行盖满，否则只盖一行会像一条游离色带。
+    // 内置高亮为「闪烁提示」语义：6 秒后自动消退，避免滚屏时残留。
     runHighlights(tab, data) {
       if (T.s.builtinHighlight === false || !data) return;
-      const offset = /\n$/.test(data) ? -1 : 0;   // 以换行结尾时目标行是光标上一行
-      for (const r of this.HIGHLIGHT_RULES) {
-        if (r.re.test(data)) this.highlightLine(tab, r.cls, offset);
+      const cols = Math.max(1, tab.term.cols);
+      const lines = data.split('\n');
+      if (lines.length && lines[lines.length - 1] === '') lines.pop();
+      if (!lines.length) return;
+      const made = [];
+      let cursorOffset = 0;                       // 0 = 光标所在行（write 回调时位于末行之后）
+      for (let j = lines.length - 1; j >= 0; j--) {
+        const line = lines[j];
+        const rows = Math.min(40, Math.max(1, Math.ceil(line.length / cols)));
+        const firstOff = cursorOffset - rows;
+        cursorOffset = firstOff;
+        const hit = this.HIGHLIGHT_RULES.find((r) => r.re.test(line));
+        if (!hit) continue;
+        for (let r = 0; r < rows; r++) {
+          const d = this.highlightLine(tab, hit.cls, firstOff + r);
+          if (d) made.push(d);
+        }
+      }
+      if (made.length) {
+        tab._hls = tab._hls || [];
+        setTimeout(() => {
+          for (const d of made) {
+            const i = tab._hls.indexOf(d);
+            if (i >= 0) tab._hls.splice(i, 1);
+            try { d.dispose(); } catch (e) {}
+          }
+        }, 6000);
+        // 上限保护：超出丢弃最旧的装饰，避免长会话内存增长
+        while (tab._hls.length > 240) { const old = tab._hls.shift(); try { old.dispose(); } catch (e) {} }
       }
     },
 

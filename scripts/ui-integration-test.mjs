@@ -248,9 +248,12 @@ tabH.term._onData('kubectl get pods\r');
 await flush();
 ok('L6 大纲记录真实命令文本', tabH.outline.length === 1 && tabH.outline[0].text === 'kubectl get pods');
 TM.runHighlights(tabH, 'default  worker-batch-9x2  0/1  Error  7  41m');
-ok('L7 高亮命中生成持久装饰', (tabH._hls || []).length >= 1);
+ok('L7 高亮命中生成行装饰', (tabH._hls || []).length >= 1);
 TM.runHighlights(tabH, '192.168.1.1:22 open');
 ok('L8 地址类规则命中', (tabH._hls || []).length >= 2);
+const before9 = (tabH._hls || []).length;
+TM.runHighlights(tabH, 'E'.repeat(200) + ' Error ' + 'x'.repeat(200));
+ok('L9 超宽换行行盖满全部视觉行（cols=80 → 6 行）', (tabH._hls || []).length - before9 === 6);
 await TM.close(tabH.id);
 await flush();
 

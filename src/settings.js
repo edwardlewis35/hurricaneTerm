@@ -195,7 +195,7 @@
   }
 
   function renderAbout() {
-    let h = `<h2 class="st-h">关于</h2><p class="st-sub">hurricaneTerm 0.7.1</p>`;
+    let h = `<h2 class="st-h">关于</h2><p class="st-sub">hurricaneTerm 0.7.2</p>`;
     h += card('', `
       <div class="st-row"><div class="st-l"><b>来历</b><i>WindTerm 2.6.0 逆向分析 → Tauri 2 洁净室重写</i></div></div>
       <div class="st-row"><div class="st-l"><b>架构</b><i>Tauri 2 + Rust（russh / portable-pty / russh-sftp）后端 + xterm.js 前端</i></div></div>
