@@ -110,7 +110,9 @@ pub fn baud_speed(rate: i32) -> Option<termios::speed_t> {
         38400 => termios::B38400,
         57600 => libc::B57600 as termios::speed_t,
         115200 => libc::B115200 as termios::speed_t,
+        #[cfg(target_os = "linux")]
         230400 => libc::B230400 as termios::speed_t,
+        #[cfg(target_os = "linux")]
         460800 => libc::B460800 as termios::speed_t,
         _ => return None,
     };

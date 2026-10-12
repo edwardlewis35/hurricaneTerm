@@ -716,6 +716,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn pump_stop_and_output() {
         let (sink, ev) = collector();
         let (mut a, b) = std::os::unix::net::UnixStream::pair().unwrap();

@@ -6,6 +6,7 @@
 mod re;
 mod ssh_live;
 mod ssh_relay;
+#[cfg(unix)]
 mod serial_live;
 mod tcp_live;
 
@@ -364,7 +365,13 @@ fn connect_serial(
     stop_bits: Option<i64>,
     flow_control: Option<String>,
 ) -> Result<String, String> {
-    let mut opts: BTreeMap<String, re::serial::OptVal> = BTreeMap::new();
+    #[cfg(not(unix))]
+    {
+        let _ = (path, settings);
+        return Err("串口会话当前仅支持 Unix 平台（termios 实现）".to_string());
+    }
+    #[cfg(unix)]
+        let mut opts: BTreeMap<String, re::serial::OptVal> = BTreeMap::new();
     if let Some(v) = baud_rate.filter(|v| *v > 0) {
         opts.insert("serial.baudRate".into(), re::serial::OptVal::Int(v as i64));
     }

@@ -19,8 +19,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sy
 futures-util = "0.3"
 dirs = "6"
 russh-sftp = "3"
-termios = "0.2"
-libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }
 base64 = "0.22"
 bytes = "1"
@@ -30,3 +28,7 @@ opt-level = 2
 lto = false
 codegen-units = 16
 strip = true
+
+[target.'cfg(unix)'.dependencies]
+termios = "0.3"
+libc = "0.2"
