@@ -6,7 +6,7 @@
 # 产物：
 #   Linux  : .deb / .rpm / .AppImage
 #   Windows: .msi / .exe (NSIS)
-#   macOS  : .dmg / .app（Apple Silicon 与 Intel 双架构）
+#   macOS  : .dmg / .app（仅 Apple Silicon；Intel x64 构建已移除）
 #
 # 说明：前端 dist/ 由 tauri.conf.json 的 beforeBuildCommand 自动生成
 #       （npm run prepare-dist 从 node_modules 拷贝 xterm 等静态资源）。
@@ -28,13 +28,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ---- macOS：双架构 ----
+          # ---- macOS：仅 Apple Silicon ----
           - platform: macos-latest        # Apple Silicon
             args: '--target aarch64-apple-darwin'
             label: macOS-arm64
-          - platform: macos-13            # Intel
-            args: '--target x86_64-apple-darwin'
-            label: macOS-x64
           # ---- Linux ----
           - platform: ubuntu-22.04
             args: '--bundles deb,rpm,appimage'
@@ -59,7 +56,7 @@ jobs:
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin' || '' }}
 
       - name: Rust 构建缓存
         uses: swatinem/rust-cache@v2
@@ -97,7 +94,7 @@ jobs:
             附件为各平台安装包：
             - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
             - Windows：`.msi`、NSIS `.exe`
-            - macOS：`.dmg`（arm64 / x64）
+            - macOS：`.dmg`（Apple Silicon arm64）
 
             原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
           releaseDraft: true
