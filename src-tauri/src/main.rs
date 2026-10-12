@@ -23,6 +23,7 @@ struct Entry {
     resize: BoxedResize,
     child: Option<Arc<Mutex<BoxedChild>>>,
     closer: Option<Box<dyn Fn() + Send>>,
+    sftp: Option<tokio::sync::mpsc::UnboundedSender<ssh_live::SftpReq>>,
 }
 
 #[derive(Default)]
@@ -162,6 +163,7 @@ fn spawn(
                 resize,
                 child: Some(child),
                 closer: None,
+                sftp: None,
             },
         );
     Ok(id)
@@ -235,6 +237,7 @@ fn connect_telnet(
             closer: Some(Box::new(move || {
                 let _ = killer.shutdown(std::net::Shutdown::Both);
             })),
+            sftp: None,
         },
     );
     Ok(id)
@@ -291,6 +294,7 @@ fn connect_ssh(
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
+            sftp: Some(ctl.sftp),
         },
     );
     Ok(id)
@@ -322,6 +326,52 @@ fn kill(state: State<PtyState>, id: String) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+async fn sftp_call<T: Send + 'static>(
+    state: &tauri::State<'_, PtyState>,
+    id: String,
+    mk: impl FnOnce(tokio::sync::oneshot::Sender<Result<T, String>>) -> ssh_live::SftpReq,
+) -> Result<T, String> {
+    let tx = state
+        .0
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&id)
+        .and_then(|e| e.sftp.clone())
+        .ok_or("该会话无 SFTP（需 SSH 会话）".to_string())?;
+    let (rpl, rx) = tokio::sync::oneshot::channel();
+    tx.send(mk(rpl)).map_err(|_| "会话已关闭".to_string())?;
+    rx.await.map_err(|_| "SFTP 无响应".to_string())?
+}
+
+#[tauri::command]
+async fn sftp_list(
+    state: tauri::State<'_, PtyState>,
+    id: String,
+    path: String,
+) -> Result<Vec<ssh_live::SftpEntry>, String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::List { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_download(
+    state: tauri::State<'_, PtyState>,
+    id: String,
+    remote: String,
+    local: String,
+) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Download { remote, local, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_upload(
+    state: tauri::State<'_, PtyState>,
+    id: String,
+    local: String,
+    remote: String,
+) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Upload { local, remote, reply }).await
 }
 
 #[tauri::command]
@@ -417,6 +467,9 @@ pub fn run() {
             kill,
             connect_telnet,
             connect_ssh,
+            sftp_list,
+            sftp_download,
+            sftp_upload,
             sessions_load,
             sessions_save,
             ui_state_save,

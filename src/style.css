@@ -142,3 +142,14 @@ dialog legend { font-size: 12px; color: var(--fg2); }
 #toast { position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%); background: var(--bg2);
   border: 1px solid var(--accent); color: var(--fg); padding: 7px 16px; border-radius: 20px; z-index: 99;
   box-shadow: 0 8px 28px rgba(0,0,0,.5); font-size: 13px; }
+/* ---------- filer 双栏 / transfer 进度 ---------- */
+.filer-cols { display:flex; min-height:0; flex:1; }
+.filer-col { flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--border); }
+.filer-col .list { flex:1; overflow:auto; }
+.pane-head button.on { border-color:var(--accent); color:var(--accent); }
+#dock-body { display:flex; flex-direction:column; }
+.trow2 { padding:6px 10px; border-bottom:1px solid var(--border); font-size:12px; }
+.trow2 .col { display:flex; flex-direction:column; }
+.trow2 .col i { font-style:normal; color:var(--fg2); font-size:11px; }
+.pbar { height:4px; background:var(--bg3); border-radius:2px; margin-top:4px; overflow:hidden; }
+.pbar div { height:100%; background:var(--accent); border-radius:2px; transition:width .15s; }

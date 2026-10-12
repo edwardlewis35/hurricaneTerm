@@ -301,39 +301,89 @@
 
     async renderFiler() {
       const body = $('#dock-body');
-      const path = T.s.filerPath || null;
-      body.innerHTML = `<div class="pane-head"><span id="filer-path">${escapeHtml(path || '~')}</span>
-        <span><button id="f-up">↑</button><button id="f-home">🏠</button><button id="f-refresh">⟳</button><button id="f-cd">在终端 cd</button></span></div>
-        <div id="f-list" class="list"></div>`;
-      let entries = [];
-      try {
-        entries = await T.invoke('fs_list', { path });
-      } catch (e) {
-        body.querySelector('#f-list').innerHTML = `<div class="empty">读取失败：${escapeHtml(String(e))}</div>`;
-        return;
+      const tab = T.term.activeTab();
+      const isSsh = tab && tab.session && tab.session.protocol === 'ssh' && !tab.exited;
+      const mode = T.s.filerMode || (isSsh ? 'both' : 'local');
+      const lpath = T.s.filerPath || null;
+      const rpath = T.s.remotePath || '/';
+      body.innerHTML = `<div class="pane-head"><span>文件浏览器</span><span>
+        ${isSsh ? `<button data-m="local" class="${mode==='local'?'on':''}">本地</button>
+        <button data-m="remote" class="${mode==='remote'?'on':''}">远端</button>
+        <button data-m="both" class="${mode==='both'?'on':''}">双栏</button>` : ''}
+      </span></div>
+      <div class="filer-cols">
+        ${mode !== 'remote' ? `<div class="filer-col"><div class="pane-head"><span>本地 ${escapeHtml(lpath||'~')}</span>
+          <span><button id="f-up">↑</button><button id="f-home">🏠</button><button id="f-upl">上传→远端</button></span></div>
+          <div id="f-list" class="list"></div></div>` : ''}
+        ${isSsh && mode !== 'local' ? `<div class="filer-col"><div class="pane-head"><span>远端 ${escapeHtml(rpath)}</span>
+          <span><button id="r-up">↑</button><button id="r-dwl">←下载到本地</button></span></div>
+          <div id="r-list" class="list"><div class="empty">加载中…</div></div></div>` : ''}
+      </div>`;
+      body.querySelectorAll('.pane-head button[data-m]').forEach(b => b.onclick = () => { T.s.filerMode = b.dataset.m; this.renderFiler(); });
+
+      // —— 本地列 ——
+      const flist = body.querySelector('#f-list');
+      if (flist) {
+        let entries = [];
+        try { entries = await T.invoke('fs_list', { path: lpath }); }
+        catch (e) { flist.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`; }
+        for (const e of entries) {
+          const row = document.createElement('div');
+          row.className = 'row';
+          row.innerHTML = `<span class="ico">${e.is_dir ? '📁' : '📄'}</span>
+            <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)}</i></span>`;
+          row.ondblclick = () => { if (e.is_dir) { T.s.filerPath = e.path; this.renderFiler(); } };
+          row.onclick = () => { this._filerSel = e.path; this._filerSelName = e.name;
+            flist.querySelectorAll('.row').forEach(r => r.classList.remove('sel')); row.classList.add('sel'); };
+          flist.appendChild(row);
+        }
+        body.querySelector('#f-up').onclick = () => { if (lpath) { T.s.filerPath = lpath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); } };
+        body.querySelector('#f-home').onclick = () => { T.s.filerPath = null; this.renderFiler(); };
+        body.querySelector('#f-upl').onclick = () => {
+          if (!isSsh) { this.toast('需要 SSH 会话'); return; }
+          if (!this._filerSel) { this.toast('先选中本地文件'); return; }
+          const remote = (rpath === '/' ? '' : rpath) + '/' + this._filerSelName;
+          this.toast('上传中: ' + this._filerSelName);
+          T.invoke('sftp_upload', { id: tab.id, local: this._filerSel, remote }).catch(e => this.toast('上传失败: ' + e));
+        };
       }
-      const list = body.querySelector('#f-list');
-      for (const e of entries) {
-        const row = document.createElement('div');
-        row.className = 'row';
-        row.innerHTML = `<span class="ico">${e.is_dir ? '📁' : '📄'}</span>
-          <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)} · ${e.modified ? new Date(e.modified * 1000).toLocaleDateString('zh-CN') : ''}</i></span>`;
-        row.ondblclick = () => { if (e.is_dir) { T.s.filerPath = e.path; this.renderFiler(); } };
-        row.onclick = () => { this._filerSel = e.path; $$('#f-list .row').forEach((r) => r.classList.remove('sel')); row.classList.add('sel'); };
-        list.appendChild(row);
+
+      // —— 远端列 ——
+      const rlist = body.querySelector('#r-list');
+      if (rlist && isSsh) {
+        try {
+          const ents = await T.invoke('sftp_list', { id: tab.id, path: rpath });
+          rlist.innerHTML = '';
+          for (const e of ents) {
+            const row = document.createElement('div');
+            row.className = 'row';
+            row.innerHTML = `<span class="ico">${e.is_dir ? '📁' : '📄'}</span>
+              <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)}</i></span>`;
+            row.ondblclick = () => {
+              if (e.is_dir) { T.s.remotePath = e.path; this.renderFiler(); }
+              else {
+                const base = T.s.filerPath || '';
+                const local = (base || '') + '/' + e.name;
+                this.toast('下载中: ' + e.name);
+                T.invoke('sftp_download', { id: tab.id, remote: e.path, local }).catch(err => this.toast('下载失败: ' + err));
+              }
+            };
+            row.onclick = () => { this._remoteSel = e; rlist.querySelectorAll('.row').forEach(r => r.classList.remove('sel')); row.classList.add('sel'); };
+            rlist.appendChild(row);
+          }
+          if (!ents.length) rlist.innerHTML = '<div class="empty">空目录</div>';
+        } catch (err) { rlist.innerHTML = `<div class="empty">SFTP 失败: ${escapeHtml(String(err))}</div>`; }
+        body.querySelector('#r-up').onclick = () => { T.s.remotePath = rpath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); };
+        body.querySelector('#r-dwl').onclick = () => {
+          if (!this._remoteSel) { this.toast('先选中远端文件'); return; }
+          const local = ((T.s.filerPath || '') + '/' + this._remoteSel.name);
+          this.toast('下载中: ' + this._remoteSel.name);
+          T.invoke('sftp_download', { id: tab.id, remote: this._remoteSel.path, local }).catch(e2 => this.toast('下载失败: ' + e2));
+        };
       }
-      if (!entries.length) list.innerHTML = '<div class="empty">空目录</div>';
-      const curPath = T.s.filerPath || '';
-      body.querySelector('#f-up').onclick = () => { if (curPath) { T.s.filerPath = curPath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); } };
-      body.querySelector('#f-home').onclick = () => { T.s.filerPath = null; this.renderFiler(); };
-      body.querySelector('#f-refresh').onclick = () => this.renderFiler();
-      body.querySelector('#f-cd').onclick = () => {
-        const p = this._filerSel || T.s.filerPath;
-        if (!p) { this.toast('先选一个目录/文件'); return; }
-        const dir = this._filerSel && !this._filerSel.endsWith('/') && T.s.filerPath && !this._isDirSel ? T.s.filerPath : p;
-        this.senderSet(`cd '${dir}'\r`, true);
-      };
-    },
+      if (isSsh && mode === 'local') this.toast('切到远端/双栏查看 SFTP 目录');
+    }
+
     senderSet(text, direct) {
       const ta = $('#dock-body textarea');
       if (ta) { ta.value = text.replace(/\r$/, ''); ta.focus(); }
@@ -375,11 +425,24 @@
       body.querySelector('#send-sync').onchange = (e) => { T.s.sync = e.target.checked; T.persistSettings(); this.status(); };
     },
 
+    transfers: [],
+    transferProgress(name, done, total, dir, last) {
+      let t = this.transfers.find(x => x.name === name && x.dir === dir);
+      if (!t) { t = { name, dir, done: 0, total: 0, last: false }; this.transfers.push(t); }
+      t.done = done; t.total = total; t.last = !!last;
+      if (this.transfers.length > 40) this.transfers.shift();
+      if (T.s.dockPane === 'transfer') this.renderTransfer();
+    },
     renderTransfer() {
-      $('#dock-body').innerHTML = `<div class="pane-head"><span>传输</span><span>P1</span></div>
-        <div class="empty">传输队列（SFTP / ZMODEM）在 P1 实现。<br>
-        骨架已就位：后端 <code>TransferTask</code> ⇄ 前端此窗格。<br>
-        本轮支持：Filer 本地浏览 + 在终端 cd。</div>`;
+      let html = `<div class="pane-head"><span>传输</span><span>${this.transfers.length} 项</span></div>`;
+      if (!this.transfers.length) html += '<div class="empty">SFTP 上传/下载进度会出现在这里（transfer-progress 事件）。</div>';
+      for (const t of this.transfers.slice(-20)) {
+        const pct = t.total ? Math.min(100, Math.round(t.done * 100 / t.total)) : 0;
+        html += `<div class="trow2"><span class="col"><b>${t.dir === 'up' ? '↑' : '↓'} ${escapeHtml(t.name)}</b>
+          <i>${fmtSize(t.done)} / ${fmtSize(t.total)}${t.last ? ' · 完成' : ''}</i></span>
+          <div class="pbar"><div style="width:${pct}%"></div></div></div>`;
+      }
+      $('#dock-body').innerHTML = html;
     },
 
     renderOutput() {

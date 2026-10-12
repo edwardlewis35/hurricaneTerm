@@ -1,6 +1,6 @@
 [package]
 name = "hurricane-term"
-version = "0.3.0"
+version = "0.4.0"
 description = "hurricaneTerm — Tauri 2 terminal (WindTerm analysis -> clean-room reimplementation)"
 edition = "2021"
 
@@ -18,6 +18,8 @@ russh = { version = "0.64", default-features = false, features = ["ring", "rsa",
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "net"] }
 futures-util = "0.3"
 dirs = "6"
+russh-sftp = "3"
+serialport = "4"
 bytes = "1"
 
 [profile.release]

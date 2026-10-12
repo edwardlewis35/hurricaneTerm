@@ -21,6 +21,8 @@ impl Sink {
 }
 use russh::keys::PublicKeyOrCertificate;
 use russh::client::{self, AuthResult, Config, Handler};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::oneshot;
 use russh::keys::{load_secret_key, HashAlg, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, Disconnect};
 use std::io;
@@ -41,11 +43,27 @@ impl Write for SshInput {
     }
 }
 
-/// 会话控制句柄（resize/stop 走通道）
+/// 会话控制句柄（resize/stop/sftp 走通道）
 pub struct SshCtl {
     pub input: mpsc::UnboundedSender<Vec<u8>>,
     pub resize: mpsc::UnboundedSender<(u32, u32)>,
     pub stop: mpsc::UnboundedSender<()>,
+    pub sftp: mpsc::UnboundedSender<SftpReq>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct SftpEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub mtime: u64,
+}
+
+pub enum SftpReq {
+    List { path: String, reply: oneshot::Sender<Result<Vec<SftpEntry>, String>> },
+    Download { remote: String, local: String, reply: oneshot::Sender<Result<(), String>> },
+    Upload { local: String, remote: String, reply: oneshot::Sender<Result<(), String>> },
 }
 
 /// TOFU 主机密钥：~/.config/<id>/known_hosts（"host|sha256:..." 行）。
@@ -142,6 +160,7 @@ pub fn spawn_session(
     let (in_tx, mut in_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (rz_tx, mut rz_rx) = mpsc::unbounded_channel::<(u32, u32)>();
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<()>();
+    let (sftp_tx, sftp_rx) = mpsc::unbounded_channel::<SftpReq>();
 
     let app2 = app.clone();
     let id2 = id.clone();
@@ -165,6 +184,7 @@ pub fn spawn_session(
             in_rx,
             rz_rx,
             stop_rx,
+            sftp_rx,
         )) {
             eprintln!("[ssh] {e}");
         }
@@ -175,6 +195,7 @@ pub fn spawn_session(
         input: in_tx,
         resize: rz_tx,
         stop: stop_tx,
+        sftp: sftp_tx,
     })
 }
 
@@ -193,6 +214,7 @@ pub async fn run(
     mut in_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     mut rz_rx: mpsc::UnboundedReceiver<(u32, u32)>,
     mut stop_rx: mpsc::UnboundedReceiver<()>,
+    mut sftp_rx: mpsc::UnboundedReceiver<SftpReq>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = Arc::new(Config {
         keepalive_interval: Some(std::time::Duration::from_secs(30)), // SshSession::keepAlive 语义
@@ -278,8 +300,16 @@ pub async fn run(
         return Err("所有认证方法均失败".into());
     }
 
+    // —— 自动登录 expect 引擎（re/auto_login.rs，OneKey 默认规则：login:/password:）——
+    use crate::re::auto_login::{AccountPart, OneKeyExpect};
+    let mut okm = OneKeyExpect::default();
+    okm.compile_expects(AccountPart::Username, &[]);
+    okm.compile_expects(AccountPart::Password, &[]);
+    let mut al_tail = String::new();
+
     // —— shell 通道 ——
     let chan = session.channel_open_session().await?;
+    let ssh_handle = std::sync::Arc::new(session); // channel_open_session 取 &self，Arc 共享
     let (mut reader, chan) = chan.split();
     chan.request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
@@ -294,11 +324,46 @@ pub async fn run(
             Some((c, r)) = rz_rx.recv() => {
                 let _ = chan.window_change(c, r, 0, 0).await;
             }
+            Some(req) = sftp_rx.recv() => {
+                let h = ssh_handle.clone();
+                let sink2 = app.clone();
+                let id2 = id.clone();
+                tokio::spawn(async move {
+                    match req {
+                        SftpReq::List { path, reply } => {
+                            let out = do_sftp_list(&h, &path, &sink2, &id2).await;
+                            let _ = reply.send(out);
+                        }
+                        SftpReq::Download { remote, local, reply } => {
+                            let out = do_sftp_xfer(&h, &remote, &local, false, &sink2, &id2).await;
+                            let _ = reply.send(out);
+                        }
+                        SftpReq::Upload { local, remote, reply } => {
+                            let out = do_sftp_xfer(&h, &remote, &local, true, &sink2, &id2).await;
+                            let _ = reply.send(out);
+                        }
+                    }
+                });
+            }
             m = reader.wait() => {
                 match m {
                     Some(ChannelMsg::Data { data }) => {
                         let s = String::from_utf8_lossy(&data).to_string();
-                        app.emit("pty-output", id.clone(), s);
+                        app.emit("pty-output", id.clone(), s.clone());
+                        // WindTerm auto-login 语义：输出流尾窗匹配 OneKey expect 规则 -> 应答
+                        if !s.is_empty() {
+                            al_tail.push_str(&s);
+                            if al_tail.len() > 240 { let cut = al_tail.len()-240; al_tail.drain(..cut); }
+                            if okm.match_account_expect(AccountPart::Username, &al_tail) {
+                                let _ = chan.data_bytes(bytes::Bytes::from(format!("{}\r", user))).await;
+                                al_tail.clear();
+                                log(&app, &id, "auto-login: username 已应答".into());
+                            } else if password.is_some() && okm.match_account_expect(AccountPart::Password, &al_tail) {
+                                let _ = chan.data_bytes(bytes::Bytes::from(format!("{}\r", password.as_deref().unwrap_or("")))).await;
+                                al_tail.clear();
+                                log(&app, &id, "auto-login: password 已应答".into());
+                            }
+                        }
                     }
                     Some(ChannelMsg::ExtendedData { data, .. }) => {
                         let s = String::from_utf8_lossy(&data).to_string();
@@ -311,9 +376,92 @@ pub async fn run(
             _ = stop_rx.recv() => { break; }
         }
     }
-    let _ = session
+    let _ = ssh_handle
         .disconnect(Disconnect::ByApplication, "bye", "en")
         .await;
+    Ok(())
+}
+
+async fn open_sftp(h: &std::sync::Arc<client::Handle<WtHandler>>)
+    -> Result<russh_sftp::client::SftpSession, String> {
+    let chan = h.channel_open_session().await.map_err(|e| e.to_string())?;
+    chan.request_subsystem(true, "sftp").await.map_err(|e| e.to_string())?;
+    russh_sftp::client::SftpSession::new(chan.into_stream())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn do_sftp_list(
+    h: &std::sync::Arc<client::Handle<WtHandler>>,
+    path: &str,
+    _sink: &Sink,
+    _id: &str,
+) -> Result<Vec<SftpEntry>, String> {
+    let sftp = open_sftp(h).await?;
+    let rd = sftp.read_dir(path.to_string()).await.map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for e in rd {
+        let md = e.metadata();
+        out.push(SftpEntry {
+            name: e.file_name(),
+            path: e.path(),
+            is_dir: md.is_dir(),
+            size: md.len(),
+            mtime: md.mtime.unwrap_or(0) as u64,
+        });
+        if out.len() >= 3000 { break; }
+    }
+    out.sort_by(|a, b| (b.is_dir, a.name.to_lowercase()).cmp(&(a.is_dir, b.name.to_lowercase())));
+    Ok(out)
+}
+
+/// dir=false: remote->local 下载；dir=true: local->remote 上传。进度事件 transfer-progress。
+async fn do_sftp_xfer(
+    h: &std::sync::Arc<client::Handle<WtHandler>>,
+    remote: &str,
+    local: &str,
+    upload: bool,
+    sink: &Sink,
+    id: &str,
+) -> Result<(), String> {
+    let sftp = open_sftp(h).await?;
+    let name = remote.rsplit(['/', '\\']).next().unwrap_or(remote).to_string();
+    let total = if upload {
+        std::fs::metadata(local).map(|m| m.len()).unwrap_or(0)
+    } else {
+        sftp.metadata(remote.to_string()).await.map(|m| m.len()).unwrap_or(0)
+    };
+    let mut done: u64 = 0;
+    let mut emit = |done: u64, last: bool| {
+        sink.emit(
+            "transfer-progress",
+            id.to_string(),
+            format!("{}\t{}\t{}\t{}\t{}", name, done, total, if upload { "up" } else { "down" }, if last { 1 } else { 0 }),
+        );
+    };
+    if !upload {
+        let mut rf = sftp.open(remote.to_string()).await.map_err(|e| e.to_string())?;
+        let mut lf = std::fs::File::create(local).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; 32768];
+        loop {
+            let n = rf.read(&mut buf).await.map_err(|e| e.to_string())?;
+            if n == 0 { break; }
+            std::io::Write::write_all(&mut lf, &buf[..n]).map_err(|e| e.to_string())?;
+            done += n as u64;
+            emit(done, false);
+        }
+    } else {
+        let mut wf = sftp.create(remote.to_string()).await.map_err(|e| e.to_string())?;
+        let data = std::fs::read(local).map_err(|e| e.to_string())?;
+        for chunk in data.chunks(32768) {
+            wf.write_all(chunk).await.map_err(|e| e.to_string())?;
+            done += chunk.len() as u64;
+            emit(done, false);
+        }
+        wf.flush().await.map_err(|e| e.to_string())?;
+        wf.close().await.map_err(|e| e.to_string())?;
+    }
+    emit(done, true);
     Ok(())
 }
 
@@ -345,6 +493,7 @@ mod e2e {
         let (in_tx, in_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (_rz_tx, rz_rx) = mpsc::unbounded_channel::<(u32, u32)>();
         let (stop_tx, stop_rx) = mpsc::unbounded_channel::<()>();
+        let (_stx, srx) = mpsc::unbounded_channel::<SftpReq>();
 
         let user = std::env::var("USER").unwrap_or_else(|_| "el".into());
         let key = format!("{}/.ssh/id_ed25519", std::env::var("HOME").unwrap());
@@ -370,6 +519,7 @@ mod e2e {
                 in_rx,
                 rz_rx,
                 stop_rx,
+                srx,
             )
             .await
         });
@@ -388,5 +538,67 @@ mod e2e {
         rt.block_on(h).unwrap().unwrap();
         assert!(auth_ok, "认证序列未成功: {snapshot:?}");
         assert!(echoed, "shell 回显未到达: {snapshot:?}");
+    }
+
+    /// SFTP e2e：上传->列表可见->下载->字节一致。走生产 run()。
+    #[test]
+    #[ignore = "requires local sshd with sftp subsystem"]
+    fn sftp_local_roundtrip() {
+        let events = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let ev = events.clone();
+        let sink = Sink(Arc::new(move |t: &str, _id: String, d: String| {
+            ev.lock().unwrap().push((t.to_string(), d));
+        }));
+        let (in_tx, in_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (_rz_tx, rz_rx) = mpsc::unbounded_channel::<(u32, u32)>();
+        let (stop_tx, stop_rx) = mpsc::unbounded_channel::<()>();
+        let (stx, srx) = mpsc::unbounded_channel::<SftpReq>();
+
+        let user = std::env::var("USER").unwrap_or_else(|_| "el".into());
+        let key = format!("{}/.ssh/id_ed25519", std::env::var("HOME").unwrap());
+        let dir = std::env::temp_dir().join("wt-e2e-tofu2");
+        std::fs::remove_dir_all(&dir).ok();
+
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let h = rt.spawn(async move {
+            run(sink, "sftp-e2e".into(), "127.0.0.1".into(), 22, user, None, Some(key),
+                24, 80, dir, in_rx, rz_rx, stop_rx, srx).await
+        });
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // 1) 列表
+        let (rpl, rxr) = oneshot::channel();
+        stx.send(SftpReq::List { path: "/tmp".into(), reply: rpl }).unwrap();
+        let listing = rt.block_on(rxr).unwrap().unwrap();
+        assert!(listing.iter().any(|e| !e.name.is_empty()), "列表为空");
+
+        // 2) 上传 -> 3) 下载 -> 字节比对
+        let src = std::env::temp_dir().join("wt-sftp-src.bin");
+        let dst = std::env::temp_dir().join("wt-sftp-dst.bin");
+        let payload: Vec<u8> = (0..70000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&src, &payload).unwrap();
+        let remote = "/tmp/wt-sftp-e2e.bin".to_string();
+        let (rpl, rxr) = oneshot::channel();
+        stx.send(SftpReq::Upload { local: src.to_string_lossy().into(), remote: remote.clone(), reply: rpl }).unwrap();
+        rt.block_on(rxr).unwrap().unwrap();
+
+        let (rpl, rxr) = oneshot::channel();
+        stx.send(SftpReq::List { path: "/tmp".into(), reply: rpl }).unwrap();
+        let listing = rt.block_on(rxr).unwrap().unwrap();
+        assert!(listing.iter().any(|e| e.name == "wt-sftp-e2e.bin"), "上传后列表缺文件");
+
+        let (rpl, rxr) = oneshot::channel();
+        stx.send(SftpReq::Download { remote, local: dst.to_string_lossy().into(), reply: rpl }).unwrap();
+        rt.block_on(rxr).unwrap().unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), payload, "下载字节不一致");
+
+        let snap2 = events.lock().unwrap().clone();
+        let prog_n = snap2.iter().filter(|(t, _)| t == "transfer-progress").count();
+        assert!(prog_n > 0, "无进度事件");
+        let _ = stop_tx.send(());
+        drop(in_tx); drop(stx);
+        rt.block_on(h).unwrap().unwrap();
+        std::fs::remove_file(&src).ok(); std::fs::remove_file(&dst).ok();
+        std::fs::remove_file("/tmp/wt-sftp-e2e.bin").ok();
     }
 }

@@ -15,6 +15,7 @@ window.WT = (function () {
       sync: false,
       mode: 'Remote',
       dockPane: 'explorer',
+      filerMode: '', remotePath: null,
       dockVisible: true,
       filerPath: null,
     },
@@ -74,6 +75,12 @@ window.WT = (function () {
       WT.term.runTriggers(tab, data);
     });
     await WT.listen('re-log', (ev) => { try { WT.ui.log(ev.payload.data); } catch (_) {} });
+    await WT.listen('transfer-progress', (ev) => {
+      try {
+        const [name, done, total, dir, last] = ev.payload.data.split('\t');
+        WT.ui.transferProgress(name, +done, +total, dir, last === '1');
+      } catch (_) {}
+    });
     await WT.listen('pty-exit', (e) => {
       const tab = WT.term.findByPty(e.payload.id);
       if (!tab || tab.exited) return;
