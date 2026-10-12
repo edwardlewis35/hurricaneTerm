@@ -752,6 +752,7 @@ pub fn run() {
             sessions_save,
             ui_state_save,
             ui_state_load,
+            complete_input,
             fs_list
         ])
         .run(tauri::generate_context!())
