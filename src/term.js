@@ -3,21 +3,112 @@
 (function () {
   const T = window.WT;
 
+  /* ---------- 主题 ----------
+   * tabby-dark / tabby-light 的终端 16 色取自 Tabby 上游
+   * tabby-terminal/src/colorSchemes.ts（"Tabby Default" / "Tabby Default Light"）；
+   * 界面令牌取自 tabby-core/src/theme.vars.scss。其余 4 套为 WindTerm 自带主题。
+   * --term-bg 让「活动标签 + 主区」与终端底色无缝衔接（Tabby 的连体观感）。
+   */
+  function chrome(c) {
+    const v = {
+      '--bg': c.bg, '--bg2': c.bg2, '--bg3': c.bg3, '--bg4': c.bg4,
+      '--fg': c.fg, '--fg2': c.fg2, '--fg3': c.fg3,
+      '--accent': c.accent, '--accent-bg': c.accentBg,
+      '--border': c.border, '--border-solid': c.borderSolid,
+      '--input-bg': c.inputBg, '--surface': c.surface, '--surface-hover': c.surfaceHover,
+      '--danger': c.danger, '--warn': c.warn, '--ok': c.ok,
+      '--term-bg': c.termBg,
+    };
+    return v;
+  }
+
+  const CHROME_DARK = {
+    bg: '#131d27', bg2: '#1d272d', bg3: '#0e151d', bg4: '#20333e',
+    fg: '#cccccc', fg2: 'rgba(255,255,255,.5)', fg3: '#ced9e2',
+    accent: '#4fadff', accentBg: 'rgba(0,89,165,.35)',
+    border: 'rgba(255,255,255,.1)', borderSolid: '#24313c',
+    inputBg: '#181e23', surface: 'rgba(255,255,255,.025)', surfaceHover: 'rgba(255,255,255,.05)',
+    danger: '#d9534f', warn: '#f0ad4e', ok: '#5cb85c',
+  };
+  const CHROME_LIGHT = {
+    bg: '#f2f3f5', bg2: '#ffffff', bg3: '#e6e8eb', bg4: '#dfe2e6',
+    fg: '#2b2b2b', fg2: 'rgba(0,0,0,.5)', fg3: '#1f2328',
+    accent: '#0275d8', accentBg: 'rgba(2,117,216,.14)',
+    border: 'rgba(0,0,0,.1)', borderSolid: '#d6d9dd',
+    inputBg: '#ffffff', surface: 'rgba(0,0,0,.03)', surfaceHover: 'rgba(0,0,0,.06)',
+    danger: '#c82829', warn: '#b58900', ok: '#718c00',
+  };
+
+  // Tabby Default（终端）
+  const TABBY_DARK_TERM = {
+    background: '#171717', foreground: '#cacaca', cursor: '#bbbbbb', cursorAccent: '#171717',
+    selectionBackground: 'rgba(79,173,255,.28)',
+    black: '#000000', red: '#ff615a', green: '#b1e969', yellow: '#ebd99c', blue: '#5da9f6',
+    magenta: '#e86aff', cyan: '#82fff7', white: '#dedacf',
+    brightBlack: '#313131', brightRed: '#f58c80', brightGreen: '#ddf88f', brightYellow: '#eee5b2',
+    brightBlue: '#a5c7ff', brightMagenta: '#ddaaff', brightCyan: '#b7fff9', brightWhite: '#ffffff',
+  };
+  // Tabby Default Light（终端）
+  const TABBY_LIGHT_TERM = {
+    background: '#ffffff', foreground: '#4d4d4c', cursor: '#4d4d4c', cursorAccent: '#ffffff',
+    selectionBackground: 'rgba(2,117,216,.18)',
+    black: '#000000', red: '#c82829', green: '#718c00', yellow: '#eab700', blue: '#4271ae',
+    magenta: '#8959a8', cyan: '#3e999f', white: '#ffffff',
+    brightBlack: '#000000', brightRed: '#c82829', brightGreen: '#718c00', brightYellow: '#eab700',
+    brightBlue: '#4271ae', brightMagenta: '#8959a8', brightCyan: '#3e999f', brightWhite: '#ffffff',
+  };
+
   const THEMES = {
+    'tabby-dark': {
+      vars: chrome(Object.assign({}, CHROME_DARK, { termBg: TABBY_DARK_TERM.background })),
+      term: TABBY_DARK_TERM,
+    },
+    'tabby-light': {
+      vars: chrome(Object.assign({}, CHROME_LIGHT, { termBg: TABBY_LIGHT_TERM.background })),
+      term: TABBY_LIGHT_TERM,
+    },
     'default': {
-      vars: { '--bg': '#17191b', '--bg2': '#232629', '--bg3': '#1d2023', '--fg': '#d5d8dc', '--fg2': '#98a2ad', '--accent': '#3daee9', '--border': '#2b2e31' },
+      vars: chrome({
+        bg: '#17191b', bg2: '#232629', bg3: '#121416', bg4: '#2c3034',
+        fg: '#d5d8dc', fg2: 'rgba(255,255,255,.48)', fg3: '#e8eaed',
+        accent: '#3daee9', accentBg: 'rgba(61,174,233,.18)',
+        border: 'rgba(255,255,255,.09)', borderSolid: '#2b2e31',
+        inputBg: '#1d2023', surface: 'rgba(255,255,255,.03)', surfaceHover: 'rgba(255,255,255,.06)',
+        danger: '#e06c75', warn: '#e5c07b', ok: '#98c379', termBg: '#17191b',
+      }),
       term: { background: '#17191b', foreground: '#d5d8dc', cursor: '#3daee9', cursorAccent: '#17191b', selectionBackground: '#2c5d7f', black: '#17191b', red: '#e06c75', green: '#98c379', yellow: '#e5c07b', blue: '#61afef', magenta: '#c678dd', cyan: '#56b6c2', white: '#d5d8dc', brightBlack: '#5c6370', brightRed: '#e06c75', brightGreen: '#98c379', brightYellow: '#e5c07b', brightBlue: '#61afef', brightMagenta: '#c678dd', brightCyan: '#56b6c2', brightWhite: '#ffffff' },
     },
     'dige-black': {
-      vars: { '--bg': '#000000', '--bg2': '#0d0d0d', '--bg3': '#050505', '--fg': '#c8c8c8', '--fg2': '#8a8a8a', '--accent': '#4fd75b', '--border': '#222222' },
+      vars: chrome({
+        bg: '#000000', bg2: '#0d0d0d', bg3: '#000000', bg4: '#1a1a1a',
+        fg: '#c8c8c8', fg2: 'rgba(255,255,255,.42)', fg3: '#e4e4e4',
+        accent: '#4fd75b', accentBg: 'rgba(79,215,91,.16)',
+        border: 'rgba(255,255,255,.12)', borderSolid: '#222222',
+        inputBg: '#0a0a0a', surface: 'rgba(255,255,255,.04)', surfaceHover: 'rgba(255,255,255,.08)',
+        danger: '#ff6b6b', warn: '#e3d44a', ok: '#4fd75b', termBg: '#000000',
+      }),
       term: { background: '#000000', foreground: '#c8c8c8', cursor: '#4fd75b', cursorAccent: '#000000', selectionBackground: '#1d4a23', black: '#000000', red: '#ff6b6b', green: '#4fd75b', yellow: '#e3d44a', blue: '#5aa9ff', magenta: '#d47fe8', cyan: '#4fd1c5', white: '#c8c8c8', brightBlack: '#555555', brightRed: '#ff8f8f', brightGreen: '#7dff88', brightYellow: '#fff07a', brightBlue: '#8cc2ff', brightMagenta: '#e8a9ff', brightCyan: '#8ce8e0', brightWhite: '#ffffff' },
     },
     'dige-white': {
-      vars: { '--bg': '#f7f7f5', '--bg2': '#ececeb', '--bg3': '#ffffff', '--fg': '#2b2b2b', '--fg2': '#6a6a6a', '--accent': '#1f7fd0', '--border': '#d4d4d2' },
+      vars: chrome({
+        bg: '#f7f7f5', bg2: '#ffffff', bg3: '#ececeb', bg4: '#e2e2e0',
+        fg: '#2b2b2b', fg2: 'rgba(0,0,0,.5)', fg3: '#1c1c1c',
+        accent: '#1f7fd0', accentBg: 'rgba(31,127,208,.13)',
+        border: 'rgba(0,0,0,.11)', borderSolid: '#d4d4d2',
+        inputBg: '#ffffff', surface: 'rgba(0,0,0,.03)', surfaceHover: 'rgba(0,0,0,.06)',
+        danger: '#b3261e', warn: '#a57200', ok: '#2e7d32', termBg: '#f7f7f5',
+      }),
       term: { background: '#f7f7f5', foreground: '#2b2b2b', cursor: '#1f7fd0', cursorAccent: '#f7f7f5', selectionBackground: '#cfe4f7', black: '#2b2b2b', red: '#b3261e', green: '#2e7d32', yellow: '#a57200', blue: '#1f7fd0', magenta: '#8e24aa', cyan: '#00838f', white: '#8a8a8a', brightBlack: '#6a6a6a', brightRed: '#d93025', brightGreen: '#43a047', brightYellow: '#c79a00', brightBlue: '#2196f3', brightMagenta: '#ab47bc', brightCyan: '#00acc1', brightWhite: '#2b2b2b' },
     },
     'dige-black-and-white': {
-      vars: { '--bg': '#0b0b0b', '--bg2': '#161616', '--bg3': '#101010', '--fg': '#e8e8e8', '--fg2': '#a0a0a0', '--accent': '#ffffff', '--border': '#303030' },
+      vars: chrome({
+        bg: '#0b0b0b', bg2: '#161616', bg3: '#050505', bg4: '#222222',
+        fg: '#e8e8e8', fg2: 'rgba(255,255,255,.45)', fg3: '#ffffff',
+        accent: '#ffffff', accentBg: 'rgba(255,255,255,.14)',
+        border: 'rgba(255,255,255,.14)', borderSolid: '#303030',
+        inputBg: '#101010', surface: 'rgba(255,255,255,.05)', surfaceHover: 'rgba(255,255,255,.09)',
+        danger: '#e0e0e0', warn: '#efefef', ok: '#dcdcdc', termBg: '#0b0b0b',
+      }),
       term: { background: '#0b0b0b', foreground: '#e8e8e8', cursor: '#ffffff', cursorAccent: '#0b0b0b', selectionBackground: '#3a3a3a', black: '#0b0b0b', red: '#bdbdbd', green: '#dcdcdc', yellow: '#efefef', blue: '#cfcfcf', magenta: '#e0e0e0', cyan: '#d0d0d0', white: '#e8e8e8', brightBlack: '#6f6f6f', brightRed: '#e0e0e0', brightGreen: '#f2f2f2', brightYellow: '#ffffff', brightBlue: '#e6e6e6', brightMagenta: '#f5f5f5', brightCyan: '#ededed', brightWhite: '#ffffff' },
     },
   };
@@ -36,6 +127,13 @@
 
     activeTab() { return this.active ? this.tabs[this.active] : null; },
 
+    // 字体栈：设置页可选字体族，中文回退到系统 CJK 等宽
+    fontStack() {
+      const base = (T.s.fontFamily || '').trim();
+      const fallback = '"Source Code Pro", "JetBrains Mono", "Noto Sans Mono CJK SC", ui-monospace, monospace';
+      return base ? `${base}, ${fallback}` : fallback;
+    },
+
     async create(session, opts) {
       const g = (opts && opts.group) != null ? opts.group : this.group;
       const wrap = document.createElement('div');
@@ -43,7 +141,7 @@
       this.hostEl(g).appendChild(wrap);
 
       const term = new Terminal({
-        fontFamily: 'JetBrains Mono, "Noto Sans Mono CJK SC", monospace',
+        fontFamily: this.fontStack(),
         fontSize: T.s.fontSize,
         theme: THEMES[T.s.theme].term,
         scrollback: 10000,
@@ -205,9 +303,18 @@
       this.group = t.group;
       if (t.activity) { t.activity = false; this.renderTabbar(); }
       if (window.Home) Home.hide();
+      if (window.Settings && Settings.isOpen()) Settings.close();
       this.renderTabbar();
+      this.markFocused();
       for (const x of Object.values(this.tabs)) x.wrap.style.display = x.id === id ? 'block' : 'none';
       requestAnimationFrame(() => { try { t.fit.fit(); } catch (e) {} t.term.focus(); UI.status(); UI.renderOutline(); });
+    },
+
+    // 聚焦窗格描边（Tabby 的 focused pane 提示）
+    markFocused() {
+      const t = this.activeTab();
+      const groups = document.querySelectorAll('#groups .group');
+      for (const g of groups) g.classList.toggle('focused', !!t && String(t.group) === g.dataset.g);
     },
 
     async close(id) {
@@ -315,7 +422,11 @@
       this.splitDir = dir;
       const g1 = this.groupEl(1);
       g1.hidden = false;
+      const gut = document.getElementById('gutter');
+      if (gut) gut.hidden = false;
       document.getElementById('groups').dataset.dir = dir;
+      // 换轴向时清掉上次拖拽留下的固定尺寸
+      this.groupEl(0).style.flex = '';
       const cur = this.activeTab();
       if (cur && cur.group === 0 && !this.order.some((id) => this.tabs[id].group === 1)) {
         cur.group = 1;
@@ -331,39 +442,86 @@
     unsplit(silent) {
       this.splitDir = null;
       document.getElementById('groups').dataset.dir = '';
+      this.groupEl(0).style.flex = '';
       for (const id of this.order) {
         const t = this.tabs[id];
         if (t.group === 1) { t.group = 0; this.hostEl(0).appendChild(t.wrap); }
       }
       this.groupEl(1).hidden = true;
+      const gut = document.getElementById('gutter');
+      if (gut) gut.hidden = true;
       this.group = 0;
       this.renderTabbar();
       if (this.active) this.activate(this.active);
+      else this.markFocused();
       if (!silent) UI.log('取消分屏');
+    },
+
+    // 在两个分屏组之间轮换焦点
+    focusNextGroup() {
+      if (!this.splitDir) { UI.toast('当前未分屏'); return; }
+      const cur = this.group;
+      const other = cur === 0 ? 1 : 0;
+      const ids = this.order.filter((id) => this.tabs[id] && this.tabs[id].group === other);
+      if (!ids.length) { UI.toast('另一个窗格没有会话'); return; }
+      this.activate(ids[ids.length - 1]);
     },
 
     zoom(delta) {
       T.s.fontSize = Math.max(8, Math.min(28, T.s.fontSize + delta));
-      for (const t of Object.values(this.tabs)) { t.term.options.fontSize = T.s.fontSize; try { t.fit.fit(); } catch (e) {} }
+      this.applyFontSize(T.s.fontSize);
       T.persistSettings();
       UI.status();
+      if (window.Settings && Settings.isOpen()) Settings.render();
     },
-    zoomReset() { T.s.fontSize = 13; this.zoom(0); },
+    zoomReset() { T.s.fontSize = 13; this.applyFontSize(13); T.persistSettings(); UI.status(); },
+
+    applyFontSize(px) {
+      const n = Math.max(8, Math.min(28, parseInt(px, 10) || 13));
+      T.s.fontSize = n;
+      for (const t of Object.values(this.tabs)) {
+        t.term.options.fontSize = n;
+        try { t.fit.fit(); } catch (e) {}
+      }
+      UI.status();
+    },
+
+    applyFontFamily(family) {
+      T.s.fontFamily = family || '';
+      const stack = this.fontStack();
+      for (const t of Object.values(this.tabs)) {
+        t.term.options.fontFamily = stack;
+        try { t.fit.fit(); } catch (e) {}
+      }
+      T.persistSettings();
+    },
 
     applyTheme(name) {
       if (!THEMES[name]) return;
       T.s.theme = name;
       const v = THEMES[name].vars;
       for (const k in v) document.documentElement.style.setProperty(k, v[k]);
-      for (const t of Object.values(this.tabs)) t.term.options.theme = THEMES[name].term;
+      for (const t of Object.values(this.tabs)) {
+        t.term.options.theme = THEMES[name].term;
+        try { t.fit.fit(); } catch (e) {}
+      }
       T.persistSettings();
       UI.status();
+      if (window.Settings && Settings.isOpen()) Settings.render();
     },
 
     findByPty(id) { return this.tabs[id]; },
 
-    searchNext(q) { const t = this.activeTab(); if (t) t.search.findNext(q || UI.lastQuery || ''); },
-    searchPrev(q) { const t = this.activeTab(); if (t) t.search.findPrevious(q || UI.lastQuery || ''); },
+    searchNext(q) {
+      const t = this.activeTab();
+      if (!t) return false;
+      try { return !!t.search.findNext(q || UI.lastQuery || ''); } catch (e) { return false; }
+    },
+    searchPrev(q) {
+      const t = this.activeTab();
+      if (!t) return false;
+      try { return !!t.search.findPrevious(q || UI.lastQuery || ''); } catch (e) { return false; }
+    },
 
     /* ---- triggers engine — 后端语义引擎（re/triggers.rs，WindTerm TriggerCenter 重写）优先，v0 本地回退 ---- */
     runTriggers(tab, data) {

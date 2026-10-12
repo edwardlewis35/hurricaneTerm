@@ -78,6 +78,10 @@ jobs:
             rpm \
             build-essential curl wget file
 
+      - name: 降低 macOS dmg 打包抖动（Spotlight 索引会让 hdiutil 偶发 EBUSY）
+        if: startsWith(matrix.platform, 'macos')
+        run: sudo mdutil -a -i off || true
+
       - name: 安装前端依赖
         run: npm ci
 
@@ -85,6 +89,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS 签名 + 公证：secrets 未配置时 tauri-action 自动跳过（产物 ad-hoc 签名）。
+          # 配置方法见 README「macOS 签名与公证」一节。
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'hurricaneTerm ${{ github.ref_name }}'

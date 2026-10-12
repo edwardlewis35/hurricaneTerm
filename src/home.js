@@ -18,18 +18,21 @@
   const UNGROUPED = '未分组';
 
   const PROTOCOLS = [
-    { value: 'ssh',     label: 'SSH',  icon: '🔒', placeholder: 'user@host[:port]，如 root@example.com:2222' },
-    { value: 'telnet',  label: 'Telnet', icon: '📡', placeholder: 'host[:port]，如 192.168.1.1:23' },
-    { value: 'serial',  label: '串口', icon: '🔌', placeholder: '设备名，如 /dev/ttyUSB0 或 COM3' },
-    { value: 'tcp',     label: 'TCP',  icon: '🌐', placeholder: 'host:port，如 127.0.0.1:8080' },
-    { value: '',        label: '本地', icon: '▣',  placeholder: '本地 shell，无需输入' },
+    { value: 'ssh',     label: 'SSH',  icon: 'lock',     placeholder: 'user@host[:port]，如 root@example.com:2222' },
+    { value: 'telnet',  label: 'Telnet', icon: 'telnet', placeholder: 'host[:port]，如 192.168.1.1:23' },
+    { value: 'serial',  label: '串口', icon: 'serial',   placeholder: '设备名，如 /dev/ttyUSB0 或 COM3' },
+    { value: 'tcp',     label: 'TCP',  icon: 'globe',    placeholder: 'host:port，如 127.0.0.1:8080' },
+    { value: '',        label: '本地', icon: 'terminal', placeholder: '本地 shell，无需输入' },
   ];
   const PROTO_BY_VALUE = {};
   for (const p of PROTOCOLS) PROTO_BY_VALUE[p.value] = p;
 
   function iconOf(protocol) {
     const p = PROTO_BY_VALUE[(protocol || '').toLowerCase()];
-    return p ? p.icon : '▣';
+    return p ? p.icon : 'terminal';
+  }
+  function svgOf(protocol) {
+    return window.Icons ? window.Icons.svg(iconOf(protocol)) : '';
   }
   function labelOf(protocol) {
     const p = PROTO_BY_VALUE[(protocol || '').toLowerCase()];
@@ -138,7 +141,9 @@
   border-radius: 6px; cursor: pointer; }
 .ht-home-row:hover { background: var(--bg2); }
 .ht-home-row:active { background: var(--bg3); }
-.ht-home-ico { width: 24px; flex: none; text-align: center; font-size: 14px; }
+.ht-home-ico { width: 22px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--fg2); }
+.ht-home-ico svg { width: 15px; height: 15px; }
+.ht-home-row:hover .ht-home-ico { color: var(--accent); }
 .ht-home-col { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .ht-home-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ht-home-rsub { font-style: normal; font-size: 12px; color: var(--fg2); white-space: nowrap;
@@ -379,7 +384,9 @@
 
     row(s) {
       const r = h('div', 'ht-home-row');
-      r.appendChild(h('span', 'ht-home-ico', iconOf(s.protocol)));
+      const ico = h('span', 'ht-home-ico');
+      ico.innerHTML = svgOf(s.protocol);
+      r.appendChild(ico);
       const col = h('span', 'ht-home-col');
       col.appendChild(h('b', 'ht-home-name', s.name || '(未命名)'));
       col.appendChild(h('i', 'ht-home-rsub', subOf(s)));
@@ -394,6 +401,8 @@
       r.onclick = () => this.connect(s);
       return r;
     },
+
+    isOpen() { return !!(this.el && !this.el.hidden); },
   };
 
   window.Home = Home;
