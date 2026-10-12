@@ -303,26 +303,47 @@
     searchNext(q) { const t = this.activeTab(); if (t) t.search.findNext(q || UI.lastQuery || ''); },
     searchPrev(q) { const t = this.activeTab(); if (t) t.search.findPrevious(q || UI.lastQuery || ''); },
 
-    /* ---- triggers engine (WindTerm TriggerCenter analogue) ---- */
+    /* ---- triggers engine — 后端语义引擎（re/triggers.rs，WindTerm TriggerCenter 重写）优先，v0 本地回退 ---- */
     runTriggers(tab, data) {
+      if (!T.s.triggers.length) return;
+      T.invoke('triggers_feed', { data }).then((acts) => {
+        for (const a of acts || []) {
+          if (a.action === 'send') {
+            T.invoke('write', { id: tab.id, data: a.text }).catch(() => {});
+          } else if (a.action === 'bell') {
+            UI.beep();
+          } else if (a.action === 'highlight') {
+            this.highlightHit(tab);
+          } else if (a.action === 'run') {
+            UI.log('触发器请求执行命令：' + a.program + ' ' + (a.args || []).join(' '));
+          } else if (a.action === 'open') {
+            UI.log('触发器请求打开链接：' + a.url);
+          } else if (a.action === 'log') {
+            UI.log(a.text);
+          }
+          UI.log(`触发器命中（后端 rule ${a.ruleId ?? ''}）`);
+        }
+      }).catch(() => this.runTriggersV0(tab, data));
+    },
+
+    highlightHit(tab) {
+      try {
+        const m = tab.term.registerMarker(0);
+        const d = tab.term.registerDecoration({ marker: m, x: 1, width: Math.max(1, tab.term.cols - 2) });
+        d.onRender((el) => el.classList.add('wt-hit'));
+        setTimeout(() => { try { d.dispose(); } catch (e) {} }, 4000);
+      } catch (e) {}
+    },
+
+    runTriggersV0(tab, data) {
       const rules = T.s.triggers.filter((r) => r.enabled !== false);
       if (!rules.length) return;
       for (const r of rules) {
-        let re;
-        try { re = new RegExp(r.pattern); } catch (e) { continue; }
+        let re; try { re = new RegExp(r.pattern); } catch (e) { continue; }
         if (!re.test(data)) continue;
-        if (r.action === 'highlight') {
-          try {
-            const m = tab.term.registerMarker(0);
-            const d = tab.term.registerDecoration({ marker: m, x: 1, width: Math.max(1, tab.term.cols - 2) });
-            d.onRender((el) => el.classList.add('wt-hit'));
-            setTimeout(() => { try { d.dispose(); } catch (e) {} }, 4000);
-          } catch (e) {}
-        } else if (r.action === 'bell') {
-          UI.beep();
-        } else if (r.action === 'send') {
-          T.invoke('write', { id: tab.id, data: (r.arg || '') + '\r' }).catch(() => {});
-        }
+        if (r.action === 'highlight') this.highlightHit(tab);
+        else if (r.action === 'bell') UI.beep();
+        else if (r.action === 'send') T.invoke('write', { id: tab.id, data: (r.arg || '') + '\r' }).catch(() => {});
         UI.log(`触发器「${r.name || r.pattern}」命中`);
       }
     },

@@ -13,6 +13,7 @@ pub mod serial;
 pub mod shell;
 pub mod tcp;
 pub mod transfer;
+pub mod triggers;
 pub mod zmodem;
 pub mod scheme;
 pub mod xmodem;

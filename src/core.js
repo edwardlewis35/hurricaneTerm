@@ -36,6 +36,8 @@ window.WT = (function () {
       const o = {};
       for (const k of keys) o[k] = WT.s[k];
       WT.invoke('ui_state_save', { name: 'settings', value: JSON.stringify(o) }).catch(() => {});
+      // 触发器变更同步到后端语义引擎（re/triggers.rs）
+      WT.invoke('triggers_reload', { triggers: JSON.stringify(WT.s.triggers || []) }).catch(() => {});
     },
 
     persistSessions() {
@@ -57,6 +59,8 @@ window.WT = (function () {
 
   async function boot() {
     await WT.init();
+    // 启动时把已保存的触发器载入后端引擎（re/triggers.rs）
+    WT.invoke('triggers_reload', { triggers: JSON.stringify(WT.s.triggers || []) }).catch(() => {});
 
     WT.ui.buildMenu();
     WT.ui.buildToolbar();

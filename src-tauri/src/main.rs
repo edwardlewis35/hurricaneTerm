@@ -743,10 +743,152 @@ fn cfg_path(app: &AppHandle, file: &str) -> Result<std::path::PathBuf, String> {
     Ok(dir.join(file))
 }
 
+// ---- 触发器引擎（re::triggers，P2-2）----
+// 前端 v0 设置 {name,pattern,action,arg,enabled} 映射为 WindTerm 语义；
+// 编译/可执行门/捕获替换/转义解析全部走后端证据模块，UI 动作回传前端执行。
+#[derive(Default)]
+struct TriggersState(Mutex<re::triggers::TriggerCenter>);
+
+fn v0_to_trigger(i: usize, v: &serde_json::Value) -> Option<re::triggers::Trigger> {
+    let obj = v.as_object()?;
+    let pattern = obj.get("pattern")?.as_str()?.to_string();
+    if pattern.is_empty() {
+        return None; // lambda3：空 pattern 丢弃（1001817c0）
+    }
+    let enabled = obj
+        .get("enabled")
+        .map(|b| b.as_bool().unwrap_or(true))
+        .unwrap_or(true);
+    let action = obj.get("action").and_then(|a| a.as_str()).unwrap_or("highlight");
+    let arg = obj
+        .get("arg")
+        .and_then(|a| a.as_str())
+        .unwrap_or("")
+        .to_string();
+    let name = obj
+        .get("name")
+        .and_then(|a| a.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mut settings: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    let ty;
+    match action {
+        "send" => {
+            ty = re::triggers::TriggerType::SendText;
+            settings.insert("text.pattern".into(), serde_json::Value::String(pattern));
+            // WindTerm 风格：文本走 parseEscapedString（\r → CR），与 v0 行为一致
+            settings.insert("text".into(), serde_json::Value::String(arg + r"\r"));
+        }
+        "bell" => {
+            ty = re::triggers::TriggerType::PlaySound;
+            settings.insert("text.pattern".into(), serde_json::Value::String(pattern));
+        }
+        _ => {
+            // highlight → Highlight text：二进制从 settings["value"] 数组展开（100181530）
+            ty = re::triggers::TriggerType::HighlightText;
+            let mut rule = serde_json::Map::new();
+            rule.insert("text.pattern".into(), serde_json::Value::String(pattern));
+            settings.insert(
+                "value".into(),
+                serde_json::Value::Array(vec![serde_json::Value::Object(rule)]),
+            );
+        }
+    }
+    Some(re::triggers::Trigger {
+        name,
+        uuid: format!("v0-{i}"),
+        description: String::new(),
+        enabled,
+        dynamic: false,
+        r#type: ty,
+        settings: settings.into_iter().collect(),
+        target_sessions: Default::default(),
+        target_systems: ["*".to_string()].into_iter().collect(),
+    })
+}
+
+#[tauri::command]
+fn triggers_reload(
+    state: tauri::State<TriggersState>,
+    triggers: String,
+) -> Result<usize, String> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(&triggers).map_err(|e| e.to_string())?;
+    let ts: Vec<_> = list
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| v0_to_trigger(i, v))
+        .collect();
+    let mut c = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(c.set_triggers(ts).rules_len)
+}
+
+/// 收集型 sink：动作回传前端（编辑层高亮/声音/发送/进程/错误）
+struct CollectSink(Vec<serde_json::Value>);
+impl re::triggers::TriggerSink for CollectSink {
+    fn open_url(&mut self, url: &str) {
+        self.0
+            .push(serde_json::json!({ "action": "open", "url": url }));
+    }
+    fn play_sound(&mut self, _s: &str) {
+        self.0.push(serde_json::json!({ "action": "bell" }));
+    }
+    fn start_process_detached(
+        &mut self,
+        program: &str,
+        args: &[String],
+        _cwd: &str,
+        _hide: bool,
+    ) -> bool {
+        self.0
+            .push(serde_json::json!({ "action": "run", "program": program, "args": args }));
+        !program.is_empty()
+    }
+    fn send_text(&mut self, text: &str) {
+        self.0
+            .push(serde_json::json!({ "action": "send", "text": text }));
+    }
+    fn report_error(&mut self, name: &str, body: &str) {
+        self.0.push(serde_json::json!({
+            "action": "log",
+            "text": format!("触发器「{name}」执行失败：{body}")
+        }));
+    }
+    fn has_widget(&self) -> bool {
+        true
+    }
+}
+
+#[tauri::command]
+fn triggers_feed(state: tauri::State<TriggersState>, data: String) -> Vec<serde_json::Value> {
+    let mut c = match state.0.lock() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let uuids: std::collections::BTreeSet<String> =
+        c.trigger_rules().iter().map(|r| r.uuid.clone()).collect();
+    let hits = c.match_output(&uuids, &data);
+    let mut sink = CollectSink(vec![]);
+    for h in &hits {
+        // 高亮/tooltip 属编辑层动作：executeTriggerRule 内为 no-op（1001822a0），在此回传前端
+        if let Some(rule) = c.trigger_rule(h.rule_id) {
+            if matches!(
+                rule.r#type,
+                re::triggers::TriggerType::HighlightText | re::triggers::TriggerType::ShowTooltip
+            ) {
+                sink.0
+                    .push(serde_json::json!({ "action": "highlight", "ruleId": h.rule_id }));
+            }
+        }
+        c.execute_trigger_rule(h.rule_id, &h.captures, &mut sink);
+    }
+    sink.0
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(PtyState::default())
+        .manage(TriggersState::default())
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
@@ -764,7 +906,9 @@ pub fn run() {
             ui_state_save,
             ui_state_load,
             complete_input,
-            fs_list
+            fs_list,
+            triggers_reload,
+            triggers_feed
         ])
         .run(tauri::generate_context!())
         .expect("error while running hurricaneTerm");
