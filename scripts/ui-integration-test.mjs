@@ -232,6 +232,28 @@ await flush();
 ok('K1 全关后 Home 重现', !$('#home').hidden);
 ok('K2 无标签时显示品牌位', !!$('.ht-brand'));
 
+/* ============ L. 实机反馈修复 + WindTerm 高亮移植 ============ */
+TM.applyTheme('tabby-light');
+ok('L1 浅色主题写入 color-scheme（原生下拉框跟随）', document.documentElement.style.getPropertyValue('--color-scheme') === 'light');
+TM.applyTheme('tabby-dark');
+ok('L2 深色主题 color-scheme=dark', document.documentElement.style.getPropertyValue('--color-scheme') === 'dark');
+ok('L3 模式色带 class（默认远程）', document.body.classList.contains('mode-remote'));
+UI.setMode('Local');
+ok('L4 切本地后色带切换', document.body.classList.contains('mode-local') && !document.body.classList.contains('mode-remote'));
+UI.setMode('Remote');
+ok('L5 内置高亮默认开启且 4 类规则', T.s.builtinHighlight !== false && TM.HIGHLIGHT_RULES.length === 4);
+const tabH = await TM.create(null);
+await flush();
+tabH.term._onData('kubectl get pods\r');
+await flush();
+ok('L6 大纲记录真实命令文本', tabH.outline.length === 1 && tabH.outline[0].text === 'kubectl get pods');
+TM.runHighlights(tabH, 'default  worker-batch-9x2  0/1  Error  7  41m');
+ok('L7 高亮命中生成持久装饰', (tabH._hls || []).length >= 1);
+TM.runHighlights(tabH, '192.168.1.1:22 open');
+ok('L8 地址类规则命中', (tabH._hls || []).length >= 2);
+await TM.close(tabH.id);
+await flush();
+
 // 报告
 console.log(results.map(([s, n]) => `${s} ${n}`).join('\n'));
 if (errors.length) console.log('ERRORS:\n' + errors.join('\n'));

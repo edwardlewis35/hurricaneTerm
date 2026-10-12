@@ -39,6 +39,9 @@
 
 * { box-sizing: border-box; }
 
+/* 原生控件（select 下拉弹层、滚动条、日期等）跟随主题深浅 */
+html { color-scheme: var(--color-scheme, dark); }
+
 html, body {
   margin: 0; height: 100%; overflow: hidden;
   background: var(--bg); color: var(--fg);
@@ -126,7 +129,12 @@ body.is-mac.no-native-lights #mac-lights { display: flex; }
 #mac-lights:hover .ml::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: rgba(0, 0, 0, .18); }
 
 /* ---------- 工作区 ---------- */
-#workspace { display: flex; min-height: 0; }
+#workspace { display: flex; min-height: 0; border-left: 2px solid transparent; }
+/* WindTerm 借鉴：Local/Remote 模式用窗口左缘色带表示（蓝=远程，绿=本地） */
+body.mode-remote #workspace { border-left-color: var(--accent); }
+body.mode-local #workspace { border-left-color: var(--ok); }
+/* 同步输入开启时所有窗格加描边，提示键盘会广播 */
+body.sync-on #groups .group { outline: 1px solid rgba(240, 173, 78, .45); outline-offset: -1px; }
 
 /* 左侧图标活动栏（替代 Tabby 的 left toolbar） */
 #actbar {
@@ -222,6 +230,11 @@ body.dragging { cursor: col-resize; user-select: none; }
 .xterm { padding: 4px 0 4px 6px; }
 .xterm .xterm-viewport { background: transparent !important; }
 .xterm-decoration-container .wt-hit { background: rgba(240, 173, 78, .22); border-bottom: 1px solid rgba(240, 173, 78, .5); }
+/* WindTerm 风格内置高亮：命中行持久着色 + 左侧色条 */
+.wt-hl-err { background: rgba(217, 83, 79, .16); box-shadow: inset 2px 0 0 var(--danger); }
+.wt-hl-warn { background: rgba(240, 173, 78, .14); box-shadow: inset 2px 0 0 var(--warn); }
+.wt-hl-ok { background: rgba(92, 184, 92, .12); box-shadow: inset 2px 0 0 var(--ok); }
+.wt-hl-addr { background: rgba(79, 173, 255, .12); box-shadow: inset 2px 0 0 var(--accent); }
 
 /* Home / Settings 覆盖层：让开标题栏，铺满主区 */
 #home, #settings { position: absolute; inset: 0; z-index: 6; background: var(--bg); overflow: auto; }

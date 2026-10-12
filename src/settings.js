@@ -108,6 +108,15 @@
       row('启动时打开主页', '关闭则启动直接落到上次的终端', toggle('homeOnStart', T.s.homeOnStart !== false))
       + row('后台标签活动提示', '有输出且开了「活动时通知」的标签显示圆点', toggle('activityDot', T.s.activityDot !== false))
     );
+    h += card('输出高亮（借鉴 WindTerm）',
+      row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中行持久着色', toggle('builtinHighlight', T.s.builtinHighlight !== false))
+      + `<div class="st-row"><div class="st-l"><i>
+          <span class="wt-hl-err" style="padding:0 6px;border-radius:3px">error / failed / fatal</span>
+          <span class="wt-hl-warn" style="padding:0 6px;border-radius:3px">warn / timeout</span>
+          <span class="wt-hl-ok" style="padding:0 6px;border-radius:3px">ok / success / running</span>
+          <span class="wt-hl-addr" style="padding:0 6px;border-radius:3px">192.168.1.1 / https://…</span>
+        </i></div></div>`
+    );
     return h;
   }
 
@@ -186,7 +195,7 @@
   }
 
   function renderAbout() {
-    let h = `<h2 class="st-h">关于</h2><p class="st-sub">hurricaneTerm 0.7.0</p>`;
+    let h = `<h2 class="st-h">关于</h2><p class="st-sub">hurricaneTerm 0.7.1</p>`;
     h += card('', `
       <div class="st-row"><div class="st-l"><b>来历</b><i>WindTerm 2.6.0 逆向分析 → Tauri 2 洁净室重写</i></div></div>
       <div class="st-row"><div class="st-l"><b>架构</b><i>Tauri 2 + Rust（russh / portable-pty / russh-sftp）后端 + xterm.js 前端</i></div></div>

@@ -66,6 +66,10 @@
       set('#st-zoom', T.s.fontSize + ' px');
       set('#st-enc', 'UTF-8');
       set('#st-eol', 'LF');
+      // WindTerm 借鉴：模式色带 + 同步输入描边（全局态一眼可见）
+      document.body.classList.toggle('mode-remote', T.s.mode !== 'Local');
+      document.body.classList.toggle('mode-local', T.s.mode === 'Local');
+      document.body.classList.toggle('sync-on', !!T.s.sync);
     },
     clock() { const e = $('#st-clock'); if (e) e.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false }); },
 
@@ -406,7 +410,7 @@
       if (!t || !t.outline.length) {
         html += '<div class="empty">回车提交的命令会出现在这里，点击可跳到对应行。</div>';
       } else {
-        for (const o of t.outline.slice(-80)) html += `<div class="row ol"><span class="ico">${svg('terminal')}</span><span class="col"><b>#${o.n}</b><i>行 ${o.y}</i></span></div>`;
+        for (const o of t.outline.slice(-80)) html += `<div class="row ol"><span class="ico">${svg('terminal')}</span><span class="col"><b>${escapeHtml(o.text || '(空命令)')}</b><i>#${o.n} · 行 ${o.y}</i></span></div>`;
       }
       body.innerHTML = html;
       body.querySelectorAll('.ol').forEach((row, i) => {

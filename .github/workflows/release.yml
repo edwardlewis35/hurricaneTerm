@@ -43,6 +43,9 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     name: build (${{ matrix.label }})
+    # job 级探测：步骤级 if 用它决定走「签名」还是「不签名」分支
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
 
     steps:
       - uses: actions/checkout@v4
@@ -85,12 +88,36 @@ jobs:
       - name: 安装前端依赖
         run: npm ci
 
-      - name: 构建并发布
+      # 注意：APPLE_* 只能「整组注入」或「整组不注入」。
+      # 空字符串会被 tauri-bundler 视为「需要签名」而去 security import 一张空证书，
+      # 直接报 `failed to import keychain certificate`（v0.7.0 的 macOS 失败即此）。
+      # 是否配置由 job 级 env 探测，未配置时走下面这个完全不注入 APPLE_* 的步骤。
+      - name: 构建并发布（未配置 Apple 签名）
+        if: env.APPLE_CERTIFICATE == ''
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS 签名 + 公证：secrets 未配置时 tauri-action 自动跳过（产物 ad-hoc 签名）。
-          # 配置方法见 README「macOS 签名与公证」一节。
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'hurricaneTerm ${{ github.ref_name }}'
+          releaseBody: |
+            hurricaneTerm ${{ github.ref_name }} — WindTerm 逆向分析 → Tauri 重构
+
+            附件为各平台安装包：
+            - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
+            - Windows：`.msi`、NSIS `.exe`
+            - macOS：`.dmg`（Apple Silicon arm64，未签名：首次打开前执行 `xattr -cr /Applications/hurricaneTerm.app`）
+
+            原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: 构建并发布（已配置 Apple 签名 + 公证）
+        if: env.APPLE_CERTIFICATE != ''
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -106,7 +133,7 @@ jobs:
             附件为各平台安装包：
             - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
             - Windows：`.msi`、NSIS `.exe`
-            - macOS：`.dmg`（Apple Silicon arm64）
+            - macOS：`.dmg`（Apple Silicon arm64，已签名 + 公证）
 
             原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
           releaseDraft: true

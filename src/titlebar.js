@@ -80,6 +80,17 @@
           if (e.target.closest('#tabbar .ht-tab, .tb-btn, .wc, .ml')) return;
           this.toggleMaximize();
         });
+        // 手动拖窗：data-tauri-drag-region 只认事件目标自身，标签条子元素会把它挡住，
+        // 所以改为在标题栏上统一拦截「非交互区」的按下事件
+        bar.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          if (e.target.closest('.ht-tab, .ht-actions, #tb-winctl, #mac-lights, .tb-btn, .wc, .ml, .ht-plus, .ht-caret, button, input, select')) return;
+          const w = win();
+          if (w && typeof w.startDragging === 'function') {
+            e.preventDefault();
+            w.startDragging().catch(() => {});
+          }
+        });
       }
       this.refresh();
     },

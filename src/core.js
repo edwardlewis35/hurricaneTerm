@@ -23,6 +23,7 @@ window.WT = (function () {
       tooltips: true,
       homeOnStart: true,
       activityDot: true,
+      builtinHighlight: true,      // WindTerm 风格内置输出高亮
     },
 
     async init() {
@@ -38,7 +39,7 @@ window.WT = (function () {
 
     persistSettings() {
       const keys = ['theme', 'fontSize', 'fontFamily', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
-        'statusBar', 'tooltips', 'homeOnStart', 'activityDot'];
+        'statusBar', 'tooltips', 'homeOnStart', 'activityDot', 'builtinHighlight'];
       const o = {};
       for (const k of keys) o[k] = WT.s[k];
       WT.invoke('ui_state_save', { name: 'settings', value: JSON.stringify(o) }).catch(() => {});
@@ -64,13 +65,6 @@ window.WT = (function () {
   });
 
   const $ = (s) => document.querySelector(s);
-
-  /* 标题栏空白处交给 Tauri 拖动窗口（无边框模式必须显式标注） */
-  function wireDragRegions() {
-    for (const sel of ['#titlebar', '.tb-drag', '.ht-brand']) {
-      document.querySelectorAll(sel).forEach((el) => el.setAttribute('data-tauri-drag-region', ''));
-    }
-  }
 
   /* 浮动搜索卡 / 命令面板 / 状态栏 chip 的接线 */
   function wireChrome() {
@@ -113,8 +107,6 @@ window.WT = (function () {
     chip('#st-sync', () => WT.ui.toggleSync(), '同步输入：所有会话同时接收键盘输入');
     chip('#st-zoom', () => WT.ui.zoomReset ? WT.ui.zoomReset() : WT.term.zoomReset(), '点击重置字号');
     chip('#st-theme', () => WT.ui.cycleTheme(), '点击切换深浅色');
-
-    wireDragRegions();
   }
 
   async function boot() {
@@ -145,7 +137,8 @@ window.WT = (function () {
       const { id, data } = e.payload;
       const tab = WT.term.findByPty(id);
       if (!tab) return;
-      tab.term.write(data);
+      // 高亮要在 write 回调里跑（xterm 异步解析），触发器不依赖光标位置可先跑
+      tab.term.write(data, () => WT.term.runHighlights(tab, data));
       // 活动通知：后台标签有输出且开了 notify → 圆点
       if (tab.notify && WT.s.activityDot !== false && WT.term.active !== tab.id && !tab.activity) {
         tab.activity = true;

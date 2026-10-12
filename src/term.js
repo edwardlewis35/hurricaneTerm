@@ -18,6 +18,7 @@
       '--input-bg': c.inputBg, '--surface': c.surface, '--surface-hover': c.surfaceHover,
       '--danger': c.danger, '--warn': c.warn, '--ok': c.ok,
       '--term-bg': c.termBg,
+      '--color-scheme': c.scheme || 'dark',
     };
     return v;
   }
@@ -31,6 +32,7 @@
     danger: '#d9534f', warn: '#f0ad4e', ok: '#5cb85c',
   };
   const CHROME_LIGHT = {
+    scheme: 'light',
     bg: '#f2f3f5', bg2: '#ffffff', bg3: '#e6e8eb', bg4: '#dfe2e6',
     fg: '#2b2b2b', fg2: 'rgba(0,0,0,.5)', fg3: '#1f2328',
     accent: '#0275d8', accentBg: 'rgba(2,117,216,.14)',
@@ -91,6 +93,7 @@
     },
     'dige-white': {
       vars: chrome({
+        scheme: 'light',
         bg: '#f7f7f5', bg2: '#ffffff', bg3: '#ececeb', bg4: '#e2e2e0',
         fg: '#2b2b2b', fg2: 'rgba(0,0,0,.5)', fg3: '#1c1c1c',
         accent: '#1f7fd0', accentBg: 'rgba(31,127,208,.13)',
@@ -214,8 +217,9 @@
 
       let inputLine = '';   // 输入镜像（Tab 补全上下文；方向键编辑不追踪，v1 够用）
       term.onData((data) => {
+        let submitted = null;
         for (const ch of data) {
-          if (ch === '\r') inputLine = '';
+          if (ch === '\r') { submitted = inputLine; inputLine = ''; }
           else if (ch === '\x7f') inputLine = inputLine.slice(0, -1);
           else if (ch === '\x03') inputLine = '';
           else if (ch >= ' ') inputLine += ch;
@@ -225,9 +229,13 @@
         } else {
           T.invoke('write', { id, data }).catch(() => {});
         }
-        if (data.includes('\r')) {
-          tab.outline.push({ n: tab.outline.length + 1, text: '(input)', y: term.buffer.active.baseY + term.buffer.active.cursorY });
-          UI.renderOutline();
+        if (submitted !== null) {
+          // WindTerm 大纲语义：记录真实提交的命令行，可点击回跳
+          const text = submitted.trim().slice(0, 120);
+          if (text) {
+            tab.outline.push({ n: tab.outline.length + 1, text, y: term.buffer.active.baseY + term.buffer.active.cursorY });
+            UI.renderOutline();
+          }
         }
       });
       term.onResize(({ rows, cols }) => {
@@ -553,6 +561,38 @@
         d.onRender((el) => el.classList.add('wt-hit'));
         setTimeout(() => { try { d.dispose(); } catch (e) {} }, 4000);
       } catch (e) {}
+    },
+
+    /* ---- WindTerm 风格内置高亮：关键字/地址着色（持久行装饰） ----
+     * 借鉴 WindTerm 的「输出高亮」设计：error/warn/ok/地址 四类默认规则，
+     * 命中即在所在行加持久着色装饰（不随滚动消失），可在设置页整体关闭。
+     */
+    HIGHLIGHT_RULES: [
+      { kind: 'err', re: /\b(error|errors|failed|failure|fatal|panic|denied|refused|rejected)\b/i, cls: 'wt-hl-err' },
+      { kind: 'warn', re: /\b(warn|warning|caution|timeout|timed out|deprecat)\b/i, cls: 'wt-hl-warn' },
+      { kind: 'ok', re: /\b(ok|okay|success|succeeded|passed)\b/i, cls: 'wt-hl-ok' },
+      { kind: 'addr', re: /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|https?:\/\/[^\s'"]+/i, cls: 'wt-hl-addr' },
+    ],
+
+    highlightLine(tab, cls, offset) {
+      try {
+        const m = tab.term.registerMarker(offset || 0);
+        const d = tab.term.registerDecoration({ marker: m, x: 1, width: Math.max(1, tab.term.cols - 2) });
+        d.onRender((el) => el.classList.add(cls));
+        tab._hls = tab._hls || [];
+        tab._hls.push(d);
+        // 上限保护：超出丢弃最旧的装饰，避免长会话内存增长
+        if (tab._hls.length > 240) { const old = tab._hls.shift(); try { old.dispose(); } catch (e) {} }
+      } catch (e) {}
+    },
+
+    // 必须在 term.write 的回调里调用：xterm 解析是异步的，回调时光标才落在正确行
+    runHighlights(tab, data) {
+      if (T.s.builtinHighlight === false || !data) return;
+      const offset = /\n$/.test(data) ? -1 : 0;   // 以换行结尾时目标行是光标上一行
+      for (const r of this.HIGHLIGHT_RULES) {
+        if (r.re.test(data)) this.highlightLine(tab, r.cls, offset);
+      }
     },
 
     runTriggersV0(tab, data) {
