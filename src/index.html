@@ -65,7 +65,9 @@
     <label>命令 <input id="sf-command" placeholder="留空 = $SHELL" /></label>
     <label>参数 <input id="sf-args" placeholder="以空格分隔（可选）" /></label>
     <fieldset>
-      <legend>Telnet 已支持（填 主机+端口）；SSH P1 生效，本轮仅保存</legend>
+      <legend>协议（Telnet/SSH 已实连）</legend>
+      <label>类型 <select id="sf-proto"><option value="">本地</option><option value="telnet">Telnet</option><option value="ssh">SSH</option></select></label>
+      <label>密码 <input id="sf-password" type="password" placeholder="SSH 密码（可选，键盘交互兜底）" /></label>
       <label>主机 <input id="sf-host" placeholder="host 或 user@host" /></label>
       <label>端口 <input id="sf-port" placeholder="22" /></label>
       <label>用户 <input id="sf-user" placeholder="root" /></label>

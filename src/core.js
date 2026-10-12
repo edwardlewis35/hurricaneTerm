@@ -73,6 +73,7 @@ window.WT = (function () {
       tab.term.write(data);
       WT.term.runTriggers(tab, data);
     });
+    await WT.listen('re-log', (ev) => { try { WT.ui.log(ev.payload.data); } catch (_) {} });
     await WT.listen('pty-exit', (e) => {
       const tab = WT.term.findByPty(e.payload.id);
       if (!tab || tab.exited) return;

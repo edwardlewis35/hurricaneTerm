@@ -441,7 +441,7 @@
     async saveSessionFromDialog() {
       const v = (id) => ($('#' + id).value || '').trim();
       const name = v('sf-name') || 'session-' + (T.s.sessions.length + 1);
-      const s = { name, folder: v('sf-folder'), command: v('sf-command'), args: v('sf-args') ? v('sf-args').split(/\s+/) : [], host: v('sf-host'), port: parseInt(v('sf-port') || '0', 10) || 0, user: v('sf-user') };
+      const s = { name, folder: v('sf-folder'), command: v('sf-command'), args: v('sf-args') ? v('sf-args').split(/\s+/) : [], host: v('sf-host'), port: parseInt(v('sf-port') || '0', 10) || 0, user: v('sf-user'), protocol: v('sf-proto'), password: v('sf-password') };
       T.s.sessions = T.s.sessions.filter((x) => x.name !== name).concat([s]);
       await T.persistSessions();
       this.closeDlg('#dlg-session');

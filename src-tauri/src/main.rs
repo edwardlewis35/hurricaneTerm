@@ -4,6 +4,7 @@
 #![allow(unused)]
 
 mod re;
+mod ssh_live;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,10 @@ pub struct Session {
     pub user: String,
     #[serde(default)]
     pub folder: String,
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub password: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -235,6 +240,62 @@ fn connect_telnet(
     Ok(id)
 }
 
+/// SSH 会话：russh 实连，认证序列/状态映射遵循 re/ssh_auth 语义（WindTerm 证据）
+#[tauri::command]
+fn connect_ssh(
+    app: AppHandle,
+    state: State<PtyState>,
+    rows: u16,
+    cols: u16,
+    host: String,
+    port: Option<u16>,
+    user: Option<String>,
+    password: Option<String>,
+    key_path: Option<String>,
+) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let user = user.filter(|u| !u.is_empty()).unwrap_or_else(|| {
+        std::env::var("USER").unwrap_or_else(|_| "root".into())
+    });
+    // 默认密钥：~/.ssh/id_ed25519（WindTerm 自动发现语义简化版）
+    let key = key_path.filter(|k| !k.is_empty()).or_else(|| {
+        let h = std::env::var("HOME").ok()?;
+        Some(format!("{h}/.ssh/id_ed25519"))
+    });
+    let ctl = ssh_live::spawn_session(
+        app.clone(),
+        id.clone(),
+        host,
+        port.unwrap_or(22),
+        user,
+        password.filter(|p| !p.is_empty()),
+        key,
+        rows,
+        cols,
+        config_dir,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let ssh_in = ctl.input;
+    let rz = ctl.resize;
+    let stop = ctl.stop;
+    state.0.lock().unwrap().insert(
+        id.clone(),
+        Entry {
+            writer: Box::new(ssh_live::SshInput(ssh_in)),
+            resize: Box::new(move |r, c| {
+                rz.send((c as u32, r as u32)).map_err(|_| "closed".to_string())
+            }),
+            child: None,
+            closer: Some(Box::new(move || {
+                let _ = stop.send(());
+            })),
+        },
+    );
+    Ok(id)
+}
+
 #[tauri::command]
 fn write(state: State<PtyState>, id: String, data: String) -> Result<(), String> {
     let mut map = state.0.lock().map_err(|e| e.to_string())?;
@@ -355,6 +416,7 @@ pub fn run() {
             resize,
             kill,
             connect_telnet,
+            connect_ssh,
             sessions_load,
             sessions_save,
             ui_state_save,
