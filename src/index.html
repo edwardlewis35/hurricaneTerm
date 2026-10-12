@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <title>hurricaneTerm · WindTerm 重构（Tauri）</title>
+  <link rel="stylesheet" href="vendor/xterm.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="menubar"></div>
+  <div id="toolbar"></div>
+
+  <div id="workspace">
+    <aside id="dock">
+      <div id="dock-tabs"></div>
+      <div id="dock-body"></div>
+    </aside>
+    <div id="dock-resizer"></div>
+    <main id="main-area">
+      <div id="searchbar" hidden>
+        <input id="search-input" placeholder="在终端中查找…" />
+        <button id="search-prev">↑ 上一个</button>
+        <button id="search-next">↓ 下一个</button>
+        <button id="search-close">×</button>
+      </div>
+      <div id="groups" data-dir="">
+        <section class="group" data-g="0">
+          <div class="tabbar"></div>
+          <div class="term-host"></div>
+        </section>
+        <section class="group" data-g="1" hidden>
+          <div class="tabbar"></div>
+          <div class="term-host"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="statusbar">
+    <span id="st-mode" class="chip" title="本地/远程模式（WindTerm Local/Remote Mode）">远程模式</span>
+    <span id="st-sync" class="chip" title="同步输入：所有会话同时接收键盘输入">同步输入：关</span>
+    <span class="spacer"></span>
+    <span id="st-size" class="chip" title="活动终端行列">80 × 24</span>
+    <span id="st-enc" class="chip">UTF-8</span>
+    <span id="st-eol" class="chip">LF</span>
+    <span id="st-zoom" class="chip">13 px</span>
+    <span id="st-theme" class="chip">主题：default</span>
+    <span id="st-clock" class="chip"></span>
+    <span class="chip dim">hurricaneTerm 0.3.0</span>
+  </div>
+
+  <div id="palette" hidden>
+    <div class="palette-box">
+      <input id="palette-input" placeholder="输入命令…（↑↓ 选择，Enter 执行，Esc 关闭）" />
+      <div id="palette-list"></div>
+    </div>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <dialog id="dlg-session">
+    <h3>保存会话</h3>
+    <label>名称 <input id="sf-name" placeholder="my-shell" /></label>
+    <label>分组 <input id="sf-folder" placeholder="默认 / 服务器 / …" /></label>
+    <label>命令 <input id="sf-command" placeholder="留空 = $SHELL" /></label>
+    <label>参数 <input id="sf-args" placeholder="以空格分隔（可选）" /></label>
+    <fieldset>
+      <legend>SSH（P1 生效，本轮仅保存）</legend>
+      <label>主机 <input id="sf-host" placeholder="host 或 user@host" /></label>
+      <label>端口 <input id="sf-port" placeholder="22" /></label>
+      <label>用户 <input id="sf-user" placeholder="root" /></label>
+    </fieldset>
+    <div class="dlg-btns">
+      <button id="sf-cancel">取消</button>
+      <button id="sf-save" class="primary">保存</button>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-triggers">
+    <h3>触发器 · TriggerCenter v0</h3>
+    <div id="trigger-list"></div>
+    <div class="tform">
+      <input id="tr-name" placeholder="名称" />
+      <input id="tr-pattern" placeholder="正则，如 error|failed|权限不足" />
+      <select id="tr-action">
+        <option value="highlight">高亮行</option>
+        <option value="bell">响铃</option>
+        <option value="send">发送文本</option>
+      </select>
+      <input id="tr-arg" placeholder="发送内容（action=send 时）" />
+      <button id="tr-add">添加</button>
+    </div>
+    <div class="dlg-btns"><button id="tr-close" class="primary">完成</button></div>
+  </dialog>
+
+  <dialog id="dlg-about">
+    <h3>关于 hurricaneTerm</h3>
+    <p>WindTerm 2.6.0 逆向分析 → Tauri 重构（P0 骨架 + P1-UI）。</p>
+    <p>架构：Tauri 2 + Rust(portable-pty) 后端 + xterm.js 前端。原创代码（Apache-2.0），<b>不含任何 WindTerm 专有文件</b>。</p>
+    <p>对照：菜单/工具栏/Dock 六窗格/状态栏/主题/命令面板/触发器/分屏/同步输入 —— 布局与交互对齐 WindTerm；SSH/SFTP/tmux/串口/ZMODEM 属 P1+ 路线。</p>
+    <p class="dim">仓库：github.com/edwardlewis35/hurricaneTerm</p>
+    <div class="dlg-btns"><button id="ab-close" class="primary">关闭</button></div>
+  </dialog>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/addon-search.js"></script>
+  <script src="vendor/addon-web-links.js"></script>
+  <script src="core.js"></script>
+  <script src="term.js"></script>
+  <script src="ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# build artifacts
+src-tauri/target/
+dist/
+node_modules/
+src-tauri/gen/
+
+# logs / temp
+*.log
+*.tmp
+.DS_Store
+# 本机 crates 镜像（环境相关，不入库）
+src-tauri/.cargo/config.toml
