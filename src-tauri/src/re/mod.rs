@@ -3,3 +3,4 @@
 // 声明级语义重写。证据文件：windterm-analysis/re-work/decompiled/。
 // ⚠ 衍生作品：默认仅本地使用，发布决定归用户。
 pub mod telnet;
+pub mod ssh_auth;
