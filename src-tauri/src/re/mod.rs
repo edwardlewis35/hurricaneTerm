@@ -14,3 +14,4 @@ pub mod shell;
 pub mod tcp;
 pub mod transfer;
 pub mod zmodem;
+pub mod xmodem;

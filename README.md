@@ -26,7 +26,7 @@
 | 本地文件浏览器（浏览 / 导航 / 在终端 cd） | ✅ |
 | 发送窗格 + 同步输入广播 | ✅ |
 | 查找（Ctrl+F）、缩放（Ctrl±）、全屏（F11） | ✅ |
-| SSH / SFTP / Telnet / 串口 / TCP / 隧道 / tmux | ⏳ P1 |
+| SSH（russh 实连）/ Telnet（协商引擎）/ 串口（termios 直驱）/ TCP（直连·Socks5·HTTP CONNECT·ProxyCommand） | ✅ |
 | 传输队列（SFTP / ZMODEM） | ⏳ P1 |
 | 语法高亮方案、命令库补全、vim 键位层、i18n | ⏳ P2/P3 |
 

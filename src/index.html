@@ -65,12 +65,29 @@
     <label>命令 <input id="sf-command" placeholder="留空 = $SHELL" /></label>
     <label>参数 <input id="sf-args" placeholder="以空格分隔（可选）" /></label>
     <fieldset>
-      <legend>协议（Telnet/SSH 已实连）</legend>
-      <label>类型 <select id="sf-proto"><option value="">本地</option><option value="telnet">Telnet</option><option value="ssh">SSH</option></select></label>
+      <legend>协议（Telnet/SSH/串口/TCP 已实连）</legend>
+      <label>类型 <select id="sf-proto"><option value="">本地</option><option value="telnet">Telnet</option><option value="ssh">SSH</option><option value="serial">串口</option><option value="tcp">TCP</option></select></label>
       <label>密码 <input id="sf-password" type="password" placeholder="SSH 密码（可选，键盘交互兜底）" /></label>
       <label>主机 <input id="sf-host" placeholder="host 或 user@host" /></label>
       <label>端口 <input id="sf-port" placeholder="22" /></label>
       <label>用户 <input id="sf-user" placeholder="root" /></label>
+    </fieldset>
+    <fieldset>
+      <legend>串口（类型=串口；参数仅建会话时生效，重连可改）</legend>
+      <label>端口 <input id="sf-target" placeholder="/dev/ttyUSB0 或 COM3" /></label>
+      <label>波特率 <input id="sf-baud" placeholder="9600（WindTerm 默认）" /></label>
+      <label>数据位 <input id="sf-databits" placeholder="8（合法 5-8）" /></label>
+      <label>校验位 <select id="sf-parity"><option value="">None</option><option value="Even">Even</option><option value="Odd">Odd</option><option value="Mark">Mark</option><option value="Space">Space</option></select></label>
+      <label>停止位 <input id="sf-stopbits" placeholder="1（合法 1-3，3=1.5）" /></label>
+      <label>流控 <select id="sf-flow"><option value="">None</option><option value="RTS/CTS">RTS/CTS</option><option value="XON/XOFF">XON/XOFF</option></select></label>
+    </fieldset>
+    <fieldset>
+      <legend>代理（类型=TCP；直连/Socks5/Http CONNECT/ProxyCommand）</legend>
+      <label>代理类型 <select id="sf-proxytype"><option value="">直连</option><option value="Socks5">Socks5</option><option value="Http">Http</option><option value="ProxyCommand">ProxyCommand</option><option value="System">System(env)</option></select></label>
+      <label>代理地址 <input id="sf-proxyhost" placeholder="127.0.0.1:1080" /></label>
+      <label>代理用户 <input id="sf-proxyuser" /></label>
+      <label>代理密码 <input id="sf-proxypass" type="password" /></label>
+      <label>ProxyCommand <input id="sf-proxycmd" placeholder="nc %h %p 或 ssh -W %h:%p gw" /></label>
     </fieldset>
     <div class="dlg-btns">
       <button id="sf-cancel">取消</button>

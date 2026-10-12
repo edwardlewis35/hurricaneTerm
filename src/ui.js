@@ -267,7 +267,9 @@
         html += `<div class="grp">▸ ${g}</div>`;
         for (let i = 0; i < groups[g].length; i++) {
           const s = groups[g][i];
-          const sub = s.command || (s.host ? `${s.user || ''}@${s.host}` : '默认 shell');
+          const sub = s.protocol === 'serial' ? (s.target || s.host || '串口')
+            : s.protocol === 'tcp' ? (s.target || `${s.host}:${s.port}`)
+            : (s.command || (s.host ? `${s.user || ''}@${s.host}` : '默认 shell'));
           html += `<div class="row sess" data-name="${encodeURIComponent(s.name)}"><span class="ico">▣</span>
             <span class="col"><b>${escapeHtml(s.name)}</b><i>${escapeHtml(sub)}</i></span>
             <span class="x" data-del="${encodeURIComponent(s.name)}">×</span></div>`;
@@ -382,7 +384,7 @@
         };
       }
       if (isSsh && mode === 'local') this.toast('切到远端/双栏查看 SFTP 目录');
-    }
+    },
 
     senderSet(text, direct) {
       const ta = $('#dock-body textarea');
@@ -498,18 +500,31 @@
 
     openSessionDialog() {
       const d = $('#dlg-session');
-      d.querySelectorAll('input').forEach((i) => { if (i.id === 'sf-command') i.value = ''; else i.value = ''; });
+      d.querySelectorAll('input').forEach((i) => { i.value = ''; });
+      d.querySelectorAll('select').forEach((s) => { s.value = ''; });
       this.openDlg('#dlg-session');
     },
     async saveSessionFromDialog() {
       const v = (id) => ($('#' + id).value || '').trim();
       const name = v('sf-name') || 'session-' + (T.s.sessions.length + 1);
-      const s = { name, folder: v('sf-folder'), command: v('sf-command'), args: v('sf-args') ? v('sf-args').split(/\s+/) : [], host: v('sf-host'), port: parseInt(v('sf-port') || '0', 10) || 0, user: v('sf-user'), protocol: v('sf-proto'), password: v('sf-password') };
+      const iv = (id) => parseInt(v(id) || '0', 10) || 0;
+      const ph = v('sf-proxyhost');
+      const phSplit = ph.includes(':') ? [ph.slice(0, ph.lastIndexOf(':')), ph.slice(ph.lastIndexOf(':') + 1)] : [ph, ''];
+      const s = {
+        name, folder: v('sf-folder'), command: v('sf-command'), args: v('sf-args') ? v('sf-args').split(/\s+/) : [],
+        host: v('sf-host'), port: iv('sf-port'), user: v('sf-user'), protocol: v('sf-proto'), password: v('sf-password'),
+        // 串口（项5）：target=端口名；参数名对齐 WindTerm 属性表 serial.*
+        target: v('sf-target'), baudRate: iv('sf-baud'), dataBits: iv('sf-databits'),
+        parity: v('sf-parity'), stopBits: iv('sf-stopbits'), flowControl: v('sf-flow'),
+        // TCP 代理（项5）：类型串对齐二进制实读（Socks5/Http/ProxyCommand/System）
+        proxyType: v('sf-proxytype'), proxyHost: phSplit[0], proxyPort: parseInt(phSplit[1] || '0', 10) || 0,
+        proxyUser: v('sf-proxyuser'), proxyPassword: v('sf-proxypass'), proxyCommand: v('sf-proxycmd'),
+      };
       T.s.sessions = T.s.sessions.filter((x) => x.name !== name).concat([s]);
       await T.persistSessions();
       this.closeDlg('#dlg-session');
       this.setDockPane('explorer');
-      this.toast('已保存会话：' + name + '（SSH 字段 P1 生效）');
+      this.toast('已保存会话：' + name);
     },
 
     openTriggers() { this.renderTriggers(); this.openDlg('#dlg-triggers'); },

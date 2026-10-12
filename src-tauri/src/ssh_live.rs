@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use crate::re::ssh_auth::{map_auth_state, AuthState};
+use crate::ssh_relay;
 use crate::{AppHandle, Emitter, OutPayload};
 
 /// 事件汇：生产走 AppHandle，测试可注入收集器——同一代码路径 e2e 可测
@@ -156,6 +157,7 @@ pub fn spawn_session(
     rows: u16,
     cols: u16,
     config_dir: PathBuf,
+    proxy: ssh_relay::Proxy,
 ) -> io::Result<SshCtl> {
     let (in_tx, mut in_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (rz_tx, mut rz_rx) = mpsc::unbounded_channel::<(u32, u32)>();
@@ -185,6 +187,7 @@ pub fn spawn_session(
             rz_rx,
             stop_rx,
             sftp_rx,
+            proxy,
         )) {
             eprintln!("[ssh] {e}");
         }
@@ -215,6 +218,7 @@ pub async fn run(
     mut rz_rx: mpsc::UnboundedReceiver<(u32, u32)>,
     mut stop_rx: mpsc::UnboundedReceiver<()>,
     mut sftp_rx: mpsc::UnboundedReceiver<SftpReq>,
+    proxy: ssh_relay::Proxy,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = Arc::new(Config {
         keepalive_interval: Some(std::time::Duration::from_secs(30)), // SshSession::keepAlive 语义
@@ -227,7 +231,21 @@ pub async fn run(
         },
         log: Vec::new(),
     };
-    let mut session = client::connect(cfg, (host.as_str(), port), handler).await?;
+    let mut session = match proxy {
+        ssh_relay::Proxy::None => client::connect(cfg, (host.as_str(), port), handler).await?,
+        proxy => {
+            // 实证架构：libssh 连本地中继 -> 本层 dial_any 统一拨号（SOCKS5/HTTP/ProxyCommand/System）
+            let h = host.clone();
+            let dialed = tokio::task::spawn_blocking(move || {
+                ssh_relay::dial_any(&proxy, &h, port, std::time::Duration::from_secs(30))
+            })
+            .await
+            .map_err(|e| e.to_string())??;
+            let (rd, wr) = dialed.split();
+            let stream = ssh_relay::to_tokio(rd, wr).await?;
+            client::connect_stream(cfg, stream, handler).await?
+        }
+    };
     log(&app, &id, format!("已连接 {host}:{port} (ssh-2)"));
 
     // —— 认证序列：WindTerm 顺序 none -> publickey -> password -> keyboard-interactive ——
@@ -520,6 +538,7 @@ mod e2e {
                 rz_rx,
                 stop_rx,
                 srx,
+                ssh_relay::Proxy::None,
             )
             .await
         });
@@ -562,7 +581,7 @@ mod e2e {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let h = rt.spawn(async move {
             run(sink, "sftp-e2e".into(), "127.0.0.1".into(), 22, user, None, Some(key),
-                24, 80, dir, in_rx, rz_rx, stop_rx, srx).await
+                24, 80, dir, in_rx, rz_rx, stop_rx, srx, ssh_relay::Proxy::None).await
         });
         std::thread::sleep(std::time::Duration::from_secs(2));
 

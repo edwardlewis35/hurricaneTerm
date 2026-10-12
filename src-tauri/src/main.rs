@@ -5,10 +5,13 @@
 
 mod re;
 mod ssh_live;
+mod ssh_relay;
+mod serial_live;
+mod tcp_live;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -40,6 +43,7 @@ struct ExitPayload {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Session {
     pub name: String,
     #[serde(default)]
@@ -58,6 +62,31 @@ pub struct Session {
     pub protocol: String,
     #[serde(default)]
     pub password: String,
+    // —— 串口/TCP（项5 live 模块；字段名对齐 WindTerm 属性表 session.target/serial.*）——
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub baud_rate: i32,
+    #[serde(default)]
+    pub data_bits: i32,
+    #[serde(default)]
+    pub parity: String,
+    #[serde(default)]
+    pub stop_bits: i32,
+    #[serde(default)]
+    pub flow_control: String,
+    #[serde(default)]
+    pub proxy_type: String,
+    #[serde(default)]
+    pub proxy_host: String,
+    #[serde(default)]
+    pub proxy_port: u16,
+    #[serde(default)]
+    pub proxy_user: String,
+    #[serde(default)]
+    pub proxy_password: String,
+    #[serde(default)]
+    pub proxy_command: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -255,8 +284,28 @@ fn connect_ssh(
     user: Option<String>,
     password: Option<String>,
     key_path: Option<String>,
+    proxy_type: Option<String>,
+    proxy_host: Option<String>,
+    proxy_port: Option<u16>,
+    proxy_user: Option<String>,
+    proxy_password: Option<String>,
+    proxy_command: Option<String>,
 ) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
+    // 中继/代理拨号层（ssh_relay，实证 connectHost 分发语义）
+    let proxy = match proxy_type.as_deref().unwrap_or("") {
+        "" | "none" | "None" => ssh_relay::Proxy::None,
+        v => ssh_relay::proxy_from_session_value(v, &ssh_relay::ProxyProps {
+            host: proxy_host.unwrap_or_default(),
+            port: proxy_port.unwrap_or(1080),
+            user: proxy_user.unwrap_or_default(),
+            password: proxy_password.unwrap_or_default(),
+            command: proxy_command.unwrap_or_default(),
+            working_directory: String::new(),
+            environment: String::new(),
+            proxy_dns: true,
+        }),
+    };
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let user = user.filter(|u| !u.is_empty()).unwrap_or_else(|| {
         std::env::var("USER").unwrap_or_else(|_| "root".into())
@@ -277,6 +326,7 @@ fn connect_ssh(
         rows,
         cols,
         config_dir,
+        proxy,
     )
     .map_err(|e| e.to_string())?;
 
@@ -295,6 +345,113 @@ fn connect_ssh(
                 let _ = stop.send(());
             })),
             sftp: Some(ctl.sftp),
+        },
+    );
+    Ok(id)
+}
+
+/// 串口会话：实连层 serialport 4；选项表键名按二进制实读（serial.baudRate/dataBits/parity/stopBits/flowControl）
+/// 语义路径：re::serial::settings_from_options（默认/归一/校验全在证据模块）；
+/// 实证：运行期改选项无效（setOption 空函数体）→ 本命令仅在 open 时读参，重连生效。
+#[tauri::command]
+fn connect_serial(
+    app: AppHandle,
+    state: State<PtyState>,
+    target: String,
+    baud_rate: Option<i32>,
+    data_bits: Option<i64>,
+    parity: Option<String>,
+    stop_bits: Option<i64>,
+    flow_control: Option<String>,
+) -> Result<String, String> {
+    let mut opts: BTreeMap<String, re::serial::OptVal> = BTreeMap::new();
+    if let Some(v) = baud_rate.filter(|v| *v > 0) {
+        opts.insert("serial.baudRate".into(), re::serial::OptVal::Int(v as i64));
+    }
+    if let Some(v) = data_bits.filter(|v| *v > 0) {
+        opts.insert("serial.dataBits".into(), re::serial::OptVal::Int(v));
+    }
+    if let Some(v) = parity.filter(|v| !v.is_empty()) {
+        opts.insert("serial.parity".into(), re::serial::OptVal::Str(v));
+    }
+    if let Some(v) = stop_bits.filter(|v| *v > 0) {
+        opts.insert("serial.stopBits".into(), re::serial::OptVal::Int(v));
+    }
+    if let Some(v) = flow_control.filter(|v| !v.is_empty()) {
+        opts.insert("serial.flowControl".into(), re::serial::OptVal::Str(v));
+    }
+    let id = Uuid::new_v4().to_string();
+    let (host_label, ctl) =
+        serial_live::spawn_session(app.clone(), id.clone(), target.trim(), &opts)
+            .map_err(|e| e.to_string())?;
+    let _ = host_label; // 标题用会话名；host=portName 实证已在 serial_live 内
+    let stop = ctl.stop;
+    state.0.lock().unwrap().insert(
+        id.clone(),
+        Entry {
+            writer: Box::new(ctl.writer), // Box<dyn SerialPort>: Write + Send（trait 超界）
+            resize: Box::new(|_r, _c| Ok(())), // 串口无窗口尺寸概念
+            child: None,
+            sftp: None,
+            closer: Some(Box::new(move || {
+                let _ = stop.send(());
+            })),
+        },
+    );
+    Ok(id)
+}
+
+/// 裸 TCP 会话：实连层；代理分流/选项映射走 re::tcp 语义路径（Socks5/Http CONNECT/ProxyCommand/直连哨兵）
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn connect_tcp(
+    app: AppHandle,
+    state: State<PtyState>,
+    host: String,
+    port: Option<u16>,
+    target: Option<String>,
+    low_delay: Option<bool>,
+    keep_alive: Option<bool>,
+    send_buf: Option<i64>,
+    recv_buf: Option<i64>,
+    proxy_type: Option<String>,
+    proxy_host: Option<String>,
+    proxy_port: Option<u16>,
+    proxy_user: Option<String>,
+    proxy_password: Option<String>,
+    proxy_command: Option<String>,
+) -> Result<String, String> {
+    let params = tcp_live::TcpParams {
+        target: target.filter(|t| !t.is_empty()).unwrap_or_else(|| host.clone()),
+        port: port.unwrap_or(0),
+        low_delay: low_delay.map(|v| v.to_string()),
+        keep_alive: keep_alive.map(|v| v.to_string()),
+        send_buf: send_buf.map(|v| v.to_string()),
+        recv_buf: recv_buf.map(|v| v.to_string()),
+        proxy_type: proxy_type.unwrap_or_default(),
+        proxy_host: proxy_host.unwrap_or_default(),
+        proxy_port: proxy_port.unwrap_or(0),
+        proxy_user: proxy_user.unwrap_or_default(),
+        proxy_password: proxy_password.unwrap_or_default(),
+        proxy_command: proxy_command.unwrap_or_default(),
+        proxy_workdir: String::new(),
+        proxy_env: String::new(),
+    };
+    let id = Uuid::new_v4().to_string();
+    let (_label, ctl) = tcp_live::spawn_session(app.clone(), id.clone(), params)
+        .map_err(|e| e.to_string())?;
+    let tcp_live::TcpCtl { writer, stop, killer } = ctl;
+    state.0.lock().unwrap().insert(
+        id.clone(),
+        Entry {
+            writer,
+            resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义（实证：桥层无 resizeWindow）
+            child: None,
+            sftp: None,
+            closer: Some(Box::new(move || {
+                let _ = stop.send(()); // 通知 pump
+                killer(); // shutdown(Both)/kill child → 读线程退出 → detach 信号对
+            })),
         },
     );
     Ok(id)
@@ -467,6 +624,8 @@ pub fn run() {
             kill,
             connect_telnet,
             connect_ssh,
+            connect_serial,
+            connect_tcp,
             sftp_list,
             sftp_download,
             sftp_upload,

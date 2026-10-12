@@ -58,11 +58,48 @@
       term.open(wrap);
       fit.fit();
 
-      const id = await T.invoke('spawn', {
-        rows: term.rows, cols: term.cols,
-        command: session && session.command ? session.command : null,
-        args: session ? session.args : null,
-      });
+      const proto = ((session && session.protocol) || '').toLowerCase();
+      let id;
+      try {
+        if (proto === 'ssh' && session.host) {
+          id = await T.invoke('connect_ssh', {
+            rows: term.rows, cols: term.cols,
+            host: session.host, port: session.port || null,
+            user: session.user || null, password: session.password || null,
+          });
+        } else if (proto === 'telnet' && session.host) {
+          id = await T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
+        } else if (proto === 'serial') {
+          // 串口：target=端口名（实证 session.target）；参数运行期不可改，重连生效
+          id = await T.invoke('connect_serial', {
+            target: session.target || session.host || '',
+            baudRate: session.baudRate || null,
+            dataBits: session.dataBits || null,
+            parity: session.parity || null,
+            stopBits: session.stopBits || null,
+            flowControl: session.flowControl || null,
+          });
+        } else if (proto === 'tcp' && (session.host || session.target)) {
+          // 裸 TCP：host:port 或 target 串；代理分流走 re/tcp 语义
+          id = await T.invoke('connect_tcp', {
+            host: session.host || '', port: session.port || null, target: session.target || null,
+            proxyType: session.proxyType || null,
+            proxyHost: session.proxyHost || null, proxyPort: session.proxyPort || null,
+            proxyUser: session.proxyUser || null, proxyPassword: session.proxyPassword || null,
+            proxyCommand: session.proxyCommand || null,
+          });
+        } else {
+          id = await T.invoke('spawn', {
+            rows: term.rows, cols: term.cols,
+            command: session && session.command ? session.command : null,
+            args: session ? session.args : null,
+          });
+        }
+      } catch (e) {
+        term.dispose(); wrap.remove();
+        UI.log('连接失败: ' + (e && e.message ? e.message : String(e)));
+        return null;
+      }
 
       const tab = {
         id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
