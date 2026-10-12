@@ -66,6 +66,10 @@ window.WT = (function () {
     WT.ui.buildToolbar();
     WT.ui.buildDock();
     WT.term.applyTheme(WT.s.theme);
+    // Tabby 风格：窗口级标签栏 + 主页（src/tabbar.js / src/home.js）
+    if (window.TabBar) TabBar.mount(document.getElementById('tabbar'));
+    if (window.Home) Home.mount(document.getElementById('home'));
+    if (!WT.term.order.length && window.Home) Home.show();
     if (!WT.s.dockVisible) { document.getElementById('dock').hidden = true; document.getElementById('dock-resizer').hidden = true; }
     WT.ui.status();
     setInterval(() => WT.ui.clock(), 1000);
@@ -76,6 +80,11 @@ window.WT = (function () {
       const tab = WT.term.findByPty(id);
       if (!tab) return;
       tab.term.write(data);
+      // Tabby 活动通知：后台标签有输出且开了 notify → 圆点
+      if (tab.notify && WT.term.active !== tab.id && !tab.activity) {
+        tab.activity = true;
+        WT.term.renderTabbar();
+      }
       WT.term.runTriggers(tab, data);
     });
     await WT.listen('re-log', (ev) => { try { WT.ui.log(ev.payload.data); } catch (_) {} });
@@ -117,7 +126,7 @@ window.WT = (function () {
     document.getElementById('ab-close').onclick = () => WT.ui.closeDlg('#dlg-about');
 
     WT.ui.log('hurricaneTerm 启动完成 · 模式 ' + WT.s.mode + ' · 主题 ' + WT.s.theme);
-    await WT.term.create(null);
+    // Tabby 语义：启动不自动开终端，无标签时展示主页（上方已 Home.show()）
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

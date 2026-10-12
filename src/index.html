@@ -17,6 +17,8 @@
     </aside>
     <div id="dock-resizer"></div>
     <main id="main-area">
+      <div id="tabbar"></div>
+      <div id="home" hidden></div>
       <div id="searchbar" hidden>
         <input id="search-input" placeholder="在终端中查找…" />
         <button id="search-prev">↑ 上一个</button>
@@ -25,11 +27,9 @@
       </div>
       <div id="groups" data-dir="">
         <section class="group" data-g="0">
-          <div class="tabbar"></div>
           <div class="term-host"></div>
         </section>
         <section class="group" data-g="1" hidden>
-          <div class="tabbar"></div>
           <div class="term-host"></div>
         </section>
       </div>
@@ -46,7 +46,7 @@
     <span id="st-zoom" class="chip">13 px</span>
     <span id="st-theme" class="chip">主题：default</span>
     <span id="st-clock" class="chip"></span>
-    <span class="chip dim">hurricaneTerm 0.5.1</span>
+    <span class="chip dim">hurricaneTerm 0.6.0</span>
   </div>
 
   <div id="palette" hidden>
@@ -126,6 +126,9 @@
   <script src="vendor/addon-search.js"></script>
   <script src="vendor/addon-web-links.js"></script>
   <script src="core.js"></script>
+  <script src="tabbar.js"></script>
+  <script src="profiles.js"></script>
+  <script src="home.js"></script>
   <script src="term.js"></script>
   <script src="ui.js"></script>
 </body>

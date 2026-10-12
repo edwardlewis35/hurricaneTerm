@@ -66,6 +66,7 @@
             rows: term.rows, cols: term.cols,
             host: session.host, port: session.port || null,
             user: session.user || null, password: session.password || null,
+            keyPath: session.identityFile || null,
           });
         } else if (proto === 'telnet' && session.host) {
           id = await T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
@@ -104,9 +105,14 @@
       const tab = {
         id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
         term, fit, search, wrap, group: g, exited: false, outline: [], session: session || null,
+        // Tabby 风格标签属性（tabbar.js 消费）
+        color: (session && session.color) || null, pinned: false, notify: false, activity: false,
       };
       this.tabs[id] = tab;
       this.order.push(id);
+      // 最近使用：回写 profile 并持久化（Home/＋下拉消费 lastUsed）
+      if (session) { session.lastUsed = Date.now(); T.persistSessions(); }
+      if (window.Home) Home.hide();
 
       let inputLine = '';   // 输入镜像（Tab 补全上下文；方向键编辑不追踪，v1 够用）
       term.onData((data) => {
@@ -197,6 +203,8 @@
       if (!t) return;
       this.active = id;
       this.group = t.group;
+      if (t.activity) { t.activity = false; this.renderTabbar(); }
+      if (window.Home) Home.hide();
       this.renderTabbar();
       for (const x of Object.values(this.tabs)) x.wrap.style.display = x.id === id ? 'block' : 'none';
       requestAnimationFrame(() => { try { t.fit.fit(); } catch (e) {} t.term.focus(); UI.status(); UI.renderOutline(); });
@@ -217,37 +225,91 @@
       if (!this.order.some((x) => this.tabs[x].group === 1)) this.unsplit(true);
       this.renderTabbar();
       if (this.active) this.activate(this.active);
+      else if (window.Home) Home.show();
       UI.status();
     },
 
     renderTabbar() {
-      for (const g of [0, 1]) {
-        const bar = this.tabbarEl(g);
-        bar.innerHTML = '';
-        for (const id of this.order) {
-          const t = this.tabs[id];
-          if (t.group !== g) continue;
-          const el = document.createElement('div');
-          el.className = 'tab' + (id === this.active ? ' active' : '') + (t.exited ? ' exited' : '');
-          const label = document.createElement('span');
-          label.className = 'tab-label';
-          label.textContent = t.title;
-          const close = document.createElement('span');
-          close.className = 'tab-close';
-          close.textContent = '×';
-          close.onclick = (e) => { e.stopPropagation(); this.close(id); };
-          el.append(label, close);
-          el.onclick = () => this.activate(id);
-          bar.appendChild(el);
-        }
-        const plus = document.createElement('div');
-        plus.className = 'tab-plus';
-        plus.textContent = '＋';
-        plus.title = '新建本地会话';
-        plus.onclick = () => this.create(null, { group: g });
-        bar.appendChild(plus);
-      }
+      // Tabby 风格：窗口级单标签条（src/tabbar.js）；旧分组内标签条已废弃
+      if (window.TabBar) TabBar.render();
     },
+
+    /* ---------- Tabby 风格标签 API（tabbar.js 消费；0.6.0） ---------- */
+    // toIndex：tabbar.js 契约——先从 order 移除 id，再插入到剩余数组的 toIndex 处（可等于长度=尾部）
+    moveTab(id, toIndex) {
+      const from = this.order.indexOf(id);
+      if (from < 0) return;
+      let to = typeof toIndex === 'string' ? this.order.indexOf(toIndex) : toIndex;
+      this.order.splice(from, 1);
+      if (to < 0) to = 0;
+      if (to > this.order.length) to = this.order.length;
+      this.order.splice(to, 0, id);
+      this.renderTabbar();
+    },
+    // 显示序（tabbar.js 把 pinned 前置）
+    displayOrder() {
+      const pinned = this.order.filter((x) => this.tabs[x] && this.tabs[x].pinned);
+      const rest = this.order.filter((x) => this.tabs[x] && !this.tabs[x].pinned);
+      return [...pinned, ...rest];
+    },
+    renameTab(id, title) {
+      const t = this.tabs[id];
+      if (!t || !title) return;
+      t.title = String(title).slice(0, 28);
+      this.renderTabbar();
+    },
+    setTabColor(id, color) {
+      const t = this.tabs[id];
+      if (!t) return;
+      t.color = color || null;
+      this.renderTabbar();
+    },
+    togglePin(id) {
+      const t = this.tabs[id];
+      if (!t) return;
+      t.pinned = !t.pinned;
+      this.renderTabbar();
+    },
+    toggleNotify(id) {
+      const t = this.tabs[id];
+      if (!t) return;
+      t.notify = !t.notify;
+      this.renderTabbar();
+    },
+    async duplicate(id) {
+      const t = this.tabs[id];
+      if (!t) return;
+      await this.create(t.session ? t.session : null, { group: t.group });
+    },
+    async closeOthers(id) {
+      for (const x of [...this.order]) if (x !== id) await this.close(x);
+    },
+    async closeRight(id) {
+      const disp = this.displayOrder();
+      const i = disp.indexOf(id);
+      if (i < 0) return;
+      for (const x of disp.slice(i + 1)) await this.close(x);
+    },
+    async closeLeft(id) {
+      const disp = this.displayOrder();
+      const i = disp.indexOf(id);
+      if (i < 0) return;
+      for (const x of disp.slice(0, i)) await this.close(x);
+    },
+    // Tabby 分屏：在当前标签的对面分组新建一个同 profile 面板
+    async splitActive(dir) {
+      const axis = (dir === 'right' || dir === 'left') ? 'h' : 'v';
+      const cur = this.activeTab();
+      if (!cur) return;
+      const wasSplit = !!this.splitDir;
+      if (!wasSplit) await this.split(axis);
+      const gTarget = this.activeTab().group === 1 ? 0 : 1;
+      await this.create(cur.session || null, { group: gTarget });
+      UI.log('分屏：' + dir);
+    },
+    newLocal() { return this.create(null); },
+    openHome() { if (window.Home) Home.show(); },
+    closeHome() { if (window.Home) Home.hide(); },
 
     async split(dir) {
       this.splitDir = dir;

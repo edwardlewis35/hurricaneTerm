@@ -53,7 +53,10 @@
       const menus = [
         ['会话 Session', [
           ['新建会话', 'Ctrl+T', () => T.term.create(null)],
-          ['保存会话…', '', () => this.openSessionDialog()],
+          ['添加机器…', '', () => this.editProfile(null)],
+          ['机器管理…', '', () => (window.Profiles ? Profiles.openManager() : this.toast('机器管理模块未加载'))],
+          ['打开主页', '', () => T.term.openHome()],
+          ['保存会话…', '', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session)],
           ['打开配置目录…', '', () => this.toast('配置目录：~/.config/cn.rea.wtp0')],
           ['关闭会话', 'Ctrl+W', () => T.term.active && T.term.close(T.term.active)],
           ['—', ''],
@@ -169,7 +172,8 @@
     buildToolbar() {
       const btns = [
         ['＋', '新建会话 (Ctrl+T)', () => T.term.create(null)],
-        ['💾', '保存会话', () => this.openSessionDialog()],
+        ['🖥', '添加机器', () => this.editProfile(null)],
+        ['💾', '另存为机器', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session)],
         ['⧉', '复制', () => this.copy()],
         ['⇩', '粘贴', () => this.paste()],
         ['▥', '左右分屏', () => T.term.split('h')],
@@ -262,7 +266,7 @@
       const groups = {};
       for (const s of T.s.sessions) (groups[s.folder || '（未分组）'] ||= []).push(s);
       let html = `<div class="pane-head"><span>会话</span>
-        <span><button id="sess-add">＋ 保存当前</button><button id="sess-refresh">⟳</button></span></div>`;
+        <span><button id="sess-add">🖥 机器管理</button><button id="sess-refresh">⟳</button></span></div>`;
       for (const g of Object.keys(groups).sort()) {
         html += `<div class="grp">▸ ${g}</div>`;
         for (let i = 0; i < groups[g].length; i++) {
@@ -278,7 +282,7 @@
       if (!T.s.sessions.length) html += '<div class="empty">尚无保存的会话。点「＋ 保存当前」把当前 shell 存成会话；SSH 字段（host/port/user）已预留，P1 接线。</div>';
       html += `<div class="pane-foot">双击行打开 · SSH 支持属 P1</div>`;
       body.innerHTML = html;
-      body.querySelector('#sess-add').onclick = () => this.openSessionDialog();
+      body.querySelector('#sess-add').onclick = () => (window.Profiles ? Profiles.openManager() : this.openSessionDialog());
       body.querySelector('#sess-refresh').onclick = () => this.renderExplorer();
       body.querySelectorAll('.sess').forEach((row) => {
         row.onclick = (e) => {
@@ -498,6 +502,12 @@
     openDlg(sel) { const d = $(sel); if (d.showModal) d.showModal(); else d.hidden = false; },
     closeDlg(sel) { const d = $(sel); if (d.close) d.close(); else d.hidden = true; },
 
+    /* Tabby 风格入口：优先走 Profiles 模块（src/profiles.js），未加载时回退旧会话表单 */
+    editProfile(session) {
+      if (window.Profiles) { Profiles.edit(session || null); return; }
+      this.openSessionDialog();
+    },
+
     openSessionDialog() {
       const d = $('#dlg-session');
       d.querySelectorAll('input').forEach((i) => { i.value = ''; });
@@ -563,7 +573,10 @@
       const add = (label, keys, run) => A.push({ label, keys, run });
       add('新建会话', 'Ctrl+T', () => T.term.create(null));
       add('关闭当前会话', 'Ctrl+W', () => T.term.active && T.term.close(T.term.active));
-      add('保存会话…', '', () => this.openSessionDialog());
+      add('保存会话…', '', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session));
+      add('添加机器…', '', () => this.editProfile(null));
+      add('机器管理…', '', () => (window.Profiles ? Profiles.openManager() : this.toast('机器管理模块未加载')));
+      add('打开主页', '', () => T.term.openHome());
       add('左右分屏', '', () => T.term.split('h'));
       add('上下分屏', '', () => T.term.split('v'));
       add('取消分屏', '', () => T.term.unsplit());

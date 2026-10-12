@@ -1,6 +1,6 @@
 [package]
 name = "hurricane-term"
-version = "0.5.1"
+version = "0.6.0"
 description = "hurricaneTerm — Tauri 2 terminal (WindTerm analysis -> clean-room reimplementation)"
 edition = "2021"
 

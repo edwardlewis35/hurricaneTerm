@@ -88,6 +88,17 @@ pub struct Session {
     pub proxy_password: String,
     #[serde(default)]
     pub proxy_command: String,
+    // —— Tabby 风格 Profile 扩展（0.6.0 UI 改版；serde default 兼容旧存储）——
+    #[serde(default)]
+    pub auth: String, // publickey | password | keyboard-interactive | none
+    #[serde(default)]
+    pub identity_file: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub last_used: i64,
+    #[serde(default)]
+    pub jump_host: String,
 }
 
 #[derive(Clone, Serialize)]
