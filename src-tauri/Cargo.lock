@@ -1273,6 +1273,7 @@ name = "hurricane-term"
 version = "0.3.0"
 dependencies = [
  "portable-pty",
+ "regex",
  "serde",
  "serde_json",
  "tauri",

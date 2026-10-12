@@ -4,3 +4,5 @@
 // ⚠ 衍生作品：默认仅本地使用，发布决定归用户。
 pub mod telnet;
 pub mod ssh_auth;
+pub mod expect;
+pub mod auto_login;
