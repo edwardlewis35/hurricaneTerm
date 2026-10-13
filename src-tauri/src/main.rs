@@ -4,6 +4,7 @@
 #![allow(unused)]
 
 mod re;
+mod jump;
 mod ssh_live;
 mod ssh_relay;
 #[cfg(unix)]
@@ -311,6 +312,7 @@ fn connect_ssh(
     proxy_user: Option<String>,
     proxy_password: Option<String>,
     proxy_command: Option<String>,
+    jump_host: Option<String>,
 ) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     // 中继/代理拨号层（ssh_relay，实证 connectHost 分发语义）
@@ -328,6 +330,22 @@ fn connect_ssh(
         }),
     };
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+
+    // 跳板机：proxy 为直连且填了 jump_host 时，走 Proxy::Jump（direct-tcpip 二级会话）
+    let proxy = match (&proxy, jump_host.as_deref().unwrap_or("")) {
+        (ssh_relay::Proxy::None, jh) if !jh.trim().is_empty() => {
+            match jump::parse_spec(jh, user.as_deref().unwrap_or("root")) {
+                Some(mut spec) => {
+                    spec.password = password.clone().filter(|p| !p.is_empty());
+                    spec.key_path = key_path.clone().filter(|k| !k.is_empty());
+                    ssh_relay::Proxy::Jump(jump::opener(spec, config_dir.clone()))
+                }
+                None => proxy,
+            }
+        }
+        _ => proxy,
+    };
+
     let user = user.filter(|u| !u.is_empty()).unwrap_or_else(|| {
         std::env::var("USER").unwrap_or_else(|_| "root".into())
     });

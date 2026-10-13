@@ -308,6 +308,16 @@ await flush();
 ok('N3 关闭会话时停止日志', window.__invokes.some(([c]) => c === 'session_log_stop'));
 T.s.sessionLog = false;
 
+/* ============ O. 跳板机参数透传 ============ */
+window.__invokes.length = 0;
+const jumpSess = { name: 'via-bastion', protocol: 'ssh', host: '10.9.0.7', port: 22, user: 'dev', jumpHost: 'ops@bastion.example:2222' };
+const tabO = await TM.create(jumpSess);
+await flush();
+const jc = window.__invokes.find(([c]) => c === 'connect_ssh');
+ok('O1 connect_ssh 透传 jumpHost', !!jc && jc[1].jumpHost === 'ops@bastion.example:2222');
+await TM.close(tabO.id);
+await flush();
+
 // 报告
 console.log(results.map(([s, n]) => `${s} ${n}`).join('\n'));
 if (errors.length) console.log('ERRORS:\n' + errors.join('\n'));

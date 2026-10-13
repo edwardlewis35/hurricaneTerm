@@ -69,9 +69,9 @@ pub enum SftpReq {
 
 /// TOFU 主机密钥：~/.config/<id>/known_hosts（"host|sha256:..." 行）。
 /// 语义对应 WindTerm eraseServerKnown（有已知项则严格比对）。
-struct Tofu {
-    host: String,
-    file: PathBuf,
+pub struct Tofu {
+    pub host: String,
+    pub file: PathBuf,
 }
 
 impl Tofu {
@@ -101,9 +101,9 @@ impl Tofu {
     }
 }
 
-struct WtHandler {
-    tofu: Tofu,
-    log: Vec<String>, // 收集 check 阶段日志（简化：直接 eprintln）
+pub struct WtHandler {
+    pub tofu: Tofu,
+    pub log: Vec<String>, // 收集 check 阶段日志（简化：直接 eprintln）
 }
 
 impl Handler for WtHandler {

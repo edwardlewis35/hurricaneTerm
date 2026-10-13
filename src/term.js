@@ -168,6 +168,7 @@
             host: session.host, port: session.port || null,
             user: session.user || null, password: session.password || null,
             keyPath: session.identityFile || null,
+            jumpHost: session.jumpHost || null,
           });
         } else if (proto === 'telnet' && session.host) {
           id = await T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
