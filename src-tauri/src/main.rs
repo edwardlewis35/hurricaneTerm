@@ -332,18 +332,19 @@ fn connect_ssh(
     let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
 
     // 跳板机：proxy 为直连且填了 jump_host 时，走 Proxy::Jump（direct-tcpip 二级会话）
-    let proxy = match (&proxy, jump_host.as_deref().unwrap_or("")) {
-        (ssh_relay::Proxy::None, jh) if !jh.trim().is_empty() => {
-            match jump::parse_spec(jh, user.as_deref().unwrap_or("root")) {
-                Some(mut spec) => {
-                    spec.password = password.clone().filter(|p| !p.is_empty());
-                    spec.key_path = key_path.clone().filter(|k| !k.is_empty());
-                    ssh_relay::Proxy::Jump(jump::opener(spec, config_dir.clone()))
-                }
-                None => proxy,
+    let jh = jump_host.as_deref().unwrap_or("").trim().to_string();
+    let proxy_is_none = matches!(proxy, ssh_relay::Proxy::None);
+    let proxy = if !jh.is_empty() && proxy_is_none {
+        match jump::parse_spec(&jh, user.as_deref().unwrap_or("root")) {
+            Some(mut spec) => {
+                spec.password = password.clone().filter(|p| !p.is_empty());
+                spec.key_path = key_path.clone().filter(|k| !k.is_empty());
+                ssh_relay::Proxy::Jump(jump::opener(spec, config_dir.clone()))
             }
+            None => proxy,
         }
-        _ => proxy,
+    } else {
+        proxy
     };
 
     let user = user.filter(|u| !u.is_empty()).unwrap_or_else(|| {
