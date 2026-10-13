@@ -323,6 +323,8 @@
       this.activate(id);
       // MobaXterm 习惯：SSH 一连上就把文件窗格切到双栏并列出远端家目录（须在 activate 之后）
       if (proto === 'ssh' && window.UI && typeof UI.onSshConnected === 'function') UI.onSshConnected(tab);
+      // PuTTY 习惯：会话输出落盘（设置页开关；仅对新会话生效）
+      if (T.s.sessionLog) this.startLog(tab);
       this.renderTabbar();
       UI.log(`会话已创建 ${id.slice(0, 8)} ${session && session.name ? '· ' + session.name : ''}`);
       return tab;
@@ -351,9 +353,23 @@
       for (const g of groups) g.classList.toggle('focused', !!t && String(t.group) === g.dataset.g);
     },
 
+    async startLog(tab) {
+      try {
+        tab.logPath = await T.invoke('session_log_start', { id: tab.id });
+        tab.logging = true;
+        tab.logBuf = '';
+        UI.log('会话日志已开启：' + tab.logPath);
+      } catch (e) { UI.log('会话日志开启失败：' + e); }
+    },
+
     async close(id) {
       const t = this.tabs[id];
       if (!t) return;
+      if (t.logging) {
+        T.flushLogs(t);
+        T.invoke('session_log_stop', { id }).catch(() => {});
+        t.logging = false;
+      }
       try { await T.invoke('kill', { id }); } catch (e) {}
       t.term.dispose();
       t.wrap.remove();

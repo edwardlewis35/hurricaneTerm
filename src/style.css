@@ -34,6 +34,8 @@
   --dock-w: 264px;
   --status-h: 22px;
   --font-ui: "Source Sans Pro", system-ui, "Noto Sans CJK SC", "PingFang SC", sans-serif;
+  --ico: 16px;
+  --ico-tab: 12px;
   --font-mono: "Source Code Pro", "JetBrains Mono", "Noto Sans Mono CJK SC", ui-monospace, monospace;
 }
 
@@ -50,6 +52,10 @@ html, body {
 }
 
 body { display: grid; grid-template-rows: var(--titlebar-h) 1fr auto; height: 100vh; }
+/* macOS 视觉密度更高，图标整体缩一档 */
+body.is-mac { --ico: 13px; --ico-tab: 11px; }
+body.is-mac .ml { width: 11px; height: 11px; }
+body.is-mac #mac-lights { gap: 7px; }
 
 /* 作者样式里的 display 会覆盖 [hidden] 的 UA 规则，必须显式压死 */
 [hidden] { display: none !important; }
@@ -92,7 +98,7 @@ label { font-size: 13px; }
 .empty { padding: 16px; color: var(--fg2); font-size: 12px; line-height: 1.8; }
 code { background: rgba(0, 0, 0, .25); color: var(--warn); border-radius: var(--r-sm); padding: 1px 5px; font-family: var(--font-mono); font-size: 12px; }
 
-svg.ico { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+svg.ico { width: var(--ico, 16px); height: var(--ico, 16px); flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- 标题栏（无边框窗口，标签内嵌） ---------- */
 #titlebar {

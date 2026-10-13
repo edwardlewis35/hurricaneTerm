@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.3';
+  const VERSION = '0.7.4';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -37,6 +37,7 @@ window.WT = (function () {
       builtinHighlight: true,      // WindTerm 风格内置输出高亮
       copyOnSelect: true,          // 选中自动复制
       rightClickPaste: true,       // PuTTY 习惯：右键粘贴
+      sessionLog: false,           // PuTTY 习惯：会话输出落盘
       lastUpdateCheck: 0,
       updateInfo: null,
     },
@@ -55,7 +56,7 @@ window.WT = (function () {
     persistSettings() {
       const keys = ['theme', 'fontSize', 'fontFamily', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
         'statusBar', 'tooltips', 'homeOnStart', 'activityDot', 'builtinHighlight',
-        'copyOnSelect', 'rightClickPaste', 'lastUpdateCheck', 'updateInfo'];
+        'copyOnSelect', 'rightClickPaste', 'sessionLog', 'lastUpdateCheck', 'updateInfo'];
       const o = {};
       for (const k of keys) o[k] = WT.s[k];
       WT.invoke('ui_state_save', { name: 'settings', value: JSON.stringify(o) }).catch(() => {});
@@ -65,6 +66,17 @@ window.WT = (function () {
 
     persistSessions() {
       return WT.invoke('sessions_save', { sessions: WT.s.sessions }).catch(() => {});
+    },
+
+    // 把指定标签（或全部）的日志缓冲刷到磁盘
+    flushLogs(only) {
+      const tabs = only ? [only] : Object.values(WT.term.tabs);
+      for (const t of tabs) {
+        if (!t.logging || !t.logBuf) continue;
+        const buf = t.logBuf;
+        t.logBuf = '';
+        WT.invoke('session_log_append', { id: t.id, data: buf }).catch(() => {});
+      }
     },
 
     /* 内部更新检查：release 为草稿时公开 API 看不到附件，但 tags 是公开的，
@@ -180,6 +192,7 @@ window.WT = (function () {
       if (!tab) return;
       // 高亮要在 write 回调里跑（xterm 异步解析），触发器不依赖光标位置可先跑
       tab.term.write(data, () => WT.term.runHighlights(tab, data));
+      if (tab.logging) tab.logBuf = (tab.logBuf || '') + data;
       // 活动通知：后台标签有输出且开了 notify → 圆点
       if (tab.notify && WT.s.activityDot !== false && WT.term.active !== tab.id && !tab.activity) {
         tab.activity = true;
@@ -197,6 +210,7 @@ window.WT = (function () {
     await WT.listen('pty-exit', (e) => {
       const tab = WT.term.findByPty(e.payload.id);
       if (!tab || tab.exited) return;
+      WT.flushLogs(tab);
       tab.exited = true;
       tab.term.write('\r\n\x1b[2m[进程已退出]\x1b[0m\r\n');
       WT.term.renderTabbar();
@@ -208,6 +222,9 @@ window.WT = (function () {
       WT.ui.status();
       if (window.TitleBar) TitleBar.refresh();
     });
+
+    // 会话日志按秒刷盘（前端缓冲 → session_log_append）
+    setInterval(() => WT.flushLogs(), 1000);
 
     // 每天至多一次的非阻塞更新检查
     if (Date.now() - (WT.s.lastUpdateCheck || 0) > 86400000) WT.checkUpdate(false);

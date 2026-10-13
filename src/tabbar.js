@@ -45,7 +45,7 @@
   border-radius:0 0 2px 2px; background:var(--htc, var(--accent)); }
 .ht-tab.ht-exited .ht-title { text-decoration:line-through; opacity:.55; }
 .ht-ico { flex:0 0 auto; width:15px; display:flex; align-items:center; justify-content:center; color:var(--fg2); }
-.ht-ico svg { width:13px; height:13px; stroke-width:1.5; }
+.ht-ico svg { width:var(--ico-tab, 12px); height:var(--ico-tab, 12px); stroke-width:1.5; }
 .ht-tab.ht-active .ht-ico { color:var(--htc, var(--accent)); }
 .ht-title { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ht-dot { flex:0 0 auto; width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 6px var(--accent); }

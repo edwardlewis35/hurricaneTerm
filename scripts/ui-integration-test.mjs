@@ -291,6 +291,23 @@ ok('M9 更新检查离线静默失败', up === null && !!T.s.updateInfo === fals
 await TM.close(tabM.id);
 await flush();
 
+/* ============ N. 会话落盘日志（PuTTY Logging） ============ */
+T.s.sessionLog = true;
+window.__invokes.length = 0;
+const tabN = await TM.create(null);
+await flush();
+ok('N1 开关开启后新会话调用 session_log_start', window.__invokes.some(([c]) => c === 'session_log_start') && tabN.logging === true);
+tabN.logBuf = 'hello log\r\n';
+window.__invokes.length = 0;
+T.flushLogs(tabN);
+await flush();
+ok('N2 缓冲按块刷盘 session_log_append', window.__invokes.some(([c, a]) => c === 'session_log_append' && a.data === 'hello log\r\n'));
+window.__invokes.length = 0;
+await TM.close(tabN.id);
+await flush();
+ok('N3 关闭会话时停止日志', window.__invokes.some(([c]) => c === 'session_log_stop'));
+T.s.sessionLog = false;
+
 // 报告
 console.log(results.map(([s, n]) => `${s} ${n}`).join('\n'));
 if (errors.length) console.log('ERRORS:\n' + errors.join('\n'));

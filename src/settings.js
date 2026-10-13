@@ -109,6 +109,7 @@
     h += card('行为',
       row('启动时打开主页', '关闭则启动直接落到上次的终端', toggle('homeOnStart', T.s.homeOnStart !== false))
       + row('后台标签活动提示', '有输出且开了「活动时通知」的标签显示圆点', toggle('activityDot', T.s.activityDot !== false))
+      + row('会话输出落盘（PuTTY Logging）', '新会话的终端输出写入 配置目录/logs/session-*.log；仅对新开会话生效', toggle('sessionLog', !!T.s.sessionLog))
     );
     h += card('输出高亮（借鉴 WindTerm）',
       row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中行持久着色', toggle('builtinHighlight', T.s.builtinHighlight !== false))

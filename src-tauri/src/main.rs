@@ -495,6 +495,49 @@ fn write(state: State<PtyState>, id: String, data: String) -> Result<(), String>
     e.writer.write_all(data.as_bytes()).map_err(|x| x.to_string())?;
     e.writer.flush().map_err(|x| x.to_string())
 }
+/* ---------- PuTTY 式会话落盘日志（设置页开关；前端缓冲后按秒刷盘） ---------- */
+#[derive(Default)]
+struct LogState(Mutex<std::collections::HashMap<String, std::fs::File>>);
+
+#[tauri::command]
+fn session_log_start(app: AppHandle, state: State<LogState>, id: String) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("logs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let short: String = id.chars().take(8).collect();
+    let path = dir.join(format!("session-{short}-{ts}.log"));
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    state.0.lock().map_err(|e| e.to_string())?.insert(id, f);
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn session_log_append(state: State<LogState>, id: String, data: String) -> Result<(), String> {
+    use std::io::Write;
+    let mut map = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(f) = map.get_mut(&id) {
+        f.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn session_log_stop(state: State<LogState>, id: String) -> Result<(), String> {
+    state.0.lock().map_err(|e| e.to_string())?.remove(&id);
+    Ok(())
+}
+
 #[tauri::command]
 fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<(), String> {
     let map = state.0.lock().map_err(|e| e.to_string())?;
@@ -909,6 +952,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(PtyState::default())
         .manage(TriggersState::default())
+        .manage(LogState::default())
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
@@ -928,7 +972,10 @@ pub fn run() {
             complete_input,
             fs_list,
             triggers_reload,
-            triggers_feed
+            triggers_feed,
+            session_log_start,
+            session_log_append,
+            session_log_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running hurricaneTerm");
