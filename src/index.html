@@ -2,6 +2,7 @@
 <html lang="zh">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>hurricaneTerm</title>
   <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="style.css" />
@@ -16,14 +17,16 @@
       <span class="ml ml-max" data-act="maximize" title="最大化"></span>
     </div>
     <div id="tabbar"></div>
-    <div class="tb-drag"></div>
+    <div class="tb-drag tb-drag-fill"></div>
     <div id="tb-actions"></div>
     <div id="tb-winctl"></div>
   </header>
 
   <div id="workspace">
-    <nav id="actbar"></nav>
-    <aside id="dock" hidden><div id="dock-body"></div></aside>
+    <aside id="dock" hidden>
+      <nav id="actbar" aria-label="侧栏工具"></nav>
+      <div id="dock-body"></div>
+    </aside>
     <div id="dock-resizer" hidden></div>
     <main id="main-area">
       <div id="home" hidden></div>
@@ -53,7 +56,7 @@
     <span id="st-zoom" class="chip mono click" title="点击重置字号">13 px</span>
     <span id="st-theme" class="chip click" title="点击切换主题">tabby-dark</span>
     <span id="st-clock" class="chip mono"></span>
-    <span class="chip dim">0.7.8</span>
+    <span class="chip dim">0.7.9</span>
   </footer>
 
   <div id="palette" hidden>

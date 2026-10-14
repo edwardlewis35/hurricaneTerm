@@ -27,6 +27,7 @@
   /* ---------- 悬浮提示（比原生 title 更贴 Tabby 观感） ---------- */
   function showTip(el, text) {
     hideTip();
+    if (T.s.tooltips === false) return;
     clearTimeout(tipTimer);
     tipTimer = setTimeout(() => {
       const r = el.getBoundingClientRect();
@@ -35,8 +36,8 @@
       tipEl.textContent = text;
       document.body.appendChild(tipEl);
       const h = tipEl.offsetHeight;
-      tipEl.style.left = (r.right + 8) + 'px';
-      tipEl.style.top = Math.max(4, r.top + r.height / 2 - h / 2) + 'px';
+      tipEl.style.left = Math.max(4, Math.min(r.left, window.innerWidth - tipEl.offsetWidth - 4)) + 'px';
+      tipEl.style.top = Math.min(window.innerHeight - h - 4, r.bottom + 6) + 'px';
     }, 420);
   }
   function hideTip() {
@@ -46,11 +47,13 @@
 
   /* ---------- 单个按钮 ---------- */
   function mkBtn(host, opt) {
-    const b = document.createElement('div');
+    const b = document.createElement('button');
+    b.type = 'button';
     b.className = 'ab-btn' + (opt.cls ? ' ' + opt.cls : '');
     b.innerHTML = window.Icons ? window.Icons.svg(opt.icon) : opt.icon;
-    if (opt.title) b.title = opt.title;
     const tip = opt.label + (opt.key ? '  ' + opt.key : '');
+    b.title = opt.title || tip;
+    b.setAttribute('aria-label', opt.label);
     b.addEventListener('mouseenter', () => showTip(b, tip));
     b.addEventListener('mouseleave', hideTip);
     b.addEventListener('click', (e) => { e.stopPropagation(); hideTip(); opt.onClick(b); });
@@ -77,15 +80,18 @@
       if (root === el) { this.render(); return; }
       root = el;
       el.textContent = '';
+      const tools = document.createElement('div'); tools.className = 'ab-tools';
+      const panes = document.createElement('div'); panes.className = 'ab-panes';
+      el.append(tools, panes);
 
       // —— 顶部：主页 ——
-      mkBtn(el, {
+      mkBtn(tools, {
         icon: 'home', label: '主页', onClick: () => {
           if (T.term.order.length) T.term.openHome();
           else if (window.Home) Home.show();
         },
       });
-      mkBtn(el, {
+      mkBtn(tools, {
         icon: 'server', label: '机器管理', key: 'Ctrl+M', cls: 'ab-profiles',
         onClick: () => {
           const P = window.Profiles;
@@ -93,11 +99,10 @@
           else if (T.ui) T.ui.toast('机器管理模块未加载');
         },
       });
-      const sep1 = document.createElement('div'); sep1.className = 'ab-sep'; el.appendChild(sep1);
 
       // —— 中部：侧栏窗格 ——
       for (const p of PANES) {
-        const b = mkBtn(el, {
+        const b = mkBtn(panes, {
           icon: p.icon, label: p.label, key: p.key,
           onClick: () => this.toggle(p.id),
         });
@@ -107,29 +112,16 @@
         if (p.id === 'transfer' || p.id === 'output') addBadge(b, p.id);
       }
 
-      // —— 弹性空隙 ——
-      const sp = document.createElement('div');
-      sp.className = 'spacer';
-      sp.style.flex = '1';
-      el.appendChild(sp);
-
-      const sep2 = document.createElement('div'); sep2.className = 'ab-sep'; el.appendChild(sep2);
-
-      // —— 底部：主题 / 设置 ——
-      mkBtn(el, {
+      // 设置入口统一放在右上角；侧栏保留连接工具和主题快捷切换。
+      mkBtn(tools, {
         icon: 'theme', label: '切换深浅色', onClick: () => {
           if (window.Settings) Settings.cycleLightDark();
           else if (T.ui) T.ui.cycleTheme();
         },
       });
-      this.settingsBtn = mkBtn(el, {
-        icon: 'gear', label: '设置', key: 'Ctrl+,', cls: 'ab-settings',
-        onClick: (b) => {
-          const S = window.Settings;
-          if (!S) return;
-          S.toggle();
-          this.syncSettings();
-        },
+      mkBtn(tools, {
+        icon: 'x', label: '收起侧栏', cls: 'ab-collapse',
+        onClick: () => T.ui && T.ui.toggleDock(),
       });
 
       this.render();
@@ -168,13 +160,9 @@
       el.hidden = true;
     },
 
-    // 设置页开合状态同步（标题栏与活动栏两处入口共用一个按钮态）
+    // 保留旧调用点，设置状态由标题栏统一同步。
     syncSettings() {
-      const S = window.Settings;
-      const on = !!(S && S.isOpen());
-      if (this.settingsBtn) this.settingsBtn.classList.toggle('on', on);
-      const tb = document.querySelector('#tb-actions .tb-btn.on');
-      if (tb) tb.classList.toggle('on', on);
+      if (window.TitleBar) TitleBar.syncSettings();
     },
 
     render() {

@@ -10,13 +10,28 @@
    * --term-bg 让「活动标签 + 主区」与终端底色无缝衔接（Tabby 的连体观感）。
    */
   function chrome(c) {
+    const light = c.scheme === 'light';
+    const alpha = (hex, opacity) => {
+      const n = parseInt(hex.slice(1), 16);
+      return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${opacity})`;
+    };
     const v = {
       '--bg': c.bg, '--bg2': c.bg2, '--bg3': c.bg3, '--bg4': c.bg4,
       '--fg': c.fg, '--fg2': c.fg2, '--fg3': c.fg3,
-      '--accent': c.accent, '--accent-bg': c.accentBg, '--accent-soft': c.accentSoft,
+      '--accent': c.accent, '--accent-bg': c.accentBg, '--accent-soft': c.accentSoft || alpha(c.accent, .3),
       '--border': c.border, '--border-solid': c.borderSolid,
       '--input-bg': c.inputBg, '--surface': c.surface, '--surface-hover': c.surfaceHover,
       '--danger': c.danger, '--warn': c.warn, '--ok': c.ok,
+      // 每一套主题都生成完整控件令牌，切换时不会继承上一套主题的残留值。
+      '--placeholder': c.fg2,
+      '--surface-active': light ? 'rgba(0,0,0,.1)' : 'rgba(255,255,255,.08)',
+      '--scrollbar-thumb': light ? 'rgba(0,0,0,.2)' : 'rgba(255,255,255,.18)',
+      '--scrollbar-thumb-hover': light ? 'rgba(0,0,0,.32)' : 'rgba(255,255,255,.3)',
+      '--danger-bg': alpha(c.danger, light ? .12 : .22),
+      '--on-danger': light ? '#ffffff' : c.bg3,
+      '--overlay-bg': light ? 'rgba(0,0,0,.3)' : 'rgba(0,0,0,.55)',
+      '--shadow': light ? '0 4px 18px rgba(0,0,0,.14), 0 1px 3px rgba(0,0,0,.08)' : '0 4px 18px rgba(0,0,0,.35), 0 1px 3px rgba(0,0,0,.2)',
+      '--dialog-shadow': light ? '0 18px 60px rgba(0,0,0,.2)' : '0 18px 60px rgba(0,0,0,.6)',
       '--term-bg': c.termBg,
       '--color-scheme': c.scheme || 'dark',
     };
@@ -333,18 +348,31 @@
 
     orderWrites(id) { /* reserved for future output ordering */ },
 
-    activate(id) {
+    activate(id, focusTerminal = true) {
       const t = this.tabs[id];
       if (!t) return;
       this.active = id;
       this.group = t.group;
       if (t.activity) { t.activity = false; this.renderTabbar(); }
       if (window.Home) Home.hide();
+      if (window.Profiles && Profiles.isOpen()) Profiles.close();
       if (window.Settings && Settings.isOpen()) Settings.close();
       this.renderTabbar();
       this.markFocused();
-      for (const x of Object.values(this.tabs)) x.wrap.style.display = x.id === id ? 'block' : 'none';
-      requestAnimationFrame(() => { try { t.fit.fit(); } catch (e) {} t.term.focus(); UI.status(); UI.renderOutline(); });
+      // 每个窗格保留自己的活动终端；切换焦点不能清空另一个窗格。
+      for (const g of [0, 1]) {
+        const peers = this.order.map((x) => this.tabs[x]).filter((x) => x && x.group === g);
+        const shown = g === t.group ? t : peers.find((x) => x.wrap.style.display !== 'none') || peers[peers.length - 1];
+        for (const x of peers) x.wrap.style.display = x === shown ? 'block' : 'none';
+      }
+      requestAnimationFrame(() => {
+        // 分屏和换轴后，两侧终端都需要按各自窗格重新计算行列。
+        for (const x of Object.values(this.tabs)) {
+          if (x.wrap.style.display !== 'none') { try { x.fit.fit(); } catch (e) {} }
+        }
+        if (focusTerminal) t.term.focus();
+        UI.status(); UI.renderOutline();
+      });
     },
 
     // 聚焦窗格描边（Tabby 的 focused pane 提示）
@@ -378,9 +406,10 @@
       this.order = this.order.filter((x) => x !== id);
       if (this.active === id) {
         const inGroup = this.order.filter((x) => this.tabs[x].group === t.group);
-        this.active = inGroup.length ? inGroup[inGroup.length - 1] : (this.order.length ? this.order[this.order.length - 1] : null);
+        const otherVisible = this.order.find((x) => this.tabs[x].wrap.style.display !== 'none');
+        this.active = inGroup.length ? inGroup[inGroup.length - 1] : (otherVisible || this.order[this.order.length - 1] || null);
       }
-      if (!this.order.some((x) => this.tabs[x].group === 1)) this.unsplit(true);
+      if (this.splitDir && [0, 1].some((g) => !this.order.some((x) => this.tabs[x].group === g))) this.unsplit(true);
       this.renderTabbar();
       if (this.active) this.activate(this.active);
       else if (window.Home) Home.show();
@@ -460,9 +489,15 @@
       const cur = this.activeTab();
       if (!cur) return;
       const wasSplit = !!this.splitDir;
-      if (!wasSplit) await this.split(axis);
-      const gTarget = this.activeTab().group === 1 ? 0 : 1;
-      await this.create(cur.session || null, { group: gTarget });
+      // group 0 固定在左/上；只有向左/上分屏时才把原终端移到右/下。
+      if (!wasSplit && (dir === 'left' || dir === 'up')) {
+        cur.group = 1;
+        this.hostEl(1).appendChild(cur.wrap);
+      }
+      await this.split(axis);
+      const gTarget = cur.group === 1 ? 0 : 1;
+      const created = await this.create(cur.session || null, { group: gTarget });
+      if (!created && !wasSplit) this.unsplit(true);
       UI.log('分屏：' + dir);
     },
     newLocal() { return this.create(null); },
@@ -478,13 +513,6 @@
       document.getElementById('groups').dataset.dir = dir;
       // 换轴向时清掉上次拖拽留下的固定尺寸
       this.groupEl(0).style.flex = '';
-      const cur = this.activeTab();
-      if (cur && cur.group === 0 && !this.order.some((id) => this.tabs[id].group === 1)) {
-        cur.group = 1;
-        this.hostEl(1).appendChild(cur.wrap);
-        this.group = 1;
-      }
-      this.active = (this.order.find((id) => this.tabs[id].group === 1)) || this.active;
       this.renderTabbar();
       if (this.active) this.activate(this.active);
       UI.log(`分屏：${dir === 'h' ? '左右' : '上下'}`);
@@ -552,6 +580,8 @@
       T.s.theme = name;
       const v = THEMES[name].vars;
       for (const k in v) document.documentElement.style.setProperty(k, v[k]);
+      // 原生弹出的 select 菜单使用浏览器/系统控件；显式写入以同步 WebView。
+      document.documentElement.style.colorScheme = v['--color-scheme'];
       for (const t of Object.values(this.tabs)) {
         t.term.options.theme = THEMES[name].term;
         try { t.fit.fit(); } catch (e) {}

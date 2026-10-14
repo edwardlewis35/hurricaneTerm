@@ -27,12 +27,27 @@
   const PROTO_BY_VALUE = {};
   for (const p of PROTOCOLS) PROTO_BY_VALUE[p.value] = p;
 
+  const GLYPHS = {
+    terminal: '<path d="m4 5 3 3-3 3m5 0h3"/><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>',
+    lock: '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5 7V5a3 3 0 0 1 6 0v2m-3 3v1"/>',
+    telnet: '<path d="m5 3-4 5 4 5m6-10 4 5-4 5M9 3 7 13"/>',
+    serial: '<rect x="2" y="4" width="12" height="8" rx="2"/><path d="M5 7h.01M8 7h.01M11 7h.01M6.5 9h.01M9.5 9h.01M4 2v2m8-2v2M4 12v2m8-2v2"/>',
+    globe: '<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2a12 12 0 0 1 0 12 12 12 0 0 1 0-12"/>',
+    folder: '<path d="M1.5 4h4l1.5 2h7.5v7h-13z"/>',
+    gear: '<path d="m6.5 2-.4 1.4-1.3.8-1.4-.3L2 6.3l1 1.1v1.2l-1 1.1 1.4 2.4 1.4-.3 1.3.8.4 1.4h3l.4-1.4 1.3-.8 1.4.3L14 9.7l-1-1.1V7.4l1-1.1-1.4-2.4-1.4.3-1.3-.8L9.5 2z"/><circle cx="8" cy="8" r="2"/>',
+    arrowRight: '<path d="M3 8h10m-4-4 4 4-4 4"/>',
+  };
+  function svg(name) {
+    return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      (GLYPHS[name] || GLYPHS.terminal) + '</svg>';
+  }
+
   function iconOf(protocol) {
     const p = PROTO_BY_VALUE[(protocol || '').toLowerCase()];
     return p ? p.icon : 'terminal';
   }
   function svgOf(protocol) {
-    return window.Icons ? window.Icons.svg(iconOf(protocol)) : '';
+    return svg(iconOf(protocol));
   }
   function labelOf(protocol) {
     const p = PROTO_BY_VALUE[(protocol || '').toLowerCase()];
@@ -117,42 +132,74 @@
 
   const CSS = `
 .ht-home { display: flex; flex-direction: column; align-items: center; height: 100%;
-  overflow: auto; background: var(--bg); color: var(--fg); padding: 46px 24px 28px; }
+  overflow: auto; background: var(--bg); color: var(--fg); padding: clamp(40px, 9vh, 96px) 28px 32px; }
 .ht-home-logo { text-align: center; margin-bottom: 26px; user-select: none; }
-.ht-home-title { font-size: 30px; font-weight: 700; letter-spacing: .5px; }
-.ht-home-title b { color: var(--accent); font-weight: 700; }
-.ht-home-tagline { color: var(--fg2); font-size: 13px; margin-top: 7px; }
-.ht-home-inner { width: 100%; max-width: 720px; }
-.ht-home-quick { display: flex; gap: 8px; flex-wrap: wrap; }
-.ht-home-quick select { background: var(--bg2); color: var(--fg); border: 1px solid var(--border);
-  border-radius: 4px; padding: 5px 8px; font: inherit; cursor: pointer; }
-.ht-home-quick select:focus { outline: none; border-color: var(--accent); }
-.ht-home-quick input { flex: 1; min-width: 220px; background: var(--bg2); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font: inherit; }
-.ht-home-quick input:focus { outline: none; border-color: var(--accent); }
+.ht-home-title { color: var(--fg3, var(--fg)); font-size: clamp(36px, 5vw, 52px); font-weight: 300;
+  letter-spacing: -1.8px; line-height: 1.25; }
+.ht-home-title b { color: inherit; font-weight: inherit; }
+.ht-home-tagline { color: var(--fg2); font-size: 13px; margin-top: 9px; }
+.ht-home-inner { width: 100%; max-width: 650px; }
+.ht-home-actions { display: flex; justify-content: center; gap: 8px; margin: 0 0 38px; }
+.ht-home-action { display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 8px 15px; border: 0; border-radius: var(--r-sm, 3px); background: transparent;
+  color: var(--fg); font-weight: 400; }
+.ht-home-action svg { width: 17px; height: 17px; color: var(--fg2); }
+.ht-home-action:hover { background: var(--surface-hover); color: var(--fg3, var(--fg)); }
+.ht-home-action:hover svg { color: var(--accent); }
+.ht-home-action:active { background: var(--bg4, var(--bg2)); }
+.ht-home-quickhead { margin: 0 0 9px; color: var(--fg2); font-size: 12px; font-weight: 400; }
+.ht-home-quick { display: flex; align-items: stretch; gap: 0; }
+.ht-home-quick select, .ht-home-quick input { background: var(--input-bg, var(--bg2)); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 0; padding: 7px 10px; font: inherit; min-height: 35px; }
+.ht-home-quick select { width: 91px; flex: none; border-radius: var(--r-sm, 3px) 0 0 var(--r-sm, 3px); cursor: pointer; }
+.ht-home-quick select option { background: var(--bg2); color: var(--fg); }
+.ht-home-quick input { flex: 1; width: 0; min-width: 100px; border-left: 0; }
+.ht-home-quick input::placeholder { color: var(--fg2); }
+.ht-home-quick select:focus, .ht-home-quick input:focus { outline: none; border-color: var(--accent); }
 .ht-home-quick input:disabled { opacity: .5; }
-.ht-home-quick button { padding: 5px 14px; }
-.ht-home-hint { font-size: 12px; color: var(--fg2); min-height: 16px; margin: 7px 2px 0; }
-.ht-home-hint.bad { color: #e06c75; }
-.ht-home-sec { margin-top: 20px; }
-.ht-home-sechead { font-size: 12px; color: var(--fg2); padding: 0 2px 5px;
-  border-bottom: 1px solid var(--border); margin-bottom: 5px; user-select: none; }
-.ht-home-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px;
-  border-radius: 6px; cursor: pointer; }
-.ht-home-row:hover { background: var(--bg2); }
-.ht-home-row:active { background: var(--bg3); }
-.ht-home-ico { width: 22px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--fg2); }
-.ht-home-ico svg { width: 15px; height: 15px; }
+.ht-home-quick button { padding: 6px 15px; border-radius: 0 var(--r-sm, 3px) var(--r-sm, 3px) 0;
+  border: 1px solid var(--border); border-left: 0; background: var(--surface); color: var(--accent); font-weight: 400; }
+.ht-home-quick button:hover { background: var(--surface-hover); color: var(--accent); }
+.ht-home-quick button:active { background: var(--bg4, var(--bg2)); }
+.ht-home-quickfoot { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 29px; }
+.ht-home-hint { font-size: 11px; color: var(--fg2); min-height: 16px; margin: 6px 0; }
+.ht-home-hint.bad { color: var(--danger); }
+.ht-home-save { flex: none; border: 0; background: transparent; color: var(--fg2); padding: 4px 0; font-size: 11px; }
+.ht-home-save:hover { background: transparent; color: var(--accent); }
+.ht-home-sec { margin-top: 24px; }
+.ht-home-sechead { display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+  font-weight: 400; color: var(--fg2); padding: 0 10px 8px; border-bottom: 1px solid var(--border); margin: 0 0 3px; }
+.ht-home-count { font-size: 11px; font-weight: 400; color: var(--fg2); }
+.ht-home-row { display: flex; align-items: center; gap: 13px; width: 100%; padding: 9px 10px;
+  background: transparent; color: var(--fg); border: 0; border-radius: var(--r-sm, 3px); text-align: left; cursor: pointer; }
+.ht-home-row:hover { background: var(--surface-hover); color: var(--fg3, var(--fg)); }
+.ht-home-row:active { background: var(--bg4, var(--bg2)); }
+.ht-home-row:focus-visible, .ht-home-action:focus-visible, .ht-home-save:focus-visible {
+  outline: 1px solid var(--accent); outline-offset: 2px; box-shadow: none; }
+.ht-home-ico { width: 20px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--fg2); }
+.ht-home-ico svg { width: 17px; height: 17px; }
 .ht-home-row:hover .ht-home-ico { color: var(--accent); }
 .ht-home-col { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.ht-home-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ht-home-rsub { font-style: normal; font-size: 12px; color: var(--fg2); white-space: nowrap;
+.ht-home-name { font-weight: 400; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ht-home-rsub { font-style: normal; font-size: 11px; color: var(--fg2); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
-.ht-home-dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
-  border: 1px solid var(--border); }
-.ht-home-empty { text-align: center; color: var(--fg2); padding: 46px 0 30px; line-height: 2; }
-.ht-home-empty button { margin-top: 4px; }
-.ht-home-foot { margin-top: 26px; font-size: 11px; color: var(--fg2); opacity: .7; user-select: none; }
+.ht-home-proto { color: var(--fg2); font-size: 10px; flex: none; }
+.ht-home-arrow { width: 14px; height: 14px; flex: none; color: var(--fg2); opacity: 0; }
+.ht-home-arrow svg { width: 14px; height: 14px; }
+.ht-home-row:hover .ht-home-arrow, .ht-home-row:focus-visible .ht-home-arrow { opacity: 1; }
+.ht-home-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; border: 1px solid var(--border); }
+.ht-home-empty { text-align: center; color: var(--fg2); padding: 38px 0 24px; font-size: 12px; line-height: 2; }
+.ht-home-empty button { margin-top: 6px; background: transparent; color: var(--accent); border: 0; font-weight: 400; }
+.ht-home-empty button:hover { background: var(--surface-hover); color: var(--accent); }
+.ht-home-foot { margin-top: 28px; text-align: center; font-size: 10px; color: var(--fg2); user-select: none; }
+@media (max-width: 560px) {
+  .ht-home { padding: 34px 18px 24px; }
+  .ht-home-actions { gap: 0; margin-bottom: 26px; flex-wrap: wrap; }
+  .ht-home-action { padding: 8px 11px; font-size: 12px; }
+  .ht-home-quick input { min-width: 60px; }
+  .ht-home-quick button { padding: 6px 11px; }
+  .ht-home-foot { line-height: 1.8; }
+}
 `;
 
   let styleInjected = false;
@@ -187,28 +234,55 @@
 
       // —— 1. logo 区 ——
       const logo = h('div', 'ht-home-logo');
-      const title = h('div', 'ht-home-title');
+      const title = h('h1', 'ht-home-title');
+      title.style.margin = '0';
       title.append(document.createTextNode('hurricane'), h('b', null, 'Term'));
-      logo.append(title, h('div', 'ht-home-tagline', '快速连接你的机器 · SSH / Telnet / 串口 / TCP / 本地'));
+      logo.append(title, h('div', 'ht-home-tagline', '终端与远程连接'));
       frag.appendChild(logo);
 
       const inner = h('div', 'ht-home-inner');
 
+      const actions = h('div', 'ht-home-actions');
+      const action = (label, icon, run) => {
+        const btn = h('button', 'ht-home-action');
+        btn.type = 'button';
+        btn.innerHTML = svg(icon);
+        btn.appendChild(h('span', null, label));
+        btn.onclick = run;
+        actions.appendChild(btn);
+      };
+      action('新建本地终端', 'terminal', () => this.connect({ name: '本地终端', protocol: '' }));
+      action('机器与连接', 'folder', () => this.openProfiles());
+      action('设置', 'gear', () => {
+        const S = window.Settings;
+        if (S && typeof S.open === 'function') S.open();
+        else toast('设置模块未加载');
+      });
+      inner.appendChild(actions);
+
       // —— 2. 快速连接条 ——
+      inner.appendChild(h('h2', 'ht-home-quickhead', '快速连接'));
       const quick = h('div', 'ht-home-quick');
       const sel = h('select');
+      sel.setAttribute('aria-label', '连接协议');
       for (const p of PROTOCOLS) sel.appendChild(new Option(p.label, p.value));
       sel.value = 'ssh';
       const input = h('input');
+      input.setAttribute('aria-label', '连接地址或串口设备');
       input.placeholder = PROTO_BY_VALUE.ssh.placeholder;
       input.spellcheck = false;
       const btnConnect = h('button', 'primary', '连接');
-      const btnSave = h('button', null, '存为机器');
-      quick.append(sel, input, btnConnect, btnSave);
+      btnConnect.type = 'button';
+      const btnSave = h('button', 'ht-home-save', '存为机器');
+      btnSave.type = 'button';
+      quick.append(sel, input, btnConnect);
       inner.appendChild(quick);
 
+      const quickfoot = h('div', 'ht-home-quickfoot');
       this.hintEl = h('div', 'ht-home-hint');
-      inner.appendChild(this.hintEl);
+      this.hintEl.setAttribute('aria-live', 'polite');
+      quickfoot.append(this.hintEl, btnSave);
+      inner.appendChild(quickfoot);
       this.protoEl = sel;
       this.inputEl = input;
 
@@ -241,6 +315,9 @@
 
     show() {
       if (!this.el) return;
+      if (window.Profiles && Profiles.isOpen()) Profiles.close();
+      const S = window.Settings;
+      if (S && typeof S.isOpen === 'function' && S.isOpen() && typeof S.close === 'function') S.close();
       this.el.hidden = false;            // 全局 [hidden]{display:none!important} 会压死 inline display，必须先清属性
       this.el.style.display = 'flex';
       this.render();
@@ -318,6 +395,14 @@
       }
     },
 
+    openProfiles() {
+      const P = window.Profiles;
+      if (P && typeof P.openManager === 'function') {
+        try { P.openManager(); }
+        catch (e) { toast('打开机器管理失败：' + (e && e.message ? e.message : e)); }
+      } else toast('机器管理模块未加载（profiles.js）');
+    },
+
     // —— 6. 连接动作 ——
     async connect(session) {
       const t = T();
@@ -346,12 +431,9 @@
       if (!sessions.length) {
         const empty = h('div', 'ht-home-empty');
         empty.appendChild(h('div', null, '还没有添加机器'));
-        const btn = h('button', 'primary', '添加机器');
-        btn.onclick = () => {
-          const P = window.Profiles;
-          if (P && typeof P.openManager === 'function') { try { P.openManager(); } catch (e) { toast('打开机器管理失败：' + e); } }
-          else toast('机器管理模块未加载（profiles.js）');
-        };
+        const btn = h('button', null, '添加机器');
+        btn.type = 'button';
+        btn.onclick = () => this.openProfiles();
         empty.appendChild(btn);
         this.listEl.appendChild(empty);
         return;
@@ -377,13 +459,16 @@
 
     section(title, items) {
       const sec = h('div', 'ht-home-sec');
-      sec.appendChild(h('div', 'ht-home-sechead', title));
+      const head = h('h2', 'ht-home-sechead', title);
+      head.appendChild(h('span', 'ht-home-count', String(items.length)));
+      sec.appendChild(head);
       for (const s of items) sec.appendChild(this.row(s));
       return sec;
     },
 
     row(s) {
-      const r = h('div', 'ht-home-row');
+      const r = h('button', 'ht-home-row');
+      r.type = 'button';
       const ico = h('span', 'ht-home-ico');
       ico.innerHTML = svgOf(s.protocol);
       r.appendChild(ico);
@@ -397,7 +482,12 @@
         dot.style.background = c;
         r.appendChild(dot);
       }
+      r.appendChild(h('span', 'ht-home-proto', labelOf(s.protocol)));
+      const arrow = h('span', 'ht-home-arrow');
+      arrow.innerHTML = svg('arrowRight');
+      r.appendChild(arrow);
       r.title = '连接：' + (s.name || '') + '（' + subOf(s) + '）';
+      r.setAttribute('aria-label', r.title);
       r.onclick = () => this.connect(s);
       return r;
     },

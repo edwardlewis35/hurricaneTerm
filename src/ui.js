@@ -136,6 +136,7 @@
       if (dock) dock.hidden = !vis;
       if (rz) rz.hidden = !vis;
       if (window.ActBar) ActBar.render();
+      if (window.TitleBar) TitleBar.refresh();
     },
 
     setDockPane(id) {

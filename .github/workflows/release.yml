@@ -53,7 +53,7 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: 安装 Rust 工具链
@@ -87,6 +87,9 @@ jobs:
 
       - name: 安装前端依赖
         run: npm ci
+
+      - name: 前端 UI 回归测试
+        run: npm run test:ui
 
       # 注意：APPLE_* 只能「整组注入」或「整组不注入」。
       # 空字符串会被 tauri-bundler 视为「需要签名」而去 security import 一张空证书，

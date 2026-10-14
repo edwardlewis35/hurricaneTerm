@@ -84,8 +84,8 @@
     h += card('字号与状态栏',
       row('终端字号', '也可用 Ctrl+= / Ctrl+- 调整，范围 8–28',
         `<input type="number" min="8" max="28" step="1" data-num="fontSize" value="${esc(T.s.fontSize)}" style="width:78px">`)
-      + row('底部状态栏', 'Tabby 原版没有状态栏；关闭后信息只在活动栏提示里出现', toggle('statusBar', T.s.statusBar !== false))
-      + row('左侧活动栏提示', '鼠标悬停图标时显示名称与快捷键', toggle('tooltips', T.s.tooltips !== false))
+      + row('底部状态栏', '显示终端尺寸、编码、输入模式与主题', toggle('statusBar', T.s.statusBar !== false))
+      + row('侧栏工具提示', '鼠标悬停图标时显示名称与快捷键', toggle('tooltips', T.s.tooltips !== false))
     );
     return h;
   }
@@ -143,7 +143,7 @@
     if (!ss.length) list = '<div class="empty">还没有机器。点下面「打开机器管理」新建第一台。</div>';
 
     let h = `<h2 class="st-h">机器与连接</h2><p class="st-sub">共 ${ss.length} 台。SSH / Telnet / 串口 / TCP / 本地。</p>`;
-    h += card('', `<div class="st-row"><div class="st-l"><b>机器管理</b><i>Tabby 的 Profiles &amp; connections：左列表右表单，支持分组、颜色、代理、跳板机</i></div>
+    h += card('', `<div class="st-row"><div class="st-l"><b>机器管理</b><i>管理本地与远程连接，支持分组、颜色、代理与跳板机</i></div>
       <div class="st-c"><button class="primary" data-open-manager>打开机器管理</button></div></div>`);
     h += card('已保存的机器', list);
     return h;
@@ -167,7 +167,7 @@
     if (!list.length) rows = '<div class="empty">还没有触发器。正则匹配终端输出 → 执行动作。</div>';
 
     const acts = TRIGGER_ACTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-    let h = `<h2 class="st-h">触发器</h2><p class="st-sub">后端引擎 re/triggers.rs；前端 v0 映射支持高亮 / 响铃 / 发送文本。</p>`;
+    let h = `<h2 class="st-h">触发器</h2><p class="st-sub">匹配终端输出，自动高亮、响铃或发送文本。</p>`;
     h += card('已配置', rows);
     h += card('新增', `<div class="tr-form">
       <input data-tr="name" placeholder="名称" />
@@ -355,15 +355,16 @@
       el = container;
       if (!el || mounted) { if (mounted) doRender(); return; }
       mounted = true;
-      el.innerHTML = `<div class="st-wrap"><nav class="st-nav"></nav><div class="st-body"></div></div>`;
+      el.innerHTML = `<div class="st-wrap"><nav class="st-nav" aria-label="设置分区"></nav><div class="st-body"></div></div>`;
       navEl = el.querySelector('.st-nav');
       bodyEl = el.querySelector('.st-body');
 
-      navEl.innerHTML = `<div class="st-nav-h">设置</div>` + SECTIONS.map((s) =>
-        `<div class="st-nav-i" data-sec="${s.id}">${window.Icons ? window.Icons.svg(s.icon) : ''}<span>${esc(s.label)}</span></div>`).join('');
+      navEl.innerHTML = `<div class="st-nav-h"><span>设置</span><button class="icon st-close" title="关闭设置 (Esc)" aria-label="关闭设置">${window.Icons ? window.Icons.svg('x') : '×'}</button></div>` + SECTIONS.map((s) =>
+        `<button type="button" class="st-nav-i" data-sec="${s.id}">${window.Icons ? window.Icons.svg(s.icon) : ''}<span>${esc(s.label)}</span></button>`).join('');
       navEl.querySelectorAll('[data-sec]').forEach((n) => {
         n.onclick = () => { section = n.dataset.sec; doRender(); };
       });
+      navEl.querySelector('.st-close').onclick = () => this.close();
 
       // Esc 关闭（焦点在输入框里也生效）
       el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); this.close(); } });
@@ -374,6 +375,7 @@
 
     open(sec) {
       if (!mounted) return;
+      if (window.Profiles && Profiles.isOpen()) Profiles.close();
       if (sec) section = sec;
       open = true;
       el.hidden = false;
@@ -399,6 +401,7 @@
 
     // 标题栏齿轮 / 活动栏齿轮的按钮态同步
     syncChrome() {
+      if (window.TitleBar) TitleBar.syncSettings();
       if (window.ActBar && window.ActBar.syncSettings) ActBar.syncSettings();
     },
 

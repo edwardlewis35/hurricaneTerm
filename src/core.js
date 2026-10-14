@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.8';
+  const VERSION = '0.7.9';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -30,7 +30,7 @@ window.WT = (function () {
       dockVisible: false,          // Tabby 默认收起侧栏
       filerMode: '', remotePath: null,
       filerPath: null,
-      statusBar: true,             // 底部状态栏（Tabby 原版无，可关）
+      statusBar: false,            // 默认让终端铺满窗口，可在外观设置中开启状态栏
       tooltips: true,
       homeOnStart: true,
       activityDot: true,

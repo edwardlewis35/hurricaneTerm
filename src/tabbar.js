@@ -25,24 +25,24 @@
   const COLORS = ['#d9534f', '#f0ad4e', '#ffd500', '#5cb85c', '#5bc0de', '#0275d8', '#4fadff', '#ff5b77', '#613d7c'];
 
   const STYLE_TEXT = `
-.ht-tabbar { display:flex; align-items:flex-end; flex:1 1 auto; min-width:0; height:var(--titlebar-h);
+.ht-tabbar { display:flex; align-items:stretch; flex:0 1 auto; min-width:0; height:var(--titlebar-h);
   user-select:none; font-size:12.5px; }
-.ht-tabs { display:flex; align-items:flex-end; flex:1 1 auto; min-width:0; height:100%;
-  padding-top:5px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
+.ht-tabs { display:flex; align-items:stretch; flex:0 1 auto; min-width:0; height:100%;
+  overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
 .ht-tabs::-webkit-scrollbar { display:none; }
-.ht-brand { display:flex; align-items:center; gap:8px; padding:0 14px; height:100%; color:var(--fg2);
-  font-size:12.5px; letter-spacing:.02em; white-space:nowrap; user-select:none; }
+.ht-brand { display:flex; align-items:center; gap:9px; flex:0 0 160px; padding:0 16px; height:100%; color:var(--fg3);
+  font-size:12.5px; white-space:nowrap; user-select:none; border-radius:0; background:var(--bg); }
 .ht-brand b { color:var(--fg3); font-weight:600; }
 .ht-brand i { color:var(--accent); font-style:normal; font-weight:700; }
 
-.ht-tab { position:relative; display:flex; align-items:center; gap:7px; flex:0 1 auto;
-  min-width:104px; max-width:190px; height:calc(var(--titlebar-h) - 5px);
-  padding:0 7px 0 12px; cursor:default; color:var(--fg2); background:transparent;
-  border-radius:8px 8px 0 0; transition:background .12s ease, color .12s ease; }
+.ht-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 0 180px;
+  min-width:0; height:var(--titlebar-h);
+  padding:0 10px 0 15px; cursor:default; color:var(--fg2); background:transparent;
+  border-radius:0; border-right:1px solid var(--border); transition:background .12s ease, color .12s ease; }
 .ht-tab:hover { background:var(--surface-hover); color:var(--fg3); }
 .ht-tab.ht-active { background:var(--term-bg, var(--bg)); color:var(--fg3); }
-.ht-tab.ht-active::after { content:''; position:absolute; left:11px; right:11px; top:0; height:2px;
-  border-radius:0 0 2px 2px; background:var(--htc, var(--accent)); }
+.ht-tab.ht-active::after { content:''; position:absolute; left:0; right:0; bottom:0; height:2px;
+  background:var(--htc, var(--accent)); }
 .ht-tab.ht-exited .ht-title { text-decoration:line-through; opacity:.55; }
 .ht-ico { flex:0 0 auto; width:15px; display:flex; align-items:center; justify-content:center; color:var(--fg2); }
 .ht-ico svg { width:var(--ico-tab, 12px); height:var(--ico-tab, 12px); stroke-width:1.5; }
@@ -55,20 +55,22 @@
   border-radius:var(--r-sm); opacity:0; color:var(--fg2); transition:opacity .1s, background .1s; }
 .ht-x svg { width:9px; height:9px; stroke-width:1.8; }
 .ht-tab:hover .ht-x, .ht-tab.ht-active .ht-x { opacity:.75; }
-.ht-x:hover { background:rgba(217,83,79,.28); color:#ff9d99; opacity:1; }
+.ht-x:hover { background:var(--danger-bg); color:var(--danger); opacity:1; }
 .ht-tab.ht-dragging { opacity:.35; }
 .ht-tab.ht-drop-l { box-shadow:inset 2px 0 0 var(--accent); }
 .ht-tab.ht-drop-r { box-shadow:inset -2px 0 0 var(--accent); }
 .ht-tab input.ht-rename { flex:1 1 auto; min-width:0; background:var(--input-bg); color:var(--fg3);
   border:1px solid var(--accent); border-radius:var(--r-sm); padding:0 4px; height:19px; font:inherit; }
 
-.ht-actions { display:flex; align-items:center; gap:1px; flex:0 0 auto; height:100%; padding:0 5px 0 3px; }
+.ht-actions { display:flex; align-items:center; gap:0; flex:0 0 auto; height:100%; padding:0 4px; }
 .ht-plus, .ht-caret { display:flex; align-items:center; justify-content:center; border-radius:var(--r);
   cursor:default; color:var(--fg2); transition:var(--t); }
-.ht-plus { width:26px; height:26px; }
-.ht-caret { width:19px; height:26px; }
+.ht-plus { width:30px; height:28px; }
+.ht-caret { width:22px; height:28px; }
+.ht-split { width:30px; height:28px; margin-left:4px; }
+.ht-actions button { padding:0; border:0; background:transparent; color:var(--fg2); }
 .ht-plus svg, .ht-caret svg { width:13px; height:13px; }
-.ht-plus:hover, .ht-caret:hover { background:var(--surface-hover); color:var(--fg3); }
+.ht-plus:hover, .ht-caret:hover, .ht-split:hover { background:var(--surface-hover); color:var(--fg3); }
 `;
 
   /* ---------- 状态 ---------- */
@@ -291,6 +293,9 @@
     el.dataset.id = id;
     el.draggable = true;
     el.title = tab.title || '';
+    el.setAttribute('role', 'tab');
+    el.setAttribute('aria-selected', String(id === T.term.active));
+    el.tabIndex = id === T.term.active ? 0 : -1;
     if (tab.color) el.style.setProperty('--htc', tab.color);
 
     const ico = document.createElement('span'); ico.className = 'ht-ico'; ico.innerHTML = svg(protoIcon(tab.session));
@@ -308,6 +313,16 @@
     el.appendChild(x);
 
     el.addEventListener('click', (e) => { if (e.button === 0) callExisting('activate', id); });
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); callExisting('activate', id); }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        const ids = displayOrder();
+        const next = ids[(ids.indexOf(id) + (e.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length];
+        callExisting('activate', next, false);
+        tabsEl.querySelector('[data-id="' + cssEscape(next) + '"]').focus();
+      }
+    });
     el.addEventListener('dblclick', (e) => { e.stopPropagation(); startInlineRename(id); });
     el.addEventListener('mousedown', (e) => {
       if (e.button === 1) { e.preventDefault(); callExisting('close', id); }
@@ -352,9 +367,12 @@
 
   /* ---------- 无标签时的品牌位（同时也是拖拽区） ---------- */
   function brandEl() {
-    const b = document.createElement('div');
+    const b = document.createElement('button');
+    b.type = 'button';
     b.className = 'ht-brand';
-    b.innerHTML = '<span>hurricane<b>Term</b></span><i>·</i><span>Ctrl+T 新建 · Ctrl+Shift+P 命令面板</span>';
+    b.innerHTML = svg('home') + '<span>开始</span>';
+    b.title = '打开主页';
+    b.addEventListener('click', () => call('openHome'));
     return b;
   }
 
@@ -383,6 +401,12 @@
   }
 
   /* ---------- 渲染 ---------- */
+  function revealActive() {
+    const activeId = T.term && T.term.active;
+    const act = activeId && tabsEl && tabsEl.querySelector('.ht-tab[data-id="' + cssEscape(activeId) + '"]');
+    if (act) requestAnimationFrame(() => act.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+  }
+
   function render() {
     if (!tabsEl) return;
     const activeId = T.term ? T.term.active : null;
@@ -390,10 +414,7 @@
     const ids = displayOrder();
     if (!ids.length) tabsEl.appendChild(brandEl());
     for (const id of ids) tabsEl.appendChild(tabEl(id));
-    if (activeId) {
-      const act = tabsEl.querySelector('.ht-tab[data-id="' + cssEscape(activeId) + '"]');
-      if (act) requestAnimationFrame(() => act.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
-    }
+    revealActive();
     // 主区窗口标题跟随活动标签
     try {
       const t = activeId && T.term.tabs[activeId];
@@ -410,6 +431,11 @@
 
     tabsEl = document.createElement('div');
     tabsEl.className = 'ht-tabs';
+    tabsEl.setAttribute('role', 'tablist');
+    tabsEl.setAttribute('aria-label', '终端标签');
+    tabsEl.addEventListener('wheel', (e) => {
+      if (tabsEl.scrollWidth > tabsEl.clientWidth) { e.preventDefault(); tabsEl.scrollLeft += e.deltaY || e.deltaX; }
+    }, { passive: false });
     tabsEl.addEventListener('dragover', (e) => e.preventDefault());
     tabsEl.addEventListener('drop', (e) => { /* 落到尾部空白 → 移到末尾 */
       e.preventDefault();
@@ -429,20 +455,34 @@
     });
 
     const actions = document.createElement('div');
-    actions.className = 'ht-actions ht-actions-l';   // 0.7.3：新建/最近机器移到标签条左侧
-    const plus = document.createElement('div');
+    actions.className = 'ht-actions';
+    const plus = document.createElement('button'); plus.type = 'button';
     plus.className = 'ht-plus'; plus.innerHTML = svg('plus'); plus.title = '新建本地会话 (Ctrl+T)';
+    plus.setAttribute('aria-label', '新建标签页');
     plus.addEventListener('click', (e) => { e.stopPropagation(); call('newLocal'); });
-    const caret = document.createElement('div');
+    const caret = document.createElement('button'); caret.type = 'button';
     caret.className = 'ht-caret'; caret.innerHTML = svg('caret'); caret.title = '最近机器 / 添加机器';
+    caret.setAttribute('aria-label', '选择连接');
     caret.addEventListener('click', (e) => {
       e.stopPropagation();
       const r = caret.getBoundingClientRect();
       openMenu(r.left, r.bottom + 2, buildPlusMenu);
     });
-    actions.append(plus, caret);
+    const split = document.createElement('button'); split.type = 'button';
+    split.className = 'ht-split'; split.innerHTML = svg('splitH'); split.title = '分屏';
+    split.setAttribute('aria-label', '分屏');
+    split.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = split.getBoundingClientRect();
+      openMenu(r.left, r.bottom + 2, (m) => {
+        mi(m, { label: '向右分屏', svg: 'splitH', key: 'Ctrl+Shift+E', onClick: () => call('splitActive', 'right') });
+        mi(m, { label: '向下分屏', svg: 'splitV', key: 'Ctrl+Shift+D', onClick: () => call('splitActive', 'down') });
+        mi(m, { label: '取消分屏', onClick: () => call('unsplit') });
+      });
+    });
+    actions.append(plus, caret, split);
 
-    root.append(actions, tabsEl);
+    root.append(tabsEl, actions);
     el.appendChild(root);
     render();
   }
@@ -450,6 +490,7 @@
   window.TabBar = {
     mount,
     render,
+    revealActive,
     closeMenu,
     menuOpen: () => !!menuEl,
     // 对外暴露的浮层菜单：build(m, mi, msep, mhead)，供侧栏/状态栏复用同一套样式与交互
