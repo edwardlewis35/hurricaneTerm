@@ -25,18 +25,18 @@
   const COLORS = ['#d9534f', '#f0ad4e', '#ffd500', '#5cb85c', '#5bc0de', '#0275d8', '#4fadff', '#ff5b77', '#613d7c'];
 
   const STYLE_TEXT = `
-.ht-tabbar { display:flex; align-items:stretch; flex:1 1 auto; width:100%; min-width:0; height:var(--titlebar-h);
+.ht-tabbar { display:flex; align-items:stretch; flex:1 1 auto; width:100%; min-width:0; height:100%;
   user-select:none; font-size:12.5px; }
 .ht-tabs { position:relative; display:flex; align-items:stretch; flex:1 1 auto; min-width:0; height:100%;
   overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
 .ht-tabs::-webkit-scrollbar { display:none; }
-.ht-brand { display:flex; align-items:center; gap:9px; flex:0 0 160px; padding:0 16px; height:100%; color:var(--fg3);
+.ht-brand { display:flex; align-items:center; gap:9px; flex:1 1 auto; min-width:0; width:100%; padding:0 16px; height:100%; color:var(--fg3);
   font-size:12.5px; white-space:nowrap; user-select:none; border-radius:0; background:var(--bg); }
 .ht-brand b { color:var(--fg3); font-weight:600; }
 .ht-brand i { color:var(--accent); font-style:normal; font-weight:700; }
 
 .ht-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 0 var(--ht-tab-width, 180px);
-  min-width:0; height:var(--titlebar-h);
+  min-width:0; height:100%;
   padding:0 10px 0 15px; cursor:default; color:var(--fg2); background:transparent;
   border-radius:0; border-right:1px solid var(--border); transition:background .12s ease, color .12s ease; }
 .ht-tab:hover { background:var(--surface-hover); color:var(--fg3); }

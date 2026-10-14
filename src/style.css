@@ -65,7 +65,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--titlebar-h) var(--toolrow-h) minmax(0, 1fr) auto; height: 100vh; }
+body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--titlebar-h) var(--toolrow-h) minmax(0, 1fr) auto; row-gap: 0; height: 100vh; }
 /* The browser preview is an explicit checkerboard, while native windows reveal the desktop. */
 html.transparency-preview { background-color: #74808d; background-image: repeating-conic-gradient(#596573 0% 25%, transparent 0% 50%); background-size: 28px 28px; }
 /* 保持三个平台同一图标度量，窗口红绿灯使用独立的系统尺寸。 */
@@ -153,7 +153,9 @@ svg.ico { display: block; }
 /* ---------- 标题栏（无边框窗口，标签内嵌） ---------- */
 #titlebar {
   display: flex; align-items: stretch; min-height: 0; min-width: 0;
-  background: transparent; user-select: none; border-bottom: 1px solid var(--border);
+  /* Both header rows meet directly: a border here used to paint a bright 1px seam
+   * and reduce the 40px row content to 39px while tabs still requested 40px. */
+  background: transparent; user-select: none; border: 0; margin: 0; padding: 0;
   -webkit-app-region: drag; app-region: drag;
 }
 #titlebar > *:not(.tb-drag) { -webkit-app-region: no-drag; app-region: no-drag; }
@@ -177,7 +179,7 @@ svg.ico { display: block; }
 #titlebar .tb-btn > svg.ico, #titlebar .ht-actions > button > svg.ico { width: var(--ico-titlebar); height: var(--ico-titlebar); stroke-width: 1.6; }
 
 #tb-winctl { border-left: 1px solid var(--border); }
-.wc { width: 44px; height: var(--titlebar-h); display: flex; align-items: center; justify-content: center; color: var(--fg2); cursor: default; transition: background .12s; }
+.wc { width: 44px; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--fg2); cursor: default; transition: background .12s; }
 .wc:hover { background: var(--surface-hover); color: var(--fg3); }
 .wc.wc-close:hover { background: var(--danger); color: var(--on-danger); }
 .wc svg { width: 11px; height: 11px; stroke-width: 1.2; }

@@ -8,13 +8,15 @@
 
 ## 功能现状
 
-界面为 Tabby 风格的无边框窗口、顶部扁平标签栏、居中启动页与全页设置，
+界面为 Tabby 风格的无边框窗口、顶部扁平标签栏、新建连接页与全页设置，
 配色令牌取自 [Tabby](https://github.com/eugeny/tabby) 上游 `theme.vars.scss` / `colorSchemes.ts`。
 
 标签末尾的 `+` 新建本地终端，旁边可选择连接或分屏；设置入口位于右上角。
 标签统一最大 180 px，数量增加时等宽压缩到 110 px，再沿单行滚动；滚轮、触控板和键盘可选择标签，新建按钮始终可见。工具浮窗支持 Esc、外点和关闭按钮；新建或切换会话会收起浮窗。
 
 应用图标为原创 Huricano 飓风卡通角色，macOS 图标主体宽度约占画布 80.47%，与本机 ChatGPT 图标的视觉比例一致；高分辨率 ICNS、Windows ICO、主页与 favicon 使用同一素材。生成提示与源图在 `assets/`。
+新建连接页提供 SSH / Telnet / 串口 / TCP / 本地五种协议卡片、地址与可选用户名/端口字段，以及可搜索的已保存/最近连接列表。支持 IPv6、协议草稿保留和键盘选择；TCP 必须提供端口，连接期间阻止重复提交。窄窗口纵向排列并在页面内滚动。
+
 工具栏位于标签下方第二行并靠右排列，六个工具窗格以浮窗打开。状态栏默认关闭，可在外观设置中开启。
 机器管理使用全页的连接列表与编辑表单。六套主题统一驱动输入框、下拉菜单、浮层与滚动条。
 
@@ -24,7 +26,7 @@
 | 第二行水平工具栏与按需浮窗（会话 / 文件 / 发送 / 传输 / 大纲 / 日志 + 主题） | ✅ |
 | 全页设置页（外观 / 终端 / 机器与连接 / 触发器 / 快捷键 / 关于），取代弹窗 | ✅ |
 | 窗口级标签栏：拖拽排序 / 右键菜单 / 颜色 / 固定 / 活动通知 / 行内重命名 | ✅ |
-| 主页快速连接 + 分组机器列表 | ✅ |
+| 新建连接：协议卡片、独立字段、搜索与分组机器列表 | ✅ |
 | 工具浮窗与独立 SFTP 窗口（Explorer / Filer / Outline / Sender / Transfer / Output） | ✅ |
 | 极简状态栏（模式、同步输入、尺寸、编码、EOL、缩放、主题、时钟），可在设置页关闭 | ✅ |
 | 多标签终端 + 左右/上下分屏（可拖分隔条）+ OSC 标题跟随 | ✅ |
@@ -66,7 +68,7 @@
 传输进度按 100 ms 合并更新，终态立即发送准确字节数；本地传输文件使用异步 I/O，目录扫描在 blocking worker 内运行。SOCKS5/HTTP 的 TCP 隧道直接接入 Tokio，避免逐块桥接开销。高延迟和大量小文件的吞吐仍需按网络、服务器及磁盘条件实测；剩余优化包括 metadata subsystem 复用、有限目录内并发、目录属性复用及更多通道背压。
 
 前端验证：`npm run test:sftp` 和 `npm run test:ui`。后端安全测试：`cargo test sftp_safety_tests`、`cargo test files::tests`（需要构建依赖）。
-控件与终端回归：`npm run test:controls`、`npm run test:terminal`。独立透明度、工具浮窗与标签、macOS 窗口按钮、图标格式回归：`npm run test:appearance`、`npm run test:layout`、`npm run test:mac-controls`、`npm run test:icons`。发布 CI 额外在 macOS 运行真实 PTY 的空闲 / 连续输出 / 忽略 HUP 关闭测试，以及跨字节读取的 UTF-8 测试。
+控件与终端回归：`npm run test:controls`、`npm run test:terminal`。独立透明度、工具浮窗与标签、macOS 窗口按钮、图标格式回归：`npm run test:appearance`、`npm run test:layout`、`npm run test:mac-controls`、`npm run test:icons`。快速连接与连续标题栏：`npm run test:quick-connect`、`npm run test:header`。发布 CI 额外在 macOS 运行真实 PTY 的空闲 / 连续输出 / 忽略 HUP 关闭测试，以及跨字节读取的 UTF-8 测试。
 
 ## 构建
 
@@ -166,7 +168,7 @@ src/            前端（无构建器，原生脚本；prepare-dist 全量拷贝
   actbar.js     左侧图标活动栏（点按开合侧栏窗格）
   settings.js   全页设置（六分区，取代 <dialog>）
   profiles.js   机器管理（左列表右表单）
-  home.js       主页快速连接 + 分组机器列表
+  home.js       新建连接：协议卡片、独立字段、搜索与分组机器列表
   term.js       终端管理：多标签、分屏、主题、搜索、触发器、缩放、广播
   ui.js         侧栏六窗格 / 状态栏 / 命令面板 / 浮动搜索 / Toast
   sftp.js / sftp.css   双栏文件管理、书签、编辑器、传输队列及主题样式
