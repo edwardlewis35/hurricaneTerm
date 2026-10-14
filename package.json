@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.7.11",
+  "version": "0.7.12",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
@@ -9,7 +9,11 @@
     "test:ui": "node scripts/ui-integration-test.mjs",
     "test:sftp": "node scripts/sftp-ui-test.mjs",
     "test:controls": "node scripts/common-controls-test.mjs",
-    "test:terminal": "node scripts/terminal-regression-test.mjs"
+    "test:terminal": "node scripts/terminal-regression-test.mjs",
+    "test:appearance": "node scripts/terminal-appearance-test.mjs",
+    "test:layout": "node scripts/layout-regression-test.mjs",
+    "test:mac-controls": "node scripts/mac-controls-test.mjs",
+    "test:icons": "node scripts/icon-assets-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

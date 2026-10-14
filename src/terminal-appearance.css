@@ -1,0 +1,8 @@
+/* A single background layer per terminal: the wrapper also covers the padding
+ * and spare space outside xterm's measured screen. Keep ancestors and the DOM
+ * renderer transparent so 60% stays 60%, rather than becoming 84% by stacking. */
+#workspace, #main-area, #groups, #groups .group, .term-host { background: transparent; }
+.term-wrap { background-color: var(--window-term-bg, var(--term-bg)); }
+.term-wrap .xterm, .term-wrap .xterm-screen,
+.term-wrap .xterm-viewport { background: transparent !important; }
+.st-terminal-opacity-sample { background: var(--window-term-bg); color: var(--term-fg, var(--fg)); font-family: var(--font-mono); }

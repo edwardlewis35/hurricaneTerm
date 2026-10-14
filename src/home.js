@@ -134,6 +134,7 @@
 .ht-home { display: flex; flex-direction: column; align-items: center; height: 100%;
   overflow: auto; background: var(--bg); color: var(--fg); padding: clamp(40px, 9vh, 96px) 28px 32px; }
 .ht-home-logo { text-align: center; margin-bottom: 26px; user-select: none; }
+.ht-home-mascot { display: block; width: 72px; height: 72px; margin: 0 auto 10px; }
 .ht-home-title { color: var(--fg3, var(--fg)); font-size: clamp(36px, 5vw, 52px); font-weight: 300;
   letter-spacing: -1.8px; line-height: 1.25; }
 .ht-home-title b { color: inherit; font-weight: inherit; }
@@ -234,10 +235,15 @@
 
       // —— 1. logo 区 ——
       const logo = h('div', 'ht-home-logo');
+      const mascot = h('img', 'ht-home-mascot');
+      mascot.src = 'huricano-icon.png';
+      mascot.alt = 'Huricano';
+      mascot.width = mascot.height = 72;
+      mascot.draggable = false;
       const title = h('h1', 'ht-home-title');
       title.style.margin = '0';
       title.append(document.createTextNode('hurricane'), h('b', null, 'Term'));
-      logo.append(title, h('div', 'ht-home-tagline', '终端与远程连接'));
+      logo.append(mascot, title, h('div', 'ht-home-tagline', '终端与远程连接'));
       frag.appendChild(logo);
 
       const inner = h('div', 'ht-home-inner');

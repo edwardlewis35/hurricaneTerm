@@ -61,14 +61,33 @@
       const lights = document.getElementById('mac-lights');
       if (lights && mac && win()) {
         document.body.classList.add('no-native-lights');
+        lights.setAttribute('role', 'group');
+        lights.setAttribute('aria-label', '窗口控制');
+        const controls = {
+          close: { title: '关闭窗口', shape: '<path d="M4 4l4 4M8 4L4 8"/>' },
+          minimize: { title: '最小化窗口', shape: '<path d="M3 6h6"/>' },
+          maximize: { title: '放大或还原窗口', shape: '<path class="ml-expand" d="M3 3h4L3 7zm6 6H5l4-4z"/>' },
+        };
         lights.querySelectorAll('.ml').forEach((m) => {
-          m.addEventListener('click', (e) => {
+          const a = m.dataset.act;
+          const control = controls[a];
+          if (!control) return;
+          // 使用真正的按钮：键盘 Tab/Enter/Space 与鼠标都能操作。
+          // group hover / focus-within 的三个 glyph 同时出现，由独立 CSS 控制。
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = m.className;
+          b.dataset.act = a;
+          b.title = control.title;
+          b.setAttribute('aria-label', control.title);
+          b.innerHTML = '<svg class="ml-glyph" viewBox="0 0 12 12" aria-hidden="true" focusable="false">' + control.shape + '</svg>';
+          b.addEventListener('click', (e) => {
             e.stopPropagation();
-            const a = m.dataset.act;
             if (a === 'close') this.close();
             else if (a === 'minimize') this.minimize();
             else this.toggleMaximize();
           });
+          m.replaceWith(b);
         });
       }
 
@@ -101,16 +120,10 @@
       if (!host) return;
       host.textContent = '';
       const ui = () => (window.UI || (T && T.ui));
-      this.sidebarBtn = btn(host, 'server', '显示 / 隐藏侧栏', () => {
-        if (ui()) ui().toggleDock();
-        this.refresh();
-      }, 'tb-btn tb-sidebar');
-      btn(host, 'search', '查找 (Ctrl+F)', () => ui() && ui().openSearch());
-      btn(host, 'folder', 'SFTP 文件管理 (Ctrl+2)', () => window.SftpPanel && SftpPanel.toggle(), 'tb-btn tb-sftp');
-      btn(host, 'terminal', '命令面板 (Ctrl+Shift+P)', () => ui() && ui().openPalette());
       this.settingsBtn = btn(host, 'gear', '设置', (b) => {
         const S = window.Settings;
         if (!S) return;
+        if (ui()) ui().closeDock();
         if (window.Profiles && Profiles.isOpen()) { Profiles.close(); S.open(); return; }
         S.toggle();
       }, 'tb-btn tb-settings');

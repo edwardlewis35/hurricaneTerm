@@ -4,9 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>hurricaneTerm</title>
+  <link rel="icon" type="image/png" href="huricano-icon.png" />
   <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="sftp.css" />
+  <link rel="stylesheet" href="terminal-appearance.css" />
+  <link rel="stylesheet" href="mac-window-controls.css" />
 </head>
 <body>
   <!-- 无边框窗口：标签栏内嵌标题栏（Tabby 形态） -->
@@ -23,12 +26,17 @@
     <div id="tb-winctl"></div>
   </header>
 
+  <nav id="actbar" aria-label="终端工具栏"></nav>
+
   <div id="workspace">
-    <aside id="dock" hidden>
-      <nav id="actbar" aria-label="侧栏工具"></nav>
+    <div id="dock-backdrop" hidden></div>
+    <aside id="dock" hidden role="dialog" aria-modal="true" aria-labelledby="dock-title" tabindex="-1">
+      <header class="dock-window-head">
+        <b id="dock-title">会话</b>
+        <button type="button" id="dock-close" aria-label="关闭工具窗口" title="关闭 (Esc)"></button>
+      </header>
       <div id="dock-body"></div>
     </aside>
-    <div id="dock-resizer" hidden></div>
     <main id="main-area">
       <div id="home" hidden></div>
       <div id="settings" hidden></div>
@@ -58,7 +66,7 @@
     <span id="st-zoom" class="chip mono click" title="点击重置字号">13 px</span>
     <span id="st-theme" class="chip click" title="点击切换主题">tabby-dark</span>
     <span id="st-clock" class="chip mono"></span>
-    <span class="chip dim">0.7.11</span>
+    <span class="chip dim">0.7.12</span>
   </footer>
 
   <div id="palette" hidden>

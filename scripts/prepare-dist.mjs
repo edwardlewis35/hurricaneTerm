@@ -12,8 +12,8 @@ copyFileSync(join(nm, '@xterm/xterm/css/xterm.css'), join(vendor, 'xterm.css'));
 copyFileSync(join(nm, '@xterm/addon-fit/lib/addon-fit.js'), join(vendor, 'addon-fit.js'));
 copyFileSync(join(nm, '@xterm/addon-search/lib/addon-search.js'), join(vendor, 'addon-search.js'));
 copyFileSync(join(nm, '@xterm/addon-web-links/lib/addon-web-links.js'), join(vendor, 'addon-web-links.js'));
-// 同步 src 下全部前端文件（html/css/js），避免硬编码清单漏新模块
+// 同步顶级前端文件和图标，避免新增模块或品牌资源漏入离线安装包。
 for (const f of readdirSync(join(root, 'src'))) {
-  if (/\.(html|css|js|json)$/.test(f)) copyFileSync(join(root, 'src', f), join(dist, f));
+  if (/\.(html|css|js|json|png|svg|webp)$/.test(f)) copyFileSync(join(root, 'src', f), join(dist, f));
 }
 console.log('dist prepared:', dist);

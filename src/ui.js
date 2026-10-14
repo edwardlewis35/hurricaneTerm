@@ -1,4 +1,4 @@
-/* hurricaneTerm — ui.js：侧栏窗格、状态栏、命令面板、浮动搜索、Toast
+/* hurricaneTerm — ui.js：工具浮窗、状态栏、命令面板、浮动搜索、Toast
  * 原创代码 (Apache-2.0)。
  *
  * 0.7.0 改版：删除 0.6.0 的老式菜单栏（#menubar，10 个下拉）与 emoji 工具栏（#toolbar）；
@@ -78,27 +78,36 @@
       return Promise.resolve(w && typeof w.getCurrentWindow === 'function' ? w.getCurrentWindow() : null);
     },
 
-    /* ---------- 侧栏（活动栏驱动） ---------- */
+    /* ---------- 工具浮窗（水平工具栏驱动） ---------- */
     buildDock() {
-      this.renderDock();
+      if (this._dockBuilt) return;
+      this._dockBuilt = true;
+      // 浮窗仅由显式点击或快捷键打开，旧版保存的 dockVisible 不再占用启动空间。
+      T.s.dockVisible = false;
       this.applyDockVisibility();
-
-      // 侧栏宽度拖拽
-      const rz = $('#dock-resizer');
-      if (rz) {
-        let dragging = false;
-        rz.addEventListener('mousedown', (e) => { dragging = true; e.preventDefault(); document.body.classList.add('dragging'); });
-        window.addEventListener('mousemove', (e) => {
-          if (!dragging) return;
-          const w = Math.max(190, Math.min(620, e.clientX - 46));
-          document.documentElement.style.setProperty('--dock-w', w + 'px');
-        });
-        window.addEventListener('mouseup', () => {
-          if (!dragging) return;
-          dragging = false; document.body.classList.remove('dragging');
-          this.fitActive();
-        });
-      }
+      const close = $('#dock-close');
+      if (close) { close.innerHTML = svg('x'); close.addEventListener('click', () => this.closeDock()); }
+      document.addEventListener('pointerdown', (e) => {
+        if (!T.s.dockVisible || e.target.closest('#dock, #actbar, .wt-select-menu, .ht-menu')) return;
+        this.closeDock();
+      }, true);
+      document.addEventListener('keydown', (e) => {
+        if (!T.s.dockVisible) return;
+        // Portaled dropdown/menu handles its own Escape before the surrounding window.
+        if (window.CommonControls && CommonControls.isOpen || window.TabBar && TabBar.menuOpen()) return;
+        if (e.key === 'Escape') {
+          e.preventDefault(); e.stopImmediatePropagation(); this.closeDock(); return;
+        }
+        if (e.key !== 'Tab') return;
+        const dock = $('#dock');
+        const focusable = Array.from(dock.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]'))
+          .filter(el => !el.hidden && !el.closest('[hidden]') && el.getAttribute('aria-hidden') !== 'true');
+        if (!focusable.length) { e.preventDefault(); dock.focus(); return; }
+        const index = focusable.indexOf(document.activeElement);
+        if (index < 0 || e.shiftKey && index === 0 || !e.shiftKey && index === focusable.length - 1) {
+          e.preventDefault(); focusable[e.shiftKey ? focusable.length - 1 : 0].focus();
+        }
+      }, true);
 
       // 分屏分隔条拖拽
       const gut = $('#gutter');
@@ -131,29 +140,55 @@
     },
 
     applyDockVisibility() {
-      const dock = $('#dock'), rz = $('#dock-resizer');
+      const dock = $('#dock'), backdrop = $('#dock-backdrop');
       const vis = !!T.s.dockVisible;
       if (dock) dock.hidden = !vis;
-      if (rz) rz.hidden = !vis;
+      if (backdrop) backdrop.hidden = !vis;
+      const label = PANES.find(p => p[0] === T.s.dockPane);
+      const title = $('#dock-title');
+      if (title) title.textContent = label ? label[1] : '工具';
       if (window.ActBar) ActBar.render();
       if (window.TitleBar) TitleBar.refresh();
     },
 
+    focusDock() {
+      const dock = $('#dock');
+      if (!dock || dock.hidden) return;
+      // Re-rendered content must not steal focus from a text field inside the same dialog.
+      if (!dock.contains(document.activeElement)) ($('#dock-close') || dock).focus();
+    },
+
     setDockPane(id) {
+      if (!PANES.some(p => p[0] === id)) return;
+      const palette = $('#palette'), search = $('#search-float');
+      if (palette && !palette.hidden) this.closePalette();
+      if (search && !search.hidden) this.closeSearch();
+      if (id === 'filer' && window.SftpPanel) { this.closeDock(); SftpPanel.open(); return; }
+      if (!T.s.dockVisible) this._dockReturnFocus = document.activeElement;
+      if (window.SftpPanel && SftpPanel.isOpen() && SftpPanel.close() === false) return;
+      if (window.Settings && Settings.isOpen()) Settings.close();
+      if (window.Profiles && Profiles.isOpen()) Profiles.close();
       T.s.dockPane = id;
       T.s.dockVisible = true;
       this.applyDockVisibility();
       this.renderDock();
+      this.focusDock();
       T.persistSettings();
-      this.fitActive(40);
+    },
+
+    closeDock() {
+      if (!T.s.dockVisible) return;
+      T.s.dockVisible = false;
+      this.applyDockVisibility();
+      T.persistSettings();
+      const previous = this._dockReturnFocus;
+      this._dockReturnFocus = null;
+      if (previous && previous.isConnected && typeof previous.focus === 'function') previous.focus();
     },
 
     toggleDock() {
-      T.s.dockVisible = !T.s.dockVisible;
-      this.applyDockVisibility();
-      if (T.s.dockVisible) this.renderDock();
-      T.persistSettings();
-      this.fitActive(40);
+      if (T.s.dockVisible) this.closeDock();
+      else this.setDockPane(T.s.dockPane || 'explorer');
     },
 
     renderDock() {
@@ -245,17 +280,19 @@
     },
 
     openProfiles() {
+      if (window.SftpPanel && SftpPanel.isOpen() && SftpPanel.hide() === false) return;
+      this.closeDock();
+      if (window.Settings && Settings.isOpen()) Settings.close();
       if (window.Profiles) window.Profiles.openManager();
       else this.toast('机器管理模块未加载');
     },
 
-    /* MobaXterm 习惯：SSH 连上后自动把文件窗格切到双栏并列出远端家目录（'.' = SFTP 家目录） */
+    /* SSH 连接只准备文件管理路径。工具窗口由用户点击打开，不抢占新终端。 */
     onSshConnected(tab) {
       if (!tab || !tab.session || tab.session.protocol !== 'ssh') return;
       T.s.remotePath = '.';
       T.s.filerMode = 'both';
-      this.setDockPane('filer');
-      this.toast('已连接 ' + (tab.session.host || '') + '，文件窗格显示远端目录');
+      this.toast('已连接 ' + (tab.session.host || '') + '，点击文件图标打开 SFTP');
     },
 
     /* ---------- 窗格：文件浏览器（SFTP 双栏） ---------- */
@@ -273,9 +310,9 @@
 
     /* ---------- 窗格：发送 ---------- */
     senderSet(text, direct) {
+      if (!T.s.dockVisible || T.s.dockPane !== 'sender') this.setDockPane('sender');
       const ta = $('#dock-body textarea');
       if (ta) { ta.value = text.replace(/\r$/, ''); ta.focus(); }
-      else { this.setDockPane('sender'); this.toast('已切到「发送」窗格'); }
       if (direct) T.term.broadcast(text, false);
     },
 
@@ -362,6 +399,7 @@
 
     /* ---------- 浮动搜索 ---------- */
     openSearch() {
+      this.closeDock();
       const bar = $('#search-float');
       if (!bar) return;
       bar.hidden = false;
@@ -446,10 +484,12 @@
 
     /* Tabby 入口：机器编辑统一走 profiles.js */
     editProfile(session) {
+      this.closeDock();
       if (window.Profiles) { Profiles.edit(session || null); return; }
       this.toast('机器管理模块未加载', 2400, 'err');
     },
     openSettings(section) {
+      this.closeDock();
       if (window.Settings) Settings.open(section);
       else this.toast('设置模块未加载', 2400, 'err');
     },
@@ -469,10 +509,10 @@
       add('会话', '关闭其他会话', '', 'x', () => T.term.active && T.term.closeOthers(T.term.active));
       add('会话', '重命名当前标签', 'F2', 'output', () => window.TabBar && TabBar.renameActive());
 
-      add('窗格', '切换侧栏', 'Ctrl+B', 'folder', () => this.toggleDock());
+      add('窗格', '切换工具窗口', 'Ctrl+B', 'folder', () => this.toggleDock());
       for (let i = 0; i < PANES.length; i++) {
         const [id, label] = PANES[i];
-        add('窗格', '侧栏：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));
+        add('窗格', '工具窗口：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));
       }
 
       add('分屏', '左右分屏', 'Ctrl+Shift+E', 'splitH', () => T.term.splitActive('right'));
@@ -507,6 +547,7 @@
     },
 
     openPalette() {
+      this.closeDock();
       const p = $('#palette');
       if (!p) return;
       p.hidden = false;
@@ -606,13 +647,13 @@
     if (mod && !e.shiftKey && (k === 'f' || k === 'F')) { e.preventDefault(); UI.openSearch(); return; }
     if (mod && !e.shiftKey && (k === 'b' || k === 'B')) { e.preventDefault(); UI.toggleDock(); return; }
     if (mod && !e.shiftKey && (k === 'm' || k === 'M')) { e.preventDefault(); UI.openProfiles(); return; }
-    if (mod && !e.shiftKey && k === ',') { e.preventDefault(); window.Settings ? Settings.toggle() : null; return; }
+    if (mod && !e.shiftKey && k === ',') { e.preventDefault(); UI.closeDock(); window.Settings ? Settings.toggle() : null; return; }
     if (mod && (k === '=' || k === '+')) { e.preventDefault(); T.term.zoom(1); return; }
     if (mod && k === '-') { e.preventDefault(); T.term.zoom(-1); return; }
     // Ctrl+1..6 → 侧栏窗格
     if (mod && !e.shiftKey && k >= '1' && k <= '6') {
       e.preventDefault();
-      if (k === '2' && window.SftpPanel) { SftpPanel.toggle(); return; }
+      if (k === '2' && window.SftpPanel) { UI.closeDock(); SftpPanel.toggle(); return; }
       const p = PANES[+k - 1];
       if (p) UI.setDockPane(p[0]);
       return;

@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.11';
+  const VERSION = '0.7.12';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -23,12 +23,13 @@ window.WT = (function () {
       fontSize: 13,
       fontFamily: '',
       backgroundOpacity: 100,
+      terminalOpacity: 100,
       triggers: [],
       sessions: [],
       sync: false,
       mode: 'Remote',
       dockPane: 'explorer',
-      dockVisible: false,          // Tabby 默认收起侧栏
+      dockVisible: false,          // 工具浮窗默认收起
       filerMode: '', remotePath: null,
       filerPath: null,
       statusBar: false,            // 默认让终端铺满窗口，可在外观设置中开启状态栏
@@ -46,7 +47,13 @@ window.WT = (function () {
     async init() {
       try {
         const raw = await WT.invoke('ui_state_load', { name: 'settings' });
-        if (raw) Object.assign(WT.s, JSON.parse(raw));
+        if (raw) {
+          const saved = JSON.parse(raw);
+          Object.assign(WT.s, saved);
+          // The previous single slider controlled both backgrounds. Keep its
+          // saved value for existing installations when adding the separate setting.
+          if (!Object.prototype.hasOwnProperty.call(saved, 'terminalOpacity')) WT.s.terminalOpacity = WT.s.backgroundOpacity;
+        }
       } catch (e) {}
       try {
         const ss = await WT.invoke('sessions_load');
@@ -55,7 +62,7 @@ window.WT = (function () {
     },
 
     persistSettings() {
-      const keys = ['theme', 'fontSize', 'fontFamily', 'backgroundOpacity', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
+      const keys = ['theme', 'fontSize', 'fontFamily', 'backgroundOpacity', 'terminalOpacity', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
         'statusBar', 'tooltips', 'homeOnStart', 'activityDot', 'builtinHighlight',
         'copyOnSelect', 'rightClickPaste', 'sessionLog', 'lastUpdateCheck', 'updateInfo', 'sftp'];
       const o = {};

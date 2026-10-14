@@ -108,6 +108,7 @@
 
   /* ---------- 外壳（懒创建，一次性） ---------- */
   function ensureShell() {
+    if (window.UI?.closeDock) UI.closeDock();
     if (S.overlay) return;
     const st = document.createElement('style');
     st.id = 'ht-pm-style'; st.textContent = CSS;

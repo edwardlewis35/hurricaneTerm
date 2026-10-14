@@ -99,6 +99,13 @@ jobs:
           npm run test:controls
           npm run test:terminal
 
+      - name: 终端透明度、工具浮窗、窗口按钮和图标回归
+        run: |
+          npm run test:appearance
+          npm run test:layout
+          npm run test:mac-controls
+          npm run test:icons
+
       - name: macOS 原生 PTY 关闭与 UTF-8 回归
         if: startsWith(matrix.platform, 'macos')
         run: node scripts/native-terminal-test.mjs --online

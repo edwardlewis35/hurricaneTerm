@@ -81,7 +81,7 @@ ok('A3 无 <dialog> 弹窗', $$('dialog').length === 0);
 ok('A4 无老式 dock 文字选项卡 #dock-tabs', !$('#dock-tabs'));
 ok('A5 无边框标题栏存在', !!$('#titlebar') && $$('.tb-drag').length >= 1);
 ok('A6 非 Tauri 环境下窗口控制自动隐藏', $('#tb-winctl').hidden === true);
-ok('A7 标题栏动作区已建按钮', $$('#tb-actions .tb-btn').length >= 4);
+ok('A7 右上角仅保留设置，工具操作位于第二行', $$('#tb-actions .tb-btn').length === 1 && !!$('#tb-actions .tb-settings') && $$('#actbar .ab-btn').length >= 9);
 
 /* ============ B. 活动栏 ============ */
 ok('B1 活动栏挂载', $$('#actbar .ab-btn').length >= 9);
@@ -356,8 +356,8 @@ ok('M3 强调色与 Tabby 默认蓝色一致', document.documentElement.style.ge
 ok('M4 PuTTY 习惯默认开：选中复制 + 右键粘贴', T.s.copyOnSelect !== false && T.s.rightClickPaste !== false);
 const tabM = await TM.create(sess);
 await flush();
-ok('M5 SSH 连接后侧栏提供独立文件管理入口', T.s.dockPane === 'filer' && !$('#dock').hidden && !!$('#open-sftp-panel'));
-$('#open-sftp-panel').click();
+ok('M5 SSH连接保留终端，文件管理由第二行图标按需打开', !window.SftpPanel.isOpen() && $('#dock').hidden && !!$('#actbar [data-pane="filer"]'));
+$('#actbar [data-pane="filer"]').click();
 await flush();
 ok('M6 独立 SFTP 面板挂载双栏且列出远端家目录', window.SftpPanel.isOpen()
   && $$('#sftp-panel .sftp-pane').length === 2
@@ -459,7 +459,7 @@ ok('P7 下拉框切回深色时不保留浅色控件令牌',
 $('.ht-pm-x').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 
 /* ============ Q. Tabby 顶栏与完整页面回归 ============ */
-ok('Q1 侧栏工具包含在按需展开的 Dock 中', $('#actbar').parentElement === $('#dock'));
+ok('Q1 工具栏位于标签下方的独立第二行', $('#actbar').parentElement === document.body && $('#actbar').previousElementSibling === $('#titlebar') && !$('#dock').contains($('#actbar')));
 ok('Q2 右上角设置是最后一个应用动作且无侧栏重复入口',
   $('#tb-actions').lastElementChild.classList.contains('tb-settings') && !$('.ab-settings'));
 $('#tb-actions .tb-settings').click();
@@ -493,12 +493,12 @@ ok('Q9 顶栏分屏入口保留两个方向', $('.ht-menu').textContent.includes
   && $('.ht-menu').textContent.includes('向下分屏'));
 window.TabBar.closeMenu();
 if (T.s.dockVisible) UI.toggleDock();
-$('.tb-sidebar').click();
-ok('Q10 顶栏侧栏入口展开并同步按钮状态', !$('#dock').hidden
-  && $('.tb-sidebar').getAttribute('aria-expanded') === 'true');
-$('.ab-collapse').click();
-ok('Q11 收起侧栏恢复完整终端视图', $('#dock').hidden
-  && $('.tb-sidebar').getAttribute('aria-expanded') === 'false');
+$('#actbar [data-pane="explorer"]').click();
+ok('Q10 第二行会话图标打开工具浮窗并同步状态', !$('#dock').hidden
+  && $('#actbar [data-pane="explorer"]').getAttribute('aria-expanded') === 'true' && $('#dock').getAttribute('role') === 'dialog');
+$('#dock-close').click();
+ok('Q11 关闭工具浮窗隐藏遮罩并清除按钮状态', $('#dock').hidden && $('#dock-backdrop').hidden
+  && $('#actbar [data-pane="explorer"]').getAttribute('aria-expanded') === 'false');
 await TM.close(previousTab.id);
 ok('Q12 主页具备本地、机器、设置快捷入口', $$('#home .ht-home-action').length === 3);
 window.Profiles.openManager();
@@ -523,7 +523,6 @@ ok('R1 保存新机器后返回主页立即更新机器列表', !$('#home').hidd
   && $('#home').textContent.includes('ui-regression-machine'));
 
 window.Settings.open('profiles');
-UI.setDockPane('explorer');
 const savedMachine = T.s.sessions.find((s) => s.name === 'ui-regression-machine');
 window.Profiles.edit(savedMachine);
 $('.ht-pm-form [data-k="name"]').value = 'ui-regression-renamed';
@@ -533,7 +532,8 @@ $('.ht-pm-x').click();
 ok('R2 修改机器后返回设置立即更新名称', window.Settings.isOpen()
   && !!$('#settings [data-edit="ui-regression-renamed"]')
   && !$('#settings [data-edit="ui-regression-machine"]'));
-ok('R3 退出管理器同步刷新可见侧栏机器列表', !$('#dock').hidden
+UI.setDockPane('explorer');
+ok('R3 重新打开会话浮窗立即读取修改后的机器列表', !$('#dock').hidden
   && $('#dock-body').textContent.includes('ui-regression-renamed')
   && !$('#dock-body').textContent.includes('ui-regression-machine'));
 
@@ -546,9 +546,9 @@ window.Profiles.openManager();
 $('.ht-pm-overlay').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 ok('R4 Esc 关闭机器管理后恢复活动终端键盘焦点', !window.Profiles.isOpen()
   && document.activeElement === terminalInput);
-$('.tb-sidebar').focus();
+$('#actbar [data-pane="explorer"]').focus();
 window.Profiles.close();
-ok('R5 重复关闭已隐藏管理器不会抢走当前控件焦点', document.activeElement === $('.tb-sidebar'));
+ok('R5 重复关闭已隐藏管理器不会抢走当前控件焦点', document.activeElement === $('#actbar [data-pane="explorer"]'));
 
 /* ============ S. 背景透明度与现代下拉框的真实业务联动 ============ */
 window.Settings.open('appearance');
@@ -558,16 +558,16 @@ ok('S1 背景不透明度默认100%，设置提供20–100范围slider', opacity
 opacitySlider.value = '55';
 const savesBeforeDrag = window.__invokes.filter(([c, a]) => c === 'ui_state_save' && a?.name === 'settings').length;
 opacitySlider.dispatchEvent(new window.Event('input', { bubbles: true }));
-ok('S2 拖动即时调整背景alpha，终端文字颜色保持原值', T.s.backgroundOpacity === 55 && document.documentElement.style.getPropertyValue('--window-bg').endsWith(',0.55)')
-  && TM.activeTab().term.options.theme.background.endsWith(',0.55)') && TM.activeTab().term.options.theme.foreground === TM.THEMES[T.s.theme].term.foreground);
+ok('S2 界面滑块即时调整界面alpha，终端独立保持100%且文字清晰', T.s.backgroundOpacity === 55 && document.documentElement.style.getPropertyValue('--window-bg').endsWith(',0.55)')
+  && T.s.terminalOpacity === 100 && TM.activeTab().term.options.theme.background === TM.THEMES[T.s.theme].term.background && TM.activeTab().term.options.theme.foreground === TM.THEMES[T.s.theme].term.foreground);
 ok('S3 slider拖动不产生每一帧保存，显示百分比立即同步', window.__invokes.filter(([c, a]) => c === 'ui_state_save' && a?.name === 'settings').length === savesBeforeDrag
   && $('#settings [data-opacity-value]').textContent === '55%');
 opacitySlider.dispatchEvent(new window.Event('change', { bubbles: true }));
 ok('S4 拖动完成持久化backgroundOpacity', window.__invokes.some(([c, a]) => c === 'ui_state_save' && a?.name === 'settings' && JSON.parse(a.value).backgroundOpacity === 55));
 ok('S5 浏览器透明预览使用明确棋盘背景而非伪装桌面透视', document.documentElement.classList.contains('transparency-preview') && $('#settings').textContent.includes('棋盘背景'));
 TM.applyTheme('tabby-light');
-ok('S6 切换主题保留透明度且重新派生浅色背景', T.s.backgroundOpacity === 55 && document.documentElement.style.getPropertyValue('--window-bg').endsWith(',0.55)')
-  && TM.activeTab().term.options.theme.background === 'rgba(255,255,255,0.55)');
+ok('S6 切主题保持界面55%和终端100%，重新派生两个背景', T.s.backgroundOpacity === 55 && document.documentElement.style.getPropertyValue('--window-bg').endsWith(',0.55)')
+  && T.s.terminalOpacity === 100 && TM.activeTab().term.options.theme.background === '#ffffff' && TM.activeTab().wrap.style.backgroundColor === 'rgb(255, 255, 255)');
 window.Appearance.setOpacity(0);
 ok('S7 非法低值钳制到20%，未降低body整体opacity', T.s.backgroundOpacity === 20 && !document.body.style.opacity);
 window.Appearance.setOpacity(100);
@@ -585,6 +585,25 @@ modeControl.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', b
 ok('S11 Esc仅关闭下拉，不关闭外层设置页', !window.CommonControls.isOpen && window.Settings.isOpen());
 window.Settings.close();
 TM.applyTheme('tabby-dark');
+
+/* ============ V. 工具浮窗与真实会话激活互斥 ============ */
+UI.setDockPane('sender');
+const countBeforeShortcut = TM.order.length;
+document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 't', ctrlKey: true, bubbles: true, cancelable: true }));
+await flush();
+ok('V1 工具浮窗中Ctrl+T创建终端并关闭遮罩，焦点进入新会话', TM.order.length === countBeforeShortcut + 1 && $('#dock').hidden && $('#dock-backdrop').hidden && document.activeElement === TM.activeTab().term._input);
+UI.setDockPane('explorer');
+$('#dock-body .sess[data-name="lab-server"]').click();
+await flush();
+ok('V2 会话浮窗中连接SSH关闭浮窗，并保留终端而不自动打开SFTP', TM.activeTab().session?.protocol === 'ssh' && $('#dock').hidden && !window.SftpPanel.isOpen() && document.activeElement === TM.activeTab().term._input);
+UI.setDockPane('sender');
+window.Profiles.openManager();
+ok('V3 直接机器管理API关闭旧工具浮窗，避免隐藏的焦点捕获', $('#dock').hidden && $('#dock-backdrop').hidden && window.Profiles.isOpen());
+window.Profiles.close();
+UI.setDockPane('sender');
+window.Settings.open('appearance');
+ok('V4 直接设置API关闭旧工具浮窗且两个滑块均可操作', $('#dock').hidden && window.Settings.isOpen() && !!$('#settings [data-terminal-opacity]') && !!$('#settings [data-opacity]'));
+window.Settings.close();
 
 // 报告
 console.log(results.map(([s, n]) => `${s} ${n}`).join('\n'));

@@ -167,6 +167,7 @@
         allowProposedApi: true,
         macOptionIsMeta: false,
       });
+      if (window.Appearance) Appearance.syncTerminal({ wrap, term }, THEMES[T.s.theme].term);
       const fit = new FitAddon.FitAddon();
       const search = new SearchAddon.SearchAddon();
       term.loadAddon(fit);
@@ -227,6 +228,9 @@
         color: (session && session.color) || null, pinned: false, notify: false, activity: false,
       };
       this.tabs[id] = tab;
+      // Connecting may await authentication while the user changes opacity/theme.
+      // Apply the latest appearance when the session finally becomes a tab.
+      if (window.Appearance) Appearance.syncTerminal(tab, THEMES[T.s.theme].term);
       if (term.parser && term.parser.registerOscHandler) term.parser.registerOscHandler(7, data => {
         try {
           const url = new URL(data);
@@ -349,7 +353,7 @@
 
       this.orderWrites(id);
       this.activate(id);
-      // MobaXterm 习惯：SSH 一连上就把文件窗格切到双栏并列出远端家目录（须在 activate 之后）
+      // SSH 连接后准备 SFTP 路径；由工具栏点击打开，不遮住新终端。
       if (proto === 'ssh' && window.UI && typeof UI.onSshConnected === 'function') UI.onSshConnected(tab);
       // PuTTY 习惯：会话输出落盘（设置页开关；仅对新会话生效）
       if (T.s.sessionLog) this.startLog(tab);
@@ -363,6 +367,7 @@
     activate(id, focusTerminal = true) {
       const t = this.tabs[id];
       if (!t) return;
+      if (window.UI?.closeDock) UI.closeDock();
       this.active = id;
       this.group = t.group;
       if (t.activity) { t.activity = false; this.renderTabbar(); }
@@ -651,7 +656,9 @@
       // 原生弹出的 select 菜单使用浏览器/系统控件；显式写入以同步 WebView。
       document.documentElement.style.colorScheme = v['--color-scheme'];
       for (const t of Object.values(this.tabs)) {
-        t.term.options.theme = THEMES[name].term;
+        if (t._closing) continue;
+        if (window.Appearance) Appearance.syncTerminal(t, THEMES[name].term);
+        else t.term.options.theme = THEMES[name].term;
         try { t.fit.fit(); } catch (e) {}
       }
       if (window.Appearance) Appearance.apply();

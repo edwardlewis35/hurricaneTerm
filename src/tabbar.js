@@ -25,9 +25,9 @@
   const COLORS = ['#d9534f', '#f0ad4e', '#ffd500', '#5cb85c', '#5bc0de', '#0275d8', '#4fadff', '#ff5b77', '#613d7c'];
 
   const STYLE_TEXT = `
-.ht-tabbar { display:flex; align-items:stretch; flex:0 1 auto; min-width:0; height:var(--titlebar-h);
+.ht-tabbar { display:flex; align-items:stretch; flex:1 1 auto; width:100%; min-width:0; height:var(--titlebar-h);
   user-select:none; font-size:12.5px; }
-.ht-tabs { display:flex; align-items:stretch; flex:0 1 auto; min-width:0; height:100%;
+.ht-tabs { position:relative; display:flex; align-items:stretch; flex:1 1 auto; min-width:0; height:100%;
   overflow-x:auto; overflow-y:hidden; scrollbar-width:none; }
 .ht-tabs::-webkit-scrollbar { display:none; }
 .ht-brand { display:flex; align-items:center; gap:9px; flex:0 0 160px; padding:0 16px; height:100%; color:var(--fg3);
@@ -35,7 +35,7 @@
 .ht-brand b { color:var(--fg3); font-weight:600; }
 .ht-brand i { color:var(--accent); font-style:normal; font-weight:700; }
 
-.ht-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 0 180px;
+.ht-tab { position:relative; display:flex; align-items:center; gap:9px; flex:0 0 var(--ht-tab-width, 180px);
   min-width:0; height:var(--titlebar-h);
   padding:0 10px 0 15px; cursor:default; color:var(--fg2); background:transparent;
   border-radius:0; border-right:1px solid var(--border); transition:background .12s ease, color .12s ease; }
@@ -76,7 +76,10 @@
   /* ---------- 状态 ---------- */
   let root = null, tabsEl = null;
   let dragId = null;
-  let menuEl = null;
+  let menuEl = null, menuBindTimer = null;
+  let resizeObserver = null, resizeListener = null, revealFrame = null, lastActive = null, lastOrder = [];
+  const MAX_TAB_WIDTH = 180, MIN_TAB_WIDTH = 110;
+
 
   function cssEscape(s) {
     if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(s);
@@ -120,7 +123,12 @@
 
   function callProfiles(name, ...args) {
     const P = (T && T.Profiles) || window.Profiles;
-    if (P && typeof P[name] === 'function') { try { P[name].apply(P, args); return true; } catch (e) {} }
+    if (P && typeof P[name] === 'function') {
+      if (window.SftpPanel && SftpPanel.isOpen() && SftpPanel.hide() === false) return false;
+      if (T.ui) T.ui.closeDock();
+      if (window.Settings && Settings.isOpen()) Settings.close();
+      try { P[name].apply(P, args); return true; } catch (e) {}
+    }
     toast('未接线：Profiles.' + name);
     return false;
   }
@@ -140,6 +148,7 @@
 
   /* ---------- 浮层菜单（自建 DOM，点击别处 / Esc 关闭） ---------- */
   function closeMenu() {
+    clearTimeout(menuBindTimer); menuBindTimer = null;
     if (!menuEl) return;
     menuEl.remove();
     menuEl = null;
@@ -159,7 +168,9 @@
     m.style.left = Math.max(2, Math.min(x, window.innerWidth - r.width - 4)) + 'px';
     m.style.top = Math.max(2, Math.min(y, window.innerHeight - r.height - 4)) + 'px';
     menuEl = m;
-    setTimeout(() => {
+    menuBindTimer = setTimeout(() => {
+      menuBindTimer = null;
+      if (menuEl !== m) return;
       document.addEventListener('mousedown', onDocDown, true);
       document.addEventListener('keydown', onDocKey, true);
     }, 0);
@@ -315,12 +326,15 @@
     el.addEventListener('click', (e) => { if (e.button === 0) callExisting('activate', id); });
     el.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); callExisting('activate', id); }
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
         e.preventDefault();
         const ids = displayOrder();
-        const next = ids[(ids.indexOf(id) + (e.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length];
+        const next = e.key === 'Home' ? ids[0] : e.key === 'End' ? ids[ids.length - 1]
+          : ids[(ids.indexOf(id) + (e.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length];
         callExisting('activate', next, false);
-        tabsEl.querySelector('[data-id="' + cssEscape(next) + '"]').focus();
+        const target = tabsEl.querySelector('[data-id="' + cssEscape(next) + '"]');
+        if (target) target.focus({ preventScroll: true });
+        revealActive();
       }
     });
     el.addEventListener('dblclick', (e) => { e.stopPropagation(); startInlineRename(id); });
@@ -402,19 +416,58 @@
 
   /* ---------- 渲染 ---------- */
   function revealActive() {
-    const activeId = T.term && T.term.active;
-    const act = activeId && tabsEl && tabsEl.querySelector('.ht-tab[data-id="' + cssEscape(activeId) + '"]');
-    if (act) requestAnimationFrame(() => act.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
+    if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+    revealFrame = requestAnimationFrame(() => {
+      revealFrame = null;
+      const activeId = T.term && T.term.active;
+      const act = activeId && tabsEl && tabsEl.querySelector('.ht-tab[data-id="' + cssEscape(activeId) + '"]');
+      if (!act) return;
+      // Scroll this row only. scrollIntoView can also move Home/Settings in WebKit.
+      const view = tabsEl.getBoundingClientRect(), box = act.getBoundingClientRect();
+      const delta = box.left < view.left ? box.left - view.left : box.right > view.right ? box.right - view.right : 0;
+      tabsEl.scrollLeft = Math.max(0, tabsEl.scrollLeft + delta);
+    });
+  }
+
+  function layout() {
+    if (!root || !root.parentElement) return;
+    const host = root.parentElement, bar = host.parentElement;
+    const count = Math.max(1, displayOrder().length);
+    const actions = root.querySelector('.ht-actions');
+    const actionWidth = actions ? actions.getBoundingClientRect().width : 0;
+    // The titlebar's fixed controls always retain their space; the tab row alone scrolls.
+    const siblings = Array.from(bar.children).filter(el => el !== host);
+    const occupied = siblings.reduce((sum, el) => sum + (el.classList.contains('tb-drag-fill') ? 24 : el.getBoundingClientRect().width), 0);
+    const available = Math.max(0, bar.clientWidth - occupied);
+    const forTabs = Math.max(0, available - actionWidth);
+    const width = Math.max(MIN_TAB_WIDTH, Math.min(MAX_TAB_WIDTH, Math.floor(forTabs / count)));
+    root.style.setProperty('--ht-tab-width', width + 'px');
+    host.style.width = Math.min(available, count * width + actionWidth) + 'px';
+  }
+
+  function dispose() {
+    closeMenu();
+    if (resizeObserver) resizeObserver.disconnect();
+    if (resizeListener) window.removeEventListener('resize', resizeListener);
+    if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+    if (root) root.remove();
+    root = tabsEl = resizeObserver = resizeListener = null;
+    revealFrame = null; lastActive = null; lastOrder = []; dragId = null;
   }
 
   function render() {
     if (!tabsEl) return;
     const activeId = T.term ? T.term.active : null;
+    const scroll = tabsEl.scrollLeft;
     tabsEl.textContent = '';
     const ids = displayOrder();
     if (!ids.length) tabsEl.appendChild(brandEl());
     for (const id of ids) tabsEl.appendChild(tabEl(id));
-    revealActive();
+    layout();
+    tabsEl.scrollLeft = scroll;
+    const moved = ids.length !== lastOrder.length || ids.some((id, index) => id !== lastOrder[index]);
+    if (lastActive !== activeId || moved) revealActive();
+    lastActive = activeId; lastOrder = ids;
     // 主区窗口标题跟随活动标签
     try {
       const t = activeId && T.term.tabs[activeId];
@@ -425,6 +478,7 @@
   function mount(el) {
     // 幂等：同一容器重复 mount 直接复用（防 boot 双触发产生双实例）
     if (root && el && root.parentNode === el) { render(); return; }
+    dispose();
     ensureStyle();
     root = document.createElement('div');
     root.className = 'ht-tabbar';
@@ -434,7 +488,12 @@
     tabsEl.setAttribute('role', 'tablist');
     tabsEl.setAttribute('aria-label', '终端标签');
     tabsEl.addEventListener('wheel', (e) => {
-      if (tabsEl.scrollWidth > tabsEl.clientWidth) { e.preventDefault(); tabsEl.scrollLeft += e.deltaY || e.deltaX; }
+      if (e.ctrlKey || tabsEl.scrollWidth <= tabsEl.clientWidth) return;
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!delta) return;
+      e.preventDefault();
+      const multiplier = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? tabsEl.clientWidth : 1;
+      tabsEl.scrollLeft = Math.max(0, Math.min(tabsEl.scrollWidth - tabsEl.clientWidth, tabsEl.scrollLeft + delta * multiplier));
     }, { passive: false });
     tabsEl.addEventListener('dragover', (e) => e.preventDefault());
     tabsEl.addEventListener('drop', (e) => { /* 落到尾部空白 → 移到末尾 */
@@ -484,12 +543,20 @@
 
     root.append(tabsEl, actions);
     el.appendChild(root);
+    const onResize = () => { layout(); revealActive(); };
+    if (typeof ResizeObserver === 'function') {
+      resizeObserver = new ResizeObserver(onResize);
+      resizeObserver.observe(el.parentElement);
+    } else {
+      resizeListener = onResize; window.addEventListener('resize', resizeListener);
+    }
     render();
   }
 
   window.TabBar = {
     mount,
     render,
+    dispose,
     revealActive,
     closeMenu,
     menuOpen: () => !!menuEl,

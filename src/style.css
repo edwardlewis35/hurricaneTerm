@@ -39,6 +39,7 @@
   --t: all .15s ease-in-out;  /* $transition-base */
 
   --titlebar-h: 40px;
+  --toolrow-h: 38px;
   --dock-w: 264px;
   --status-h: 22px;
   --font-ui: "Source Sans Pro", system-ui, "Noto Sans CJK SC", "PingFang SC", sans-serif;
@@ -64,7 +65,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--titlebar-h) minmax(0, 1fr) auto; height: 100vh; }
+body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--titlebar-h) var(--toolrow-h) minmax(0, 1fr) auto; height: 100vh; }
 /* The browser preview is an explicit checkerboard, while native windows reveal the desktop. */
 html.transparency-preview { background-color: #74808d; background-image: repeating-conic-gradient(#596573 0% 25%, transparent 0% 50%); background-size: 28px 28px; }
 /* 保持三个平台同一图标度量，窗口红绿灯使用独立的系统尺寸。 */
@@ -161,7 +162,7 @@ svg.ico { display: block; }
 .tb-drag { flex: 0 0 8px; }
 .tb-drag-fill { flex: 1 1 24px; min-width: 24px; }
 
-#tabbar { flex: 0 1 auto; min-width: 120px; display: flex; overflow: hidden; }
+#tabbar { flex: 0 1 auto; min-width: 0; display: flex; overflow: hidden; }
 
 #tb-actions, #tb-winctl { display: flex; align-items: center; flex: none; }
 #tb-actions { gap: 2px; padding: 0 8px; }
@@ -193,14 +194,15 @@ body.is-mac.no-native-lights #mac-lights { display: flex; }
 /* 同步输入开启时所有窗格加描边，提示键盘会广播 */
 body.sync-on #groups .group { outline: 1px solid rgba(240, 173, 78, .45); outline-offset: -1px; }
 
-/* 侧栏工具随面板展开，终端视图保留完整宽度。 */
+/* 第二行工具栏始终可见，右对齐；窗口在工作区浮动，不改变终端宽度。 */
 #actbar {
-  flex: none; display: flex; flex-direction: column;
-  padding: 8px; background: transparent; border-bottom: 1px solid var(--border); user-select: none;
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  min-width: 0; padding: 0 12px; background: var(--window-title-bg);
+  border-bottom: 1px solid var(--border); user-select: none;
 }
-.ab-tools, .ab-panes { display: flex; align-items: center; gap: 3px; }
-.ab-tools { padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
-.ab-collapse { margin-left: auto; }
+.ab-tools, .ab-panes { display: flex; align-items: center; gap: 3px; flex: none; }
+.ab-tools { padding-right: 8px; border-right: 1px solid var(--border); }
+.ab-extras { display: flex; align-items: center; gap: 3px; border-left: 1px solid var(--border); padding-left: 8px; }
 .ab-btn {
   width: 32px; height: 30px; padding: 0; border: 0; background: transparent; display: flex; align-items: center; justify-content: center;
   border-radius: var(--r-sm); color: var(--fg2); cursor: default; position: relative; transition: var(--t);
@@ -219,15 +221,24 @@ body.sync-on #groups .group { outline: 1px solid rgba(240, 173, 78, .45); outlin
   font-size: 11.5px; white-space: nowrap; pointer-events: none; box-shadow: var(--shadow);
 }
 
-/* Dock 侧栏 */
+/* 工具浮窗：遮罩、标题与关闭键独立于动态窗格内容。 */
+#dock-backdrop { position: absolute; inset: 0; z-index: 20; background: rgba(0, 0, 0, .16); }
 #dock {
-  width: var(--dock-w); min-width: 190px; max-width: 620px; flex: none;
-  background: var(--window-panel-bg); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; min-height: 0;
+  position: absolute; top: 10px; right: 12px; width: min(460px, calc(100% - 24px));
+  max-height: calc(100% - 24px); min-height: min(260px, calc(100% - 24px));
+  display: flex; flex-direction: column; z-index: 21; overflow: hidden;
+  background: var(--bg2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow);
 }
+.dock-window-head { display: flex; align-items: center; justify-content: space-between; flex: none;
+  padding: 8px 10px 8px 16px; border-bottom: 1px solid var(--border); }
+.dock-window-head b { font-size: 13px; color: var(--fg3); font-weight: 600; }
+#dock-close { width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--fg2); }
+#dock-close:hover { background: var(--danger-bg); color: var(--danger); }
 #dock-body { flex: 1; overflow: auto; min-height: 0; display: flex; flex-direction: column; }
-#dock-resizer { width: 4px; flex: none; cursor: col-resize; background: transparent; transition: background .12s; }
-#dock-resizer:hover, body.dragging #dock-resizer { background: var(--accent); }
+#dock-body > .pane-head:first-child > span:first-child { display: none; }
+#dock-body > .pane-head:first-child { justify-content: flex-end; }
 body.dragging { cursor: col-resize; user-select: none; }
 
 /* Dock 内部通用件 */

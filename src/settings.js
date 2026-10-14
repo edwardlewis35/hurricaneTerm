@@ -82,14 +82,18 @@
     let h = `<h2 class="st-h">外观</h2><p class="st-sub">主题、字号与窗口元素显隐。</p>`;
     h += card('主题', grid);
     const opacity = window.Appearance ? Appearance.percentage() : 100;
-    h += card('背景透明度', row('背景不透明度', '只调整背景，文字和图标保持清晰。100% 为实色。',
-      `<div class="st-opacity-control"><input type="range" min="20" max="100" step="1" value="${opacity}" data-opacity aria-label="背景不透明度"><output data-opacity-value>${opacity}%</output></div>`)
-      + `<div class="st-opacity-preview"><div class="st-opacity-sample">hurricaneTerm · 文本保持清晰</div></div><p class="st-opacity-note">${window.Appearance?.isNative() ? '降低不透明度会透出窗口背后的内容。' : '浏览器使用棋盘背景预览透明度；桌面版会透出窗口背后的内容。'}</p>`);
+    const terminalOpacity = window.Appearance ? Appearance.terminalPercentage() : 100;
+    h += card('背景透明度', row('界面背景不透明度', '标题栏、主页与设置等界面背景；文字和图标保持清晰。',
+      `<div class="st-opacity-control"><input type="range" min="20" max="100" step="1" value="${opacity}" data-opacity aria-label="界面背景不透明度"><output data-opacity-value>${opacity}%</output></div>`)
+      + `<div class="st-opacity-preview"><div class="st-opacity-sample">hurricaneTerm · 界面预览</div></div>`
+      + row('终端背景不透明度', '单独调整全部终端的背景。100% 为实色，不影响文字和光标。',
+        `<div class="st-opacity-control"><input type="range" min="20" max="100" step="1" value="${terminalOpacity}" data-terminal-opacity aria-label="终端背景不透明度"><output data-terminal-opacity-value>${terminalOpacity}%</output></div>`)
+      + `<div class="st-opacity-preview"><div class="st-opacity-sample st-terminal-opacity-sample">$ echo Huricano<br>Huricano · 终端预览</div></div><p class="st-opacity-note">${window.Appearance?.isNative() ? '降低不透明度会透出窗口背后的内容。' : '浏览器使用棋盘背景预览透明度；桌面版会透出窗口背后的内容。'}</p>`);
     h += card('字号与状态栏',
       row('终端字号', '也可用 Ctrl+= / Ctrl+- 调整，范围 8–28',
         `<input type="number" min="8" max="28" step="1" data-num="fontSize" value="${esc(T.s.fontSize)}" style="width:78px">`)
       + row('底部状态栏', '显示终端尺寸、编码、输入模式与主题', toggle('statusBar', T.s.statusBar !== false))
-      + row('侧栏工具提示', '鼠标悬停图标时显示名称与快捷键', toggle('tooltips', T.s.tooltips !== false))
+      + row('工具栏提示', '鼠标悬停图标时显示名称与快捷键', toggle('tooltips', T.s.tooltips !== false))
     );
     return h;
   }
@@ -255,6 +259,11 @@
       opacity.addEventListener('input', () => Appearance.setOpacity(opacity.value, { persist: false }));
       opacity.addEventListener('change', () => Appearance.setOpacity(opacity.value));
     }
+    const terminalOpacity = bodyEl.querySelector('[data-terminal-opacity]');
+    if (terminalOpacity && window.Appearance) {
+      terminalOpacity.addEventListener('input', () => Appearance.setTerminalOpacity(terminalOpacity.value, { persist: false }));
+      terminalOpacity.addEventListener('change', () => Appearance.setTerminalOpacity(terminalOpacity.value));
+    }
     bodyEl.querySelectorAll('[data-num]').forEach((i) => {
       i.onchange = () => {
         const v = Math.max(8, Math.min(28, parseInt(i.value, 10) || 13));
@@ -385,6 +394,7 @@
     open(sec) {
       if (!mounted) return;
       if (window.SftpPanel?.isOpen() && !SftpPanel.hide()) return;
+      if (window.UI?.closeDock) UI.closeDock();
       if (window.Profiles && Profiles.isOpen()) Profiles.close();
       if (sec) section = sec;
       open = true;

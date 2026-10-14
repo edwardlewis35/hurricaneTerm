@@ -1,7 +1,7 @@
-/* hurricaneTerm — actbar.js：左侧图标活动栏
- * 原创代码 (Apache-2.0)。形态参考 Tabby 的 left toolbar（图标列 + 点按开合侧栏），未复制其代码。
+/* hurricaneTerm — actbar.js：标签栏下方的水平工具栏
+ * 原创代码 (Apache-2.0)。形态参考 Tabby 的水平工具栏（图标 + 点按浮窗），未复制其代码。
  *
- * 取代 0.6.0 的「#dock-tabs 文字选项卡」。点击图标 → 开/合对应侧栏窗格；再点同一个 → 收起。
+ * 取代 0.6.0 的「#dock-tabs 文字选项卡」。点击图标 → 开/合对应工具浮窗；再点同一个 → 收起。
  * 导出：window.ActBar = { mount(el), setActive(paneId|null), render(), bump(paneId), syncSettings() }
  */
 (function () {
@@ -19,7 +19,7 @@
     { id: 'output', icon: 'output', label: '日志', key: 'Ctrl+6' },
   ];
 
-  let root = null;
+  let root = null, panelObserver = null;
   const badges = {};      // paneId -> 未读数（仅在该窗格非活动时累加）
   const btns = {};        // paneId -> 元素
   let tipEl = null, tipTimer = null;
@@ -78,15 +78,19 @@
     mount(el) {
       if (!el) return;
       if (root === el) { this.render(); return; }
+      if (panelObserver) panelObserver.disconnect();
+      hideTip();
       root = el;
       el.textContent = '';
       const tools = document.createElement('div'); tools.className = 'ab-tools';
       const panes = document.createElement('div'); panes.className = 'ab-panes';
-      el.append(tools, panes);
+      const extras = document.createElement('div'); extras.className = 'ab-extras';
+      el.append(tools, panes, extras);
 
       // —— 顶部：主页 ——
       mkBtn(tools, {
         icon: 'home', label: '主页', onClick: () => {
+          if (T.ui) T.ui.closeDock();
           if (T.term.order.length) T.term.openHome();
           else if (window.Home) Home.show();
         },
@@ -95,7 +99,8 @@
         icon: 'server', label: '机器管理', key: 'Ctrl+M', cls: 'ab-profiles',
         onClick: () => {
           const P = window.Profiles;
-          if (P) P.openManager();
+          if (T.ui) T.ui.openProfiles();
+          else if (P) P.openManager();
           else if (T.ui) T.ui.toast('机器管理模块未加载');
         },
       });
@@ -107,29 +112,36 @@
           onClick: () => this.toggle(p.id),
         });
         b.dataset.pane = p.id;
+        b.setAttribute('aria-haspopup', 'dialog');
+        b.setAttribute('aria-controls', p.id === 'filer' ? 'sftp-panel' : 'dock');
         btns[p.id] = b;
         // 传输/日志有数量徽标
         if (p.id === 'transfer' || p.id === 'output') addBadge(b, p.id);
       }
 
-      // 设置入口统一放在右上角；侧栏保留连接工具和主题快捷切换。
-      mkBtn(tools, {
+      // 查询、命令与外观入口集中在同一条工具栏，设置仍位于右上角。
+      mkBtn(extras, { icon: 'search', label: '查找', key: 'Ctrl+F',
+        onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.openSearch(); } } });
+      mkBtn(extras, { icon: 'terminal', label: '命令面板', key: 'Ctrl+Shift+P',
+        onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.openPalette(); } } });
+      mkBtn(extras, {
         icon: 'theme', label: '切换深浅色', onClick: () => {
           if (window.Settings) Settings.cycleLightDark();
           else if (T.ui) T.ui.cycleTheme();
         },
       });
-      mkBtn(tools, {
-        icon: 'x', label: '收起侧栏', cls: 'ab-collapse',
-        onClick: () => T.ui && T.ui.toggleDock(),
-      });
 
+      const sftp = document.getElementById('sftp-panel');
+      if (sftp && typeof MutationObserver === 'function') {
+        panelObserver = new MutationObserver(() => this.render());
+        panelObserver.observe(sftp, { attributes: true, attributeFilter: ['hidden'] });
+      }
       this.render();
     },
 
     /* 点按开合：同 Tabby，再点当前窗格则收起整条侧栏 */
     toggle(paneId) {
-      if (paneId === 'filer' && window.SftpPanel) { SftpPanel.toggle(); return; }
+      if (paneId === 'filer' && window.SftpPanel) { if (T.ui) T.ui.closeDock(); SftpPanel.toggle(); this.render(); return; }
       const ui = T.ui;
       if (!ui) return;
       if (T.s.dockVisible && T.s.dockPane === paneId) ui.toggleDock();
@@ -172,7 +184,11 @@
       const cur = open ? T.s.dockPane : null;
       for (const p of PANES) {
         const b = btns[p.id];
-        if (b) b.classList.toggle('on', p.id === cur);
+        if (b) {
+          const active = p.id === 'filer' ? !!(window.SftpPanel && SftpPanel.isOpen()) : p.id === cur;
+          b.classList.toggle('on', active);
+          b.setAttribute('aria-expanded', String(active));
+        }
         if (p.id === cur) this.clearBadge(p.id);
       }
       const sb = root.querySelector('.ab-profiles');
