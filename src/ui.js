@@ -4,7 +4,7 @@
  * 0.7.0 改版：删除 0.6.0 的老式菜单栏（#menubar，10 个下拉）与 emoji 工具栏（#toolbar）；
  *   所有入口迁到「左侧图标活动栏（actbar.js）+ 全页设置（settings.js）+ 命令面板 + 右键菜单」。
  *   <dialog> 弹窗（会话表单 / 触发器 / 关于）一并移除：表单归 profiles.js，其余归 settings.js。
- *   窗格内容结构仍对齐 WindTerm（Explorer/Filer/Outline/Sender/Transfer/Output）。
+ *   窗格内容结构：Explorer/Filer/Outline/Sender/Transfer/Output。
  */
 (function () {
   const T = window.WT;
@@ -66,7 +66,7 @@
       set('#st-zoom', T.s.fontSize + ' px');
       set('#st-enc', 'UTF-8');
       set('#st-eol', 'LF');
-      // WindTerm 借鉴：模式色带 + 同步输入描边（全局态一眼可见）
+      // 模式色带 + 同步输入描边（全局态一眼可见）
       document.body.classList.toggle('mode-remote', T.s.mode !== 'Local');
       document.body.classList.toggle('mode-local', T.s.mode === 'Local');
       document.body.classList.toggle('sync-on', !!T.s.sync);
@@ -369,7 +369,7 @@
     renderSender() {
       const body = $('#dock-body');
       if (!body) return;
-      body.innerHTML = `<div class="pane-head"><span>发送文本</span><span>WindTerm SenderPane</span></div>
+      body.innerHTML = `<div class="pane-head"><span>发送文本</span><span>Sender</span></div>
         <div class="sender">
           <textarea id="send-text" placeholder="输入要发送到终端的文本（Ctrl+Enter 发送）" spellcheck="false"></textarea>
           <div class="sender-btns">

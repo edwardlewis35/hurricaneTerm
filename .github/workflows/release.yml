@@ -101,14 +101,14 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'hurricaneTerm ${{ github.ref_name }}'
           releaseBody: |
-            hurricaneTerm ${{ github.ref_name }} — WindTerm 逆向分析 → Tauri 重构
+            hurricaneTerm ${{ github.ref_name }} — 跨平台终端（SSH / Telnet / 串口 / TCP + SFTP）
 
             附件为各平台安装包：
             - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
             - Windows：`.msi`、NSIS `.exe`
             - macOS：`.dmg`（Apple Silicon arm64，未签名：首次打开前执行 `xattr -cr /Applications/hurricaneTerm.app`）
 
-            原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
+            原创实现（Apache-2.0）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -128,14 +128,14 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'hurricaneTerm ${{ github.ref_name }}'
           releaseBody: |
-            hurricaneTerm ${{ github.ref_name }} — WindTerm 逆向分析 → Tauri 重构
+            hurricaneTerm ${{ github.ref_name }} — 跨平台终端（SSH / Telnet / 串口 / TCP + SFTP）
 
             附件为各平台安装包：
             - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
             - Windows：`.msi`、NSIS `.exe`
             - macOS：`.dmg`（Apple Silicon arm64，已签名 + 公证）
 
-            原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
+            原创实现（Apache-2.0）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

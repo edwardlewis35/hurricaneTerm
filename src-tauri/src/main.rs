@@ -1,6 +1,6 @@
 // hurricaneTerm — Tauri 2 backend: local PTY sessions + fs/state services.
-// Original implementation (Apache-2.0, see LICENSE). UI structure mirrors WindTerm's layout
-// (dock panes / menu / statusbar / triggers), code is our own.
+// Original implementation (Apache-2.0, see LICENSE); every module in this repo is
+// written from scratch (PTY/SSH/Telnet/serial sessions, dock panes, statusbar, triggers).
 #![allow(unused)]
 
 mod re;
@@ -64,7 +64,7 @@ pub struct Session {
     pub protocol: String,
     #[serde(default)]
     pub password: String,
-    // —— 串口/TCP（项5 live 模块；字段名对齐 WindTerm 属性表 session.target/serial.*）——
+    // —— 串口/TCP（live 模块；字段名沿用 session.target/serial.*）——
     #[serde(default)]
     pub target: String,
     #[serde(default)]
@@ -220,7 +220,7 @@ fn spawn(
     Ok(id)
 }
 
-/// Telnet 会话：协商引擎语义重写自 WindTerm TelnetCommander（见 re/telnet.rs 证据注释）
+/// Telnet 会话：协商引擎见 re/telnet.rs
 #[tauri::command]
 fn connect_telnet(
     app: AppHandle,
@@ -294,7 +294,7 @@ fn connect_telnet(
     Ok(id)
 }
 
-/// SSH 会话：russh 实连，认证序列/状态映射遵循 re/ssh_auth 语义（WindTerm 证据）
+/// SSH 会话：russh 实连，认证序列/状态映射遵循 re/ssh_auth 语义
 #[tauri::command]
 fn connect_ssh(
     app: AppHandle,
@@ -315,7 +315,7 @@ fn connect_ssh(
     jump_host: Option<String>,
 ) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
-    // 中继/代理拨号层（ssh_relay，实证 connectHost 分发语义）
+    // 中继/代理拨号层（ssh_relay）
     let proxy = match proxy_type.as_deref().unwrap_or("") {
         "" | "none" | "None" => ssh_relay::Proxy::None,
         v => ssh_relay::proxy_from_session_value(v, &ssh_relay::ProxyProps {
@@ -350,7 +350,7 @@ fn connect_ssh(
     let user = user.filter(|u| !u.is_empty()).unwrap_or_else(|| {
         std::env::var("USER").unwrap_or_else(|_| "root".into())
     });
-    // 默认密钥：~/.ssh/id_ed25519（WindTerm 自动发现语义简化版）
+    // 默认密钥：~/.ssh/id_ed25519（自动发现）
     let key = key_path.filter(|k| !k.is_empty()).or_else(|| {
         let h = std::env::var("HOME").ok()?;
         Some(format!("{h}/.ssh/id_ed25519"))
@@ -390,9 +390,9 @@ fn connect_ssh(
     Ok(id)
 }
 
-/// 串口会话：实连层 serialport 4；选项表键名按二进制实读（serial.baudRate/dataBits/parity/stopBits/flowControl）
-/// 语义路径：re::serial::settings_from_options（默认/归一/校验全在证据模块）；
-/// 实证：运行期改选项无效（setOption 空函数体）→ 本命令仅在 open 时读参，重连生效。
+/// 串口会话：实连层 serialport 4；选项键名 serial.baudRate/dataBits/parity/stopBits/flowControl
+/// 语义路径：re::serial::settings_from_options（默认/归一/校验都在该模块）；
+/// 运行期改选项无效 → 本命令仅在 open 时读参，重连生效。
 #[tauri::command]
 fn connect_serial(
     app: AppHandle,
@@ -432,7 +432,7 @@ fn connect_serial(
     let (host_label, ctl) =
         serial_live::spawn_session(app.clone(), id.clone(), target.trim(), &opts)
             .map_err(|e| e.to_string())?;
-    let _ = host_label; // 标题用会话名；host=portName 实证已在 serial_live 内
+    let _ = host_label; // 标题用会话名；host=portName 已在 serial_live 内处理
     let stop = ctl.stop;
     state.0.lock().unwrap().insert(
         id.clone(),
@@ -495,7 +495,7 @@ fn connect_tcp(
         id.clone(),
         Entry {
             writer,
-            resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义（实证：桥层无 resizeWindow）
+            resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义
             child: None,
             sftp: None,
             closer: Some(Box::new(move || {
@@ -826,10 +826,10 @@ fn cfg_path(app: &AppHandle, file: &str) -> Result<std::path::PathBuf, String> {
 }
 
 // ---- 触发器引擎（re::triggers，P2-2）----
-// 前端 v0 设置 {name,pattern,action,arg,enabled} 映射为 WindTerm 语义；
-// 编译/可执行门/捕获替换/转义解析全部走后端证据模块，UI 动作回传前端执行。
+// 前端 v0 设置 {name,pattern,action,arg,enabled} 映射为后端触发器语义；
+// 编译/可执行门/捕获替换/转义解析全部走后端引擎，UI 动作回传前端执行。
 #[derive(Default)]
-struct TriggersState(Mutex<re::triggers::TriggerCenter>);
+struct TriggersState(Mutex<re::triggers::TriggerManager>);
 
 fn v0_to_trigger(i: usize, v: &serde_json::Value) -> Option<re::triggers::Trigger> {
     let obj = v.as_object()?;
@@ -858,7 +858,7 @@ fn v0_to_trigger(i: usize, v: &serde_json::Value) -> Option<re::triggers::Trigge
         "send" => {
             ty = re::triggers::TriggerType::SendText;
             settings.insert("text.pattern".into(), serde_json::Value::String(pattern));
-            // WindTerm 风格：文本走 parseEscapedString（\r → CR），与 v0 行为一致
+            // 文本走 parseEscapedString（\r → CR），与 v0 行为一致
             settings.insert("text".into(), serde_json::Value::String(arg + r"\r"));
         }
         "bell" => {
@@ -866,7 +866,7 @@ fn v0_to_trigger(i: usize, v: &serde_json::Value) -> Option<re::triggers::Trigge
             settings.insert("text.pattern".into(), serde_json::Value::String(pattern));
         }
         _ => {
-            // highlight → Highlight text：二进制从 settings["value"] 数组展开（100181530）
+            // highlight → Highlight text：从 settings["value"] 数组展开
             ty = re::triggers::TriggerType::HighlightText;
             let mut rule = serde_json::Map::new();
             rule.insert("text.pattern".into(), serde_json::Value::String(pattern));

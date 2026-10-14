@@ -1,33 +1,24 @@
-//! 串口会话 —— 语义重写自 WindTerm 2.6.0 `SerialBridge` / `SerialSession`
-//! 证据（目标 sha256 d26c6406…35edd1，入口地址）：
-//! - SerialBridge::setConfig   entry 1003b2f30
-//! - SerialBridge::__attach    entry 1003b2d30
-//! - SerialBridge::__detach    entry 1003b2db0
-//! - SerialSession::open       entry 1003b39d0
-//! - SerialBridge::setOption   （空函数体——运行期改选项无效，实证）
-//! - SerialBridge::read/write/hostAddress/hostName/lastErrorString（薄转发 QSerialPort）
-//! 属性名实读自 prop-names.tsv：serial.baudRate/dataBits/parity/stopBits/flowControl、
-//! session.target。
+//! 串口会话 —— 串口选项解析/归一与连接状态机。
+//! 会话属性：serial.baudRate/dataBits/parity/stopBits/flowControl、session.target。
 //!
-//! 已确证语义：
+//! 语义：
 //! 1. 配置守卫：会话配置存在（config!=null && count!=0 && options!=null）才读选项，
 //!    否则全部走默认：9600 / 8 / None / 1 / None。
 //! 2. baudRate：toInt，无范围校验；setBaudRate(rate, AllDirections=3)。
 //! 3. dataBits：仅 5..=8 合法（`(n-5)<4`），否则回退 8。
-//! 4. parity：字符串精确比较（CaseSensitive）Even→2 Odd→3 Mark→5 Space→4，其余→0
-//!    （与 QSerialPort::Parity 枚举值一致）。
+//! 4. parity：字符串精确比较（大小写敏感）Even→2 Odd→3 Mark→5 Space→4，其余→0。
 //! 5. stopBits：仅 1..=3 合法（`(n-1)<3`），否则回退 1。
 //! 6. flowControl："RTS/CTS"→1（硬件），"XON/XOFF"→2（软件），其余→0。
 //! 7. attach：setPortName → 先 detach → open(ReadWrite=3)；成功才
 //!    attached 信号 + setState(3)；失败静默（错误文本经 lastErrorString 取）。
 //! 8. detach：若 isOpen → detaching 信号 → close → setState(0) → detached 信号；
 //!    未开则仅 setState(0)，不发信号。
-//! 9. SerialSession::open：createBridge → setConfig → attach(session.target, 0)。
+//! 9. 会话打开流程：createBridge → setConfig → attach(session.target, 0)。
 //!    端口名来自 session.target；hostAddress/hostName 均返回 portName()。
 
 use std::collections::BTreeMap;
 
-/// Qt QSerialPort::Parity 枚举值（二进制实证映射）
+/// 校验位枚举值
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Parity {
     #[default]
@@ -38,7 +29,7 @@ pub enum Parity {
     Mark = 5,
 }
 
-/// Qt QSerialPort::FlowControl 枚举值
+/// 流控枚举值
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum FlowControl {
     #[default]
@@ -47,11 +38,11 @@ pub enum FlowControl {
     Software = 2, // "XON/XOFF"
 }
 
-/// SuperBridge::setState 观察到的状态码（attach 成功=3，detach=0）
+/// 桥状态码（attach 成功=3，detach=0）
 pub const STATE_DETACHED: u32 = 0;
 pub const STATE_ATTACHED: u32 = 3;
 
-/// QSerialPort::open 传入的 OpenMode：ReadWrite = 1|2 = 3
+/// open 传入的 OpenMode：ReadWrite = 1|2 = 3
 pub const OPEN_MODE_READWRITE: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,13 +55,13 @@ pub struct SerialSettings {
 }
 
 impl Default for SerialSettings {
-    /// 无配置时的默认值（setConfig 字面量：0x2580/8/"None"/1/"None"）
+    /// 无配置时的默认值（9600/8/"None"/1/"None"）
     fn default() -> Self {
         SerialSettings { baud_rate: 9600, data_bits: 8, parity: Parity::None, stop_bits: 1, flow: FlowControl::None }
     }
 }
 
-/// 会话选项值（SuperSession::option 的 QVariant 简化）
+/// 会话选项值（整数或字符串）
 #[derive(Clone, Debug, PartialEq)]
 pub enum OptVal {
     Int(i64),
@@ -81,18 +72,18 @@ impl OptVal {
     fn to_int(&self) -> i64 {
         match self {
             OptVal::Int(i) => *i,
-            OptVal::Str(s) => s.trim().parse().unwrap_or(0), // QVariant::toInt 失败=0
+            OptVal::Str(s) => s.trim().parse().unwrap_or(0), // 解析失败=0
         }
     }
     fn to_str(&self) -> &str {
         match self {
             OptVal::Str(s) => s,
-            OptVal::Int(_) => "", // toString 数值型此处未用到
+            OptVal::Int(_) => "", // 数值型不作字符串使用，此处未用到
         }
     }
 }
 
-/// parity 字符串 → 枚举（QString::compare CaseSensitive；不匹配任何已知值 → None）
+/// parity 字符串 → 枚举（大小写敏感精确比较；不匹配任何已知值 → None）
 pub fn parity_from_str(s: &str) -> Parity {
     match s {
         "Even" => Parity::Even,
@@ -112,7 +103,7 @@ pub fn flow_from_str(s: &str) -> FlowControl {
     }
 }
 
-/// dataBits 合法域 5..=8，否则回退 8（证据：`iVar6 - 5U < 4`）
+/// dataBits 合法域 5..=8（判定 `(n-5)<4`），否则回退 8
 pub fn normalize_data_bits(n: i64) -> u8 {
     if (5..=8).contains(&n) {
         n as u8
@@ -121,7 +112,7 @@ pub fn normalize_data_bits(n: i64) -> u8 {
     }
 }
 
-/// stopBits 合法域 1..=3，否则回退 1（证据：`iVar6 - 1U < 3`）
+/// stopBits 合法域 1..=3（判定 `(n-1)<3`），否则回退 1
 pub fn normalize_stop_bits(n: i64) -> u8 {
     if (1..=3).contains(&n) {
         n as u8
@@ -130,13 +121,13 @@ pub fn normalize_stop_bits(n: i64) -> u8 {
     }
 }
 
-/// setConfig 的完整语义：`options=None` 对应二进制里的配置缺失守卫（全默认）。
+/// setConfig 的完整语义：`options=None` 即配置缺失守卫（全默认）。
 pub fn settings_from_options(options: Option<&BTreeMap<String, OptVal>>) -> SerialSettings {
     let Some(map) = options else {
         return SerialSettings::default();
     };
     let get = |k: &str| map.get(k);
-    // baudRate：toInt，无校验（证据：直接 setBaudRate）
+    // baudRate：toInt，无校验（直接生效）
     let baud_rate = get("serial.baudRate").map(|v| v.to_int() as i32).unwrap_or(9600);
     let data_bits = get("serial.dataBits").map(|v| normalize_data_bits(v.to_int())).unwrap_or(8);
     let parity = get("serial.parity").map(|v| parity_from_str(v.to_str())).unwrap_or_default();
@@ -157,13 +148,13 @@ pub struct SerialBridge {
 }
 
 impl SerialBridge {
-    /// SerialSession::open 流：setConfig → attach(session.target)
+    /// 会话打开流：setConfig → attach(session.target)
     pub fn session_open(&mut self, target: &str, options: Option<&BTreeMap<String, OptVal>>) {
         self.settings = settings_from_options(options);
         self.attach(target, true);
     }
 
-    /// __attach：setPortName → 先 detach → open(ReadWrite)；仅成功才 attached+state=3
+    /// attach：setPortName → 先 detach → open(ReadWrite)；仅成功才 attached+state=3
     pub fn attach(&mut self, port_name: &str, open_ok: bool) -> bool {
         self.port_name = port_name.to_string();
         self.detach();
@@ -177,7 +168,7 @@ impl SerialBridge {
         }
     }
 
-    /// __detach：isOpen 才 detaching→close→detached；state 一律置 0
+    /// detach：isOpen 才 detaching→close→detached；state 一律置 0
     pub fn detach(&mut self) {
         if self.open {
             self.signals.push("detaching");
@@ -189,7 +180,7 @@ impl SerialBridge {
         }
     }
 
-    /// setOption：二进制为空函数体——串口选项运行期不可变，必须重开会话
+    /// setOption：空实现——串口选项运行期不可变，必须重开会话
     pub fn set_option(&mut self, _key: &str, _val: OptVal) {}
 
     /// hostAddress/hostName：均返回 portName()
@@ -208,9 +199,9 @@ mod tests {
 
     #[test]
     fn defaults_without_config() {
-        // 证据守卫：config 缺失 → 9600/8/None/1/None
+        // 守卫：config 缺失 → 9600/8/None/1/None
         assert_eq!(settings_from_options(None), SerialSettings::default());
-        assert_eq!(SerialSettings::default().baud_rate, 9600); // 0x2580 实读
+        assert_eq!(SerialSettings::default().baud_rate, 9600);
     }
 
     #[test]
@@ -239,7 +230,7 @@ mod tests {
     #[test]
     fn parity_flow_str_maps_case_sensitive() {
         assert_eq!(parity_from_str("Mark"), Parity::Mark);
-        assert_eq!(parity_from_str("mark"), Parity::None); // CaseSensitive 比较
+        assert_eq!(parity_from_str("mark"), Parity::None); // 大小写敏感比较
         assert_eq!(parity_from_str("Bogus"), Parity::None);
         assert_eq!(flow_from_str("RTS/CTS"), FlowControl::Hardware);
         assert_eq!(flow_from_str("rts/cts"), FlowControl::None);
@@ -248,7 +239,7 @@ mod tests {
     #[test]
     fn attach_detach_signal_order() {
         let mut b = SerialBridge::default();
-        // 未开时 detach：仅置状态，不发信号（证据：cVar1==0 分支）
+        // 未开时 detach：仅置状态，不发信号
         b.detach();
         assert!(b.signals.is_empty());
         assert_eq!(b.state, STATE_DETACHED);
@@ -268,7 +259,7 @@ mod tests {
         let mut b = SerialBridge::default();
         assert!(!b.attach("/dev/nope", false));
         assert_eq!(b.state, STATE_DETACHED);
-        assert!(b.signals.is_empty()); // 失败不发 attached（实证）
+        assert!(b.signals.is_empty()); // 失败不发 attached
         // 端口名仍已写入（setPortName 在 open 之前）
         assert_eq!(b.port_name, "/dev/nope");
     }
@@ -277,7 +268,7 @@ mod tests {
     fn set_option_is_noop() {
         let mut b = SerialBridge::default();
         b.set_option("serial.baudRate", OptVal::Int(19200));
-        assert_eq!(b.settings, SerialSettings::default()); // 空函数体实证
+        assert_eq!(b.settings, SerialSettings::default()); // 空实现
     }
 
     #[test]

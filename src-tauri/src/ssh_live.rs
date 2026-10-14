@@ -1,5 +1,5 @@
 // hurricaneTerm — SSH 实连层（russh 0.64）
-// 语义遵循 re/ssh_auth.rs（WindTerm 认证编排：方法顺序/成功判定/状态映射，均有反编译证据）；
+// 认证编排（方法顺序/成功判定/状态映射）见 re/ssh_auth.rs；
 // 本文件只做协议 IO 接线，复用 Entry/pty-* 事件模型，前端零改动。
 #![allow(dead_code)]
 
@@ -68,7 +68,7 @@ pub enum SftpReq {
 }
 
 /// TOFU 主机密钥：~/.config/<id>/known_hosts（"host|sha256:..." 行）。
-/// 语义对应 WindTerm eraseServerKnown（有已知项则严格比对）。
+/// TOFU：已有已知项则严格比对，首见才记录。
 pub struct Tofu {
     pub host: String,
     pub file: PathBuf,
@@ -130,7 +130,7 @@ impl Handler for WtHandler {
     }
 }
 
-/// AuthResult -> libssh 风格码（证据：PARTIAL 计入 isOperationSuccess{0,2}）
+/// AuthResult -> libssh 风格码（PARTIAL 计入成功集 {0,2}）
 fn auth_code(r: &AuthResult) -> i32 {
     match r {
         AuthResult::Success => 0,
@@ -234,7 +234,7 @@ pub async fn run(
     let mut session = match proxy {
         ssh_relay::Proxy::None => client::connect(cfg, (host.as_str(), port), handler).await?,
         proxy => {
-            // 实证架构：libssh 连本地中继 -> 本层 dial_any 统一拨号（SOCKS5/HTTP/ProxyCommand/System）
+            // 架构：libssh 连本地中继 -> 本层 dial_any 统一拨号（SOCKS5/HTTP/ProxyCommand/System）
             let h = host.clone();
             let dialed = tokio::task::spawn_blocking(move || {
                 ssh_relay::dial_any(&proxy, &h, port, std::time::Duration::from_secs(30))
@@ -248,7 +248,7 @@ pub async fn run(
     };
     log(&app, &id, format!("已连接 {host}:{port} (ssh-2)"));
 
-    // —— 认证序列：WindTerm 顺序 none -> publickey -> password -> keyboard-interactive ——
+    // —— 认证序列：none -> publickey -> password -> keyboard-interactive ——
     let mut authed = false;
     let mut steps: Vec<(&'static str, i32)> = Vec::new();
 
@@ -284,7 +284,7 @@ pub async fn run(
             if code == 0 {
                 authed = true;
             } else if code == 1 {
-                // keyboard-interactive 兜底（WindTerm op=3）：start -> 逐轮应答
+                // keyboard-interactive 兜底（op=3）：start -> 逐轮应答
                 use russh::client::KeyboardInteractiveAuthResponse as Kbi;
                 let mut resp = session
                     .authenticate_keyboard_interactive_start(&user, None)
@@ -318,9 +318,9 @@ pub async fn run(
         return Err("所有认证方法均失败".into());
     }
 
-    // —— 自动登录 expect 引擎（re/auto_login.rs，OneKey 默认规则：login:/password:）——
-    use crate::re::auto_login::{AccountPart, OneKeyExpect};
-    let mut okm = OneKeyExpect::default();
+    // —— 自动登录 expect 引擎（re/auto_login.rs，自动登录 默认规则：login:/password:）——
+    use crate::re::auto_login::{AccountPart, AutoLoginExpect};
+    let mut okm = AutoLoginExpect::default();
     okm.compile_expects(AccountPart::Username, &[]);
     okm.compile_expects(AccountPart::Password, &[]);
     let mut al_tail = String::new();
@@ -368,7 +368,7 @@ pub async fn run(
                     Some(ChannelMsg::Data { data }) => {
                         let s = String::from_utf8_lossy(&data).to_string();
                         app.emit("pty-output", id.clone(), s.clone());
-                        // WindTerm auto-login 语义：输出流尾窗匹配 OneKey expect 规则 -> 应答
+                        // auto-login：输出流尾窗匹配 自动登录 expect 规则 -> 应答
                         if !s.is_empty() {
                             al_tail.push_str(&s);
                             if al_tail.len() > 240 { let cut = al_tail.len()-240; al_tail.drain(..cut); }

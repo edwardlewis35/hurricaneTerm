@@ -99,7 +99,7 @@
         `<select data-sel="fontFamily">${fams}</select>`)
     );
     h += card('输入',
-      row('模式', 'WindTerm 的 Local / Remote Mode；仅 Remote 下同步输入生效',
+      row('模式', 'Local / Remote 模式；仅 Remote 下同步输入生效',
         `<select data-sel="mode"><option value="Remote"${T.s.mode === 'Remote' ? ' selected' : ''}>远程模式</option>
           <option value="Local"${T.s.mode === 'Local' ? ' selected' : ''}>本地模式</option></select>`)
       + row('同步输入', '打开后键盘输入广播到所有会话（群控）', toggle('sync', !!T.s.sync))
@@ -111,7 +111,7 @@
       + row('后台标签活动提示', '有输出且开了「活动时通知」的标签显示圆点', toggle('activityDot', T.s.activityDot !== false))
       + row('会话输出落盘（PuTTY Logging）', '新会话的终端输出写入 配置目录/logs/session-*.log；仅对新开会话生效', toggle('sessionLog', !!T.s.sessionLog))
     );
-    h += card('输出高亮（借鉴 WindTerm）',
+    h += card('输出高亮',
       row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中行持久着色', toggle('builtinHighlight', T.s.builtinHighlight !== false))
       + `<div class="st-row"><div class="st-l"><i>
           <span class="wt-hl-err" style="padding:0 6px;border-radius:3px">error / failed / fatal</span>
@@ -164,10 +164,10 @@
         <span class="act">${esc(labelOfAction(r.action))}${r.arg ? ' → ' + esc(r.arg) : ''}</span>
         <button class="icon danger" data-trdel="${i}" title="删除">${window.Icons ? window.Icons.svg('trash') : '×'}</button></div>`;
     });
-    if (!list.length) rows = '<div class="empty">还没有触发器。正则匹配终端输出 → 执行动作（WindTerm TriggerCenter 的同构实现）。</div>';
+    if (!list.length) rows = '<div class="empty">还没有触发器。正则匹配终端输出 → 执行动作。</div>';
 
     const acts = TRIGGER_ACTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-    let h = `<h2 class="st-h">触发器</h2><p class="st-sub">后端引擎 re/triggers.rs（WindTerm TriggerCenter 语义重写）；前端 v0 映射支持高亮 / 响铃 / 发送文本。</p>`;
+    let h = `<h2 class="st-h">触发器</h2><p class="st-sub">后端引擎 re/triggers.rs；前端 v0 映射支持高亮 / 响铃 / 发送文本。</p>`;
     h += card('已配置', rows);
     h += card('新增', `<div class="tr-form">
       <input data-tr="name" placeholder="名称" />
@@ -208,10 +208,10 @@
         <i>${ui && ui.latest ? 'v' + esc(ui.latest) + (newer ? ' · 有新版本' : ' · 已是最新') : '尚未检查'}</i></div>
         <div class="st-c">${newer ? `<button class="primary" data-open-tag>打开 v${esc(ui.latest)} 标签页</button>` : ''}</div></div>`);
     h += card('', `
-      <div class="st-row"><div class="st-l"><b>来历</b><i>WindTerm 2.6.0 逆向分析 → Tauri 2 洁净室重写</i></div></div>
+      <div class="st-row"><div class="st-l"><b>来历</b><i>独立项目 · Tauri 2 + Rust + xterm.js</i></div></div>
       <div class="st-row"><div class="st-l"><b>架构</b><i>Tauri 2 + Rust（russh / portable-pty / russh-sftp）后端 + xterm.js 前端</i></div></div>
       <div class="st-row"><div class="st-l"><b>界面</b><i>形态参考 Tabby（无边框标题栏 / 图标活动栏 / 全页设置）；配色令牌取自 Tabby 上游 theme.vars.scss</i></div></div>
-      <div class="st-row"><div class="st-l"><b>许可</b><i>原创代码 Apache-2.0，不含任何 WindTerm 专有文件或数据</i></div></div>
+      <div class="st-row"><div class="st-l"><b>许可</b><i>Apache-2.0，代码全部原创</i></div></div>
       <div class="st-row"><div class="st-l"><b>仓库</b><i>github.com/edwardlewis35/hurricaneTerm</i></div></div>`);
     return h;
   }

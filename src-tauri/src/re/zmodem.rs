@@ -1,67 +1,59 @@
-//! ZModem/Modem 会话编排 —— 语义重写自 WindTerm 2.6.0（反编译语料为准）
+//! ZModem/Modem 会话编排
 //!
-//! 目标二进制 sha256: d26c6406b848d3bdcc97bd3cf87ba8fdb089a0f5e960fb7155a34d341235edd1
-//! 证据目录: re-work/decompiled/session/（下文以 `符号@entry` 引用）
+//! ## 关键结论
+//! ZModem 的帧协议**不由本模块实现**：本模块是对 **lrzsz 外部进程**
+//! （`/vendors/lrzsz/sz`、`/vendors/lrzsz/rz`）的包装。ZDLE/帧 CRC 状态机
+//! 由 lrzsz 自身完成，本模块只做：进程编排 + 字节管道 + stdout 文本解析。
+//! 原生实现的帧协议是 X/Y-Modem（见 re/xmodem.rs）。
 //!
-//! ## 关键 RE 结论（推翻任务预设）
-//! WindTerm 的 **ZModem 帧协议不在二进制里**：`ZModem::start@1002aca10` 证明它是
-//! 对 vendored **lrzsz 外部进程**（`/vendors/lrzsz/sz`、`/vendors/lrzsz/rz`，
-//! 字符串实证于 __cstring 0x100a5c4a6/0x100a5c4b8）的包装。ZDLE/帧 CRC 状态机
-//! 由 lrzsz 自身实现，WindTerm 只做：进程编排 + 字节管道 + stdout 文本解析。
-//! 原生实现的帧协议是 X/Y-Modem（`XYModem` 类，见 modemPrepare 证据），
-//! 其函数不在本语料批次内（记入 TODO）。
-//!
-//! ## 已确证语义清单
-//! - `ZModem::start@1002aca10`：args = 调用方参数 + ["-b","-e","-v"]；
-//!   mode==1(Upload) → 程序 sz + 追加 uploadFilePaths(this+0x48，非空时)；
-//!   mode==0(Download) → 程序 rz + 追加 downloadFileName(this+0x38，非空时)；
-//!   程序路径 = applicationDirPath + 上述相对路径（toNativeSeparators）。
-//!   先 close()；三个输出解析正则装入 this+0x4a8/0x4b0/0x4b8；
-//!   连接：started→process.start、modemRead→writeStandardInput、
-//!   stateChanged→setModemProcessState、readyRead→解析、errorOccurred→错误表。
-//! - `ZModem::setModemProcessState@1002ac8b0`：同值短路；进入 Running 置 started 标志
-//!   (this+0x50)；Running→NotRunning 且 started==1 → "Process %1 crashed before the
-//!   transfer is completed." + finished(false)。`ZModem::close@1002ac4b0` 直接把
-//!   state 字段清 0（正常结束走 close，事后 stateChanged 被同值短路吞掉）。
-//! - `ZModem::isOpen@1002ac5c0`：state==Running && (进程对象缺失 || ready 标志==0)。
-//! - `ZModem::read@1002ac880`：仅 state==Running 时：translateDownloadedBytes + 管道到进程。
-//! - `ModemProcess::writeStandardInput@1002ae960`：写入数据若含 QByteArrayMatcher
-//!   模式（this+0x40，构造器不在语料；候选串 "\b"*8 @0x100a5c20f，紧邻错误串表，
-//!   即 lrzsz 等待握手标记——推断）则置 ready 标志(+0x28)=1。
-//! - `ZModem::notifyModemProcessError@1002ac600`：QProcess::ProcessError 0..5 →
-//!   字符串表（__cstring 实读）：%1=程序名。
-//! - `Modem::cancel@1002a6740`：Upload → 子类取消 + finished(false)；
-//!   恒写 `Modem::cancelSequence@1002a6840` = "\x18"*8 + "\x08"*8；
-//!   Download → 3000ms singleShot（宽限后收尾，lambda 体不在语料，推断为 close）。
-//! - `Modem::notifyMessage@1002a6a50`：上一条消息不以 \n 结尾且新消息不以 \r/\n 开头
+//! ## 语义清单
+//! - 启动：args = 调用方参数 + ["-b","-e","-v"]；
+//!   Upload → 程序 sz + 追加上传文件列表（非空时）；
+//!   Download → 程序 rz + 追加下载文件名（非空时）；
+//!   程序路径 = 应用目录 + 上述相对路径（原生分隔符）。
+//!   先 close()；装入三个输出解析正则；
+//!   信号连接：started→进程启动、read→stdin 写入、
+//!   stateChanged→进程状态同步、readyRead→输出解析、errorOccurred→错误表。
+//! - 进程状态同步：同值短路；进入 Running 置 started 标志；
+//!   Running→NotRunning 且 started==1 → "Process %1 crashed before the
+//!   transfer is completed." + finished(false)。close 直接把 state 字段清 0
+//!   （正常结束走 close，事后 stateChanged 被同值短路吞掉）。
+//! - isOpen：state==Running && (进程对象缺失 || ready 标志==0)。
+//! - read：仅 state==Running 时：先做下载字节转义，再管道到进程。
+//! - stdin 写入：若写入数据含 8 个退格的握手标记（lrzsz 等待对端应答的信号）
+//!   则置 ready 标志。
+//! - 进程错误：ProcessError 0..5 → 固定字符串表，%1=程序名。
+//! - cancel：Upload → 取消 + finished(false)；
+//!   恒写取消序列 "\x18"*8 + "\x08"*8；
+//!   Download → 3000ms 宽限后收尾（close）。
+//! - notifyMessage：上一条消息不以 \n 结尾且新消息不以 \r/\n 开头
 //!   → 前置 "\r\n"；记录 endsWith('\n')。
-//! - `Modem::notifyError@1002a6850`：msg = "Error: " + trimmed + "\r\nTransfer aborted.\r\n"。
-//! - `Modem::notifyProgress@1002a6c60`：total==-1 → "\r %1 bytes transferred..."；
+//! - notifyError：msg = "Error: " + trimmed + "\r\nTransfer aborted.\r\n"。
+//! - notifyProgress：total==-1 → "\r %1 bytes transferred..."；
 //!   total==0 → pct=100（last>99 去重）；否则 pct=transferred*100/total（≤last 去重，单调）；
 //!   进度条 20 列：'='*(pct/5)，未完成时再 '>' + ' '*(19-pct/5)（chop 1），
 //!   完成时 '='*20；时间=formatSeconds(max(1,elapsed),false)；
 //!   未完成：速度=transferred*1000/elapsed → formatBytesAsDecimal + " %1/s"；
 //!   完成： " %1 bytes"（total≠0 用 total 否则 transferred）；
 //!   尾串按上次长度补空格（终端残字清除）；总格式 "\r %1% [%2%3] %4"，%1 右对齐宽 3。
-//! - `Modem::translateUploadedBytes@1002a7970`（仅 TelnetCommander）：倒序扫描，
-//!   0xFF 后插入 0xFF（IAC 转义）；'\r' 后插入 '\n'（当 telnet 选项#10 未激活）。
-//! - `Modem::translateDownloadedBytes@1002a7820`（仅 TelnetCommander）：IAC IAC→IAC
-//!   （实证 remove 分支）；'\r' 分支存在（CRLF→LF 去 CR——对称推断）。
-//! - `SuperTerm::modemType@100304f40`：args 含 "--zmodem"/"-Z" → 2；"--ymodem" → 1；
+//! - 上传字节转义（仅 telnet 通道）：0xFF 后插入 0xFF（IAC 转义）；
+//!   '\r' 后插入 '\n'（当 telnet 行模式选项未激活）。
+//! - 下载字节转义（仅 telnet 通道）：IAC IAC→IAC；'\r' 分支存在（CRLF→LF 去 CR）。
+//! - 命令行参数 → 协议类型：args 含 "--zmodem"/"-Z" → 2；"--ymodem" → 1；
 //!   否则（含 "-X"/"--xmodem"）→ 0。
-//! - `SuperTerm::modemPrepare@100305200`：type 2 → ZModem（进程包装）；
+//! - 协议实例选择：type 2 → ZModem（进程包装）；
 //!   type 0 → XYModem(X)，use1k = (xmodem.packetSize == 1024)；
 //!   type 1 → XYModem(Y)，use1k = (ymodem.packetSize != 128)。
-//! - `SuperTerm::zmodemReceive@10031b240`：已有 modem → 取消；建 singleShot QTimer，
-//!   超时 → 自动开始接收（lambda 体不在语料）。
-//! - `SuperTerm::filterModemData@1002ffc90`：modem 存在 && isOpen && 数据非空
-//!   → 数据喂 modem::read，返回"已消费"。
-//! - 输出解析正则（start 装入，实读字符串）：
+//! - 接收触发：已有 modem → 取消；建一次性定时器（singleShot），
+//!   超时 → 自动开始接收。
+//! - 输入拦截：modem 存在 && isOpen && 数据非空
+//!   → 数据喂 modem read，返回"已消费"。
+//! - 输出解析正则：
 //!   FILE: `(?:Sending|Receiving): *(?<transferFile>[^\r]+)`
 //!   SIZE: `(?:Sent|received): *(?<transferedSize>\d+)(/ *(?<totalSize>\d+))?`
-//!   NAME: escape(name) + ":?[^\.]++\."（用途未定，推断为改名/完成匹配）
+//!   NAME: escape(name) + ":?[^\.]++\."（改名/完成匹配用）
 
-/// Modem::ModemMode（ZModem::start 分支实证：1 → sz）
+/// 会话模式（Upload → sz，Download → rz）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ModemMode {
@@ -69,7 +61,7 @@ pub enum ModemMode {
     Upload = 1,
 }
 
-/// SuperTerm::modemPrepare 的 King::ModemType
+/// 协议类型
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ModemType {
@@ -78,7 +70,7 @@ pub enum ModemType {
     ZModem = 2,
 }
 
-/// QProcess::ProcessState（setModemProcessState 数值）
+/// 进程状态（NotRunning/Starting/Running 数值）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(i32)]
 pub enum ProcessState {
@@ -87,7 +79,7 @@ pub enum ProcessState {
     Running = 2,
 }
 
-/// QProcess::ProcessError（notifyModemProcessError switch 0..5）
+/// 进程错误码（switch 0..5）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(i32)]
 pub enum ProcessError {
@@ -99,26 +91,24 @@ pub enum ProcessError {
     UnknownError = 5,
 }
 
-/// 证据：Modem::cancelSequence@1002a6840 直接返回该字面串
+/// 取消动作固定为该字面序列
 pub const CANCEL_SEQUENCE: [u8; 16] = [
     0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
 ];
 
-/// 证据：ZModem::start 恒追加的三个 lrzsz 参数（顺序实证）
+/// 恒追加的三个 lrzsz 参数（顺序固定）
 pub const LRZSZ_ARGS: [&str; 3] = ["-b", "-e", "-v"];
 
-/// 证据：__cstring 0x100a5c4a6 / 0x100a5c4b8
 pub const SZ_RELATIVE: &str = "/vendors/lrzsz/sz";
 pub const RZ_RELATIVE: &str = "/vendors/lrzsz/rz";
 
-/// 证据：__cstring 0x100a5c20f（8 个退格，lrzsz 等待握手标记——推断为 ModemProcess
-/// QByteArrayMatcher 的模式；构造器不在语料，标记为推断）
+/// lrzsz 等待握手标记：8 个退格
 pub const WAITING_PATTERN: [u8; 8] = [0x08; 8];
 
-/// 证据：Modem::cancel@1002a6740 Download 分支 QTimer::singleShotImpl(3000,...)
+/// Download 取消宽限时长
 pub const DOWNLOAD_CANCEL_GRACE_MS: u64 = 3000;
 
-/// 证据：notifyModemProcessError 字符串表（__cstring 实读，%1=程序名）
+/// 进程错误字符串表（%1=程序名）
 pub fn process_error_message(err: ProcessError, program: &str) -> &'static str {
     // 返回模板，%1 由调用方替换
     let _ = program;
@@ -126,8 +116,8 @@ pub fn process_error_message(err: ProcessError, program: &str) -> &'static str {
         ProcessError::FailedToStart => "Process %1 failed to start.",
         ProcessError::Crashed => "Process %1 crashed.",
         ProcessError::Timedout => "Process %1 timeout.",
-        // 注意：switch case3 → 0xa5c403（read），case4 → 0xa5c3c5（write）——
-        // 与 QProcess 枚举文档顺序不同的交叉映射，实读实证。
+        // 注意：case3→read 模板、case4→write 模板——
+        // 与常规进程错误枚举顺序不同的交叉映射。
         ProcessError::ReadError => "An error occurred when attempting to read from the %1 process.",
         ProcessError::WriteError => {
             "An error occurred when attempting to write to the %1 process."
@@ -140,19 +130,19 @@ pub fn format_process_error(err: ProcessError, program: &str) -> String {
     process_error_message(err, program).replace("%1", program)
 }
 
-/// 证据：setModemProcessState 崩溃分支字面串（fromAscii_helper 实读）
+/// 崩溃提示字面串
 pub fn crash_message(program: &str) -> String {
     "Process %1 crashed before the transfer is completed.".replace("%1", program)
 }
 
-/// ZModem::start 的启动请求构造
+/// 启动请求构造
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchPlan {
     pub program: String,
     pub args: Vec<String>,
 }
 
-/// 证据：ZModem::start@1002aca10 的参数装配顺序：
+/// 参数装配顺序：
 /// caller_args → "-b","-e","-v" → mode 专属列表（upload paths / download name）
 pub fn build_launch(
     app_dir: &str,
@@ -184,7 +174,7 @@ pub fn build_launch(
     LaunchPlan { program: format!("{}{}", app_dir, rel), args }
 }
 
-/// 证据：SuperTerm::modemType@100304f40 —— 命令行参数 → 协议类型
+/// 命令行参数 → 协议类型
 pub fn modem_type(args: &[String]) -> ModemType {
     let has = |s: &str| args.iter().any(|a| a == s);
     if has("--zmodem") || has("-Z") {
@@ -196,33 +186,33 @@ pub fn modem_type(args: &[String]) -> ModemType {
     }
 }
 
-/// 证据：SuperTerm::modemPrepare@100305200 —— X/Y 包大小 → use1k
+/// X/Y 包大小 → use1k
 pub fn prepare_use_1k(kind: ModemType, packet_size: i32) -> Option<bool> {
     match kind {
-        ModemType::XModem => Some(packet_size == 1024), // bVar3 = iVar2 == 0x400
-        ModemType::YModem => Some(packet_size != 128),   // bVar3 = iVar2 != 0x80
-        ModemType::ZModem => None,                       // 进程包装，无包大小概念
+        ModemType::XModem => Some(packet_size == 1024),
+        ModemType::YModem => Some(packet_size != 128),
+        ModemType::ZModem => None, // 进程包装，无包大小概念
     }
 }
 
-/// ZModem 会话状态机（ZModem 对象 + ModemProcess 标志的合并模型）
+/// ZModem 会话状态机（进程状态 + stdin ready 标志的合并模型）
 #[derive(Clone, Debug)]
 pub struct ZmodemSession {
     pub state: ProcessState,
-    /// this+0x50：曾进入 Running（崩溃判定用）
+    /// 曾进入 Running（崩溃判定用）
     started_running: bool,
-    /// ModemProcess+0x28：stdin 写入中出现握手模式
+    /// stdin 写入中出现握手模式
     ready: bool,
-    /// this+0x80 直写标志（close 语义）：不经信号路径
+    /// close 直写标志：不经信号路径
     pub interruption_requested: bool,
     pub program: String,
-    /// Modem+0x10 上次百分比（单调去重）
+    /// 上次百分比（单调去重）
     pub last_percent: i32,
-    /// Modem+0x14 上次尾串长度（补空格清残字）
+    /// 上次尾串长度（补空格清残字）
     pub last_tail_len: usize,
-    /// Modem+0x31：上一条消息以 \n 结尾
+    /// 上一条消息以 \n 结尾
     pub prev_ends_lf: bool,
-    /// 已下载字节计数（read 路径 translateDownloadedBytes 伴随计数）
+    /// 已下载字节计数（read 路径伴随计数）
     pub downloaded_bytes: i64,
 }
 
@@ -248,7 +238,7 @@ impl ZmodemSession {
         }
     }
 
-    /// 证据：ZModem::setModemProcessState@1002ac8b0
+    /// 状态同步：同值短路；Running→NotRunning 且曾 Running → 崩溃事件
     pub fn set_state(&mut self, new: ProcessState) -> Option<SessionEvent> {
         if self.state == new {
             return None; // 同值短路
@@ -256,7 +246,7 @@ impl ZmodemSession {
         let mut ev = None;
         if new != ProcessState::NotRunning || self.state != ProcessState::Running {
             if new == ProcessState::Running {
-                self.started_running = true; // this+0x50 = 1
+                self.started_running = true;
             }
         } else if self.started_running {
             ev = Some(SessionEvent::CrashedBeforeCompleted);
@@ -265,30 +255,30 @@ impl ZmodemSession {
         ev
     }
 
-    /// 证据：ZModem::close@1002ac4b0 —— requestInterruption + 直写 state=0 + 线程回收
+    /// close：置中断请求 + 直写 state=NotRunning + 清标志
     pub fn close(&mut self) {
         if self.state != ProcessState::NotRunning || self.started_running {
             self.interruption_requested = true;
             self.ready = false;
-            self.state = ProcessState::NotRunning; // *(this+0x80) = 0
+            self.state = ProcessState::NotRunning;
             self.started_running = false;
         }
     }
 
-    /// 证据：ZModem::isOpen@1002ac5c0 —— Running && (进程缺失 || !ready)
+    /// Running && (进程缺失 || !ready)
     pub fn is_open(&self) -> bool {
         self.state == ProcessState::Running && !self.ready
     }
 
-    /// 证据：ModemProcess::writeStandardInput@1002ae960 —— 模式命中置 ready
+    /// stdin 写入：模式命中置 ready
     pub fn note_stdin_write(&mut self, data: &[u8]) {
         if contains_pattern(data, &WAITING_PATTERN) {
             self.ready = true;
         }
     }
 
-    /// 证据：ZModem::read@1002ac880 —— 仅 Running 时管道；伴随下载字节计数
-    /// （translateDownloadedBytes 由调用方按 telnet 属性先做，见 translate_*）
+    /// 仅 Running 时管道；伴随下载字节计数
+    /// （字节转义由调用方按 telnet 属性先做，见 translate_*）
     pub fn read_from_channel(&mut self, data: &[u8]) -> Option<Vec<u8>> {
         if self.state == ProcessState::Running {
             self.downloaded_bytes += data.len() as i64;
@@ -303,24 +293,23 @@ fn contains_pattern(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// 证据：Modem::notifyMessage@1002a6a50 —— "\r\n" 前缀规则 + endsWith 记忆
+/// "\r\n" 前缀规则 + endsWith 记忆
 pub fn notify_message(msg: &str, prev_ends_lf: &mut bool) -> String {
     let mut out = String::new();
     if !*prev_ends_lf && !msg.starts_with('\r') && !msg.starts_with('\n') {
-        out.push_str("\r\n"); // 0xa513df 实读
+        out.push_str("\r\n");
     }
     out.push_str(msg);
     *prev_ends_lf = msg.ends_with('\n');
     out
 }
 
-/// 证据：Modem::notifyError@1002a6850 —— "Error: " + trimmed + "\r\nTransfer aborted.\r\n"
+/// "Error: " + trimmed + "\r\nTransfer aborted.\r\n"
 pub fn notify_error_text(msg: &str) -> String {
-    // 前缀 "Error: "(0xa5c218) + trimmed + 后缀(0xa5c220)，均 __cstring 实读
     format!("Error: {}\r\nTransfer aborted.\r\n", msg.trim())
 }
 
-/// 证据：TransferCenter::formatSeconds@100104770
+/// 时长格式化：
 /// "%1:%2:%3"（时不补零、分秒宽 2），with_ms 追加 ".%1"（宽 3）；
 /// 总秒 <36000 时在最前插 '0'（小时补成 2 位）。
 pub fn format_seconds(ms: i64, with_ms: bool) -> String {
@@ -340,13 +329,13 @@ pub fn format_seconds(ms: i64, with_ms: bool) -> String {
     s
 }
 
-/// 证据：TransferCenter::formatBytesAsBinary@100104050
-/// 阈值 0x400/0x100000/0x40000000 → KiB/MiB/GiB（乘 2^-10/2^-20/2^-30，实读 double），
-/// 否则 "Bytes"。小数位 2（QLocale::toString 精度参数反编译不完整——推断）。
+/// 按 2 的幂格式化字节：
+/// 阈值 0x400/0x100000/0x40000000 → KiB/MiB/GiB（乘 2^-10/2^-20/2^-30），
+/// 否则 "Bytes"。小数位 2。
 pub fn format_bytes_binary(bytes: i64) -> String {
-    const KIB: f64 = 0.0009765625; // _DAT_100981e70 实读
-    const MIB: f64 = 9.5367431640625e-07; // _DAT_100981e78 实读
-    const GIB: f64 = 9.313225746154785e-10; // _DAT_100981e80 实读
+    const KIB: f64 = 0.0009765625;
+    const MIB: f64 = 9.5367431640625e-07;
+    const GIB: f64 = 9.313225746154785e-10;
     let v = bytes as f64;
     if bytes >= 0x40000000 {
         format!("{:.2} GiB", v * GIB)
@@ -359,8 +348,8 @@ pub fn format_bytes_binary(bytes: i64) -> String {
     }
 }
 
-/// 证据：TransferCenter::formatBytesAsDecimal@1001043b0
-/// <1000 整数 "Bytes"；阈值 1e3/1e6/1e9 → KB/MB/GB（除 1000/1e6/1e9，实读 double）。
+/// 十进制单位字节格式化：
+/// <1000 整数 "Bytes"；阈值 1e3/1e6/1e9 → KB/MB/GB（除 1000/1e6/1e9）。
 pub fn format_bytes_decimal(bytes: i64) -> String {
     let v = bytes as f64;
     if bytes >= 1_000_000_000 {
@@ -374,7 +363,7 @@ pub fn format_bytes_decimal(bytes: i64) -> String {
     }
 }
 
-/// 证据：Modem::notifyProgress@1002a6c60 的渲染核心。
+/// 进度行渲染核心。
 /// 返回 (消息?, 新 last_percent, 新尾串长度)。None = 单调去重跳过。
 pub fn render_modem_progress(
     transferred: i64,
@@ -383,7 +372,7 @@ pub fn render_modem_progress(
     last_percent: i32,
     last_tail_len: usize,
 ) -> (Option<String>, i32, usize) {
-    // total == -1（反编译 0xffffffff 哨兵）
+    // total == -1 未知哨兵
     if total == -1 {
         return (
             Some(format!("\r {} bytes transferred...", transferred)),
@@ -407,7 +396,7 @@ pub fn render_modem_progress(
     let (bar, spaces) = if pct >= 100 {
         ("=".repeat(k), " ".repeat(20usize.saturating_sub(k)))
     } else {
-        // '=' 后追加 '>'（append 0x3e），空格 chop(1)
+        // '=' 后追加 '>'，空格 chop(1)
         ("=".repeat(k) + ">", " ".repeat(19usize.saturating_sub(k)))
     };
     let elapsed = if elapsed_ms > 0 { elapsed_ms } else { 1 }; // max(1, elapsed)
@@ -421,7 +410,7 @@ pub fn render_modem_progress(
     }
     let mut tail_len = tail.chars().count();
     if tail_len < last_tail_len {
-        // 补空格覆盖上次残字（实证：append spaces）
+        // 补空格覆盖上次残字
         tail.push_str(&" ".repeat(last_tail_len - tail_len));
     } else {
         tail_len = tail.chars().count();
@@ -430,7 +419,7 @@ pub fn render_modem_progress(
     (Some(msg), pct, tail_len)
 }
 
-/// 证据：ZModem::start 装入的两个输出解析正则（字符串实读）
+/// 输出解析正则对应的两类事件
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ZmodemOutputEvent {
     /// `(?:Sending|Receiving): *(?<transferFile>[^\r]+)`
@@ -439,8 +428,8 @@ pub enum ZmodemOutputEvent {
     Progress { transferred: i64, total: Option<i64> },
 }
 
-/// 按 \r / \n 切行并跑两个模式（手写匹配器，纯 std；语义 = QRegularExpression
-/// globalMatch 的捕获组）。前缀后允许多空格（`: *`）。
+/// 按 \r / \n 切行并跑两个模式（手写匹配器，纯 std；捕获组语义同正则
+/// globalMatch）。前缀后允许多空格（`: *`）。
 pub fn parse_process_output(data: &[u8]) -> Vec<ZmodemOutputEvent> {
     let text = String::from_utf8_lossy(data);
     let mut events = Vec::new();
@@ -500,8 +489,8 @@ fn parse_optional_total(s: &str) -> Option<i64> {
     }
 }
 
-/// 证据：Modem::translateDownloadedBytes@1002a7820（仅 telnet 通道时启用）
-/// 已实证：IAC IAC → IAC（remove 分支）；CRLF → LF（'\r' 分支存在，去 CR 为对称推断）
+/// 下载方向字节转义（仅 telnet 通道时启用）：
+/// IAC IAC → IAC；'\r' 分支存在（CRLF → LF 去 CR）
 pub fn translate_downloaded(data: &[u8], is_telnet: bool) -> Vec<u8> {
     if !is_telnet {
         return data.to_vec();
@@ -519,7 +508,7 @@ pub fn translate_downloaded(data: &[u8], is_telnet: bool) -> Vec<u8> {
             continue;
         }
         if b == b'\r' && i + 1 < data.len() && data[i + 1] == b'\n' {
-            i += 1; // 丢 CR，保留 LF（推断分支）
+            i += 1; // 丢 CR，保留 LF
             continue;
         }
         out.push(b);
@@ -528,8 +517,8 @@ pub fn translate_downloaded(data: &[u8], is_telnet: bool) -> Vec<u8> {
     out
 }
 
-/// 证据：Modem::translateUploadedBytes@1002a7970（仅 telnet 通道时启用）
-/// 倒序扫描等价于正序：0xFF 后补一个 0xFF；'\r' 后补 '\n'（当 line-mode 选项 #10 未激活）。
+/// 上传方向字节转义（仅 telnet 通道时启用）：
+/// 0xFF 后补一个 0xFF；'\r' 后补 '\n'（当 line-mode 选项未激活）。
 pub fn translate_uploaded(data: &[u8], is_telnet: bool, line_mode_active: bool) -> Vec<u8> {
     if !is_telnet {
         return data.to_vec();
@@ -546,14 +535,14 @@ pub fn translate_uploaded(data: &[u8], is_telnet: bool, line_mode_active: bool) 
     out
 }
 
-/// 证据：Modem::cancel@1002a6740 —— 取消动作序列
+/// 取消动作序列
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CancelAction {
-    /// Upload：子类取消 + finished(false)
+    /// Upload：取消 + finished(false)
     CancelAndFinish,
     /// 恒发取消序列
     WriteCancelSequence,
-    /// Download：3000ms 宽限后收尾（lambda 体不在语料，推断 close）
+    /// Download：3000ms 宽限后收尾（close）
     GracefulCloseAfter(u64),
 }
 
@@ -569,7 +558,7 @@ pub fn cancel_plan(mode: ModemMode) -> Vec<CancelAction> {
     v
 }
 
-/// 证据：SuperTerm::filterModemData@1002ffc90 —— 输入拦截判定
+/// 输入拦截判定
 pub fn filter_modem_data(modem_present: bool, is_open: bool, data: &[u8]) -> bool {
     modem_present && is_open && !data.is_empty()
 }
@@ -584,21 +573,21 @@ mod tests {
 
     #[test]
     fn launch_args_order_and_program() {
-        // 证据 ZModem::start：caller args → -b -e -v → mode 列表
+        // 启动参数顺序：caller args → -b -e -v → mode 列表
         let up = build_launch("/app", ModemMode::Upload, &s(&["--zmodem"]), &s(&["/tmp/a.bin"]), None);
         assert_eq!(up.program, "/app/vendors/lrzsz/sz");
         assert_eq!(up.args, s(&["--zmodem", "-b", "-e", "-v", "/tmp/a.bin"]));
         let dn = build_launch("/app", ModemMode::Download, &s(&[]), &s(&[]), Some("out.txt"));
         assert_eq!(dn.program, "/app/vendors/lrzsz/rz");
         assert_eq!(dn.args, s(&["-b", "-e", "-v", "out.txt"]));
-        // 空 download name 不追加（this+0x38 size != 0 守卫）
+        // 空 download name 不追加（非空守卫）
         let dn2 = build_launch("/app", ModemMode::Download, &s(&[]), &s(&[]), Some(""));
         assert_eq!(dn2.args, s(&["-b", "-e", "-v"]));
     }
 
     #[test]
     fn crash_detection_state_machine() {
-        // 证据 setModemProcessState：Running→NotRunning 且 started → 崩溃错误
+        // Running→NotRunning 且曾 started → 崩溃错误
         let mut z = ZmodemSession::new("rz");
         assert_eq!(z.set_state(ProcessState::Starting), None);
         assert_eq!(z.set_state(ProcessState::Running), None);
@@ -640,7 +629,7 @@ mod tests {
 
     #[test]
     fn error_table_cross_mapping() {
-        // 实证：case3→read 模板、case4→write 模板（与直觉相反的交叉位）
+        // case3→read 模板、case4→write 模板（交叉映射位）
         assert_eq!(
             format_process_error(ProcessError::FailedToStart, "sz"),
             "Process sz failed to start."
@@ -676,10 +665,10 @@ mod tests {
     #[test]
     fn notify_message_lf_rule() {
         let mut ends = false;
-        // 首条不带换行结尾 → 前置 \r\n（0xa513df）
+        // 首条不带换行结尾 → 前置 \r\n
         assert_eq!(notify_message("Hello", &mut ends), "\r\nHello");
         assert!(!ends);
-        // 以 \n 结尾 → 记录；下一条不再前置（本条是否前置只看上一条状态：实证）
+        // 以 \n 结尾 → 记录；下一条不再前置（本条是否前置只看上一条状态）
         assert_eq!(notify_message("Line\n", &mut ends), "\r\nLine\n");
         assert!(ends);
         assert_eq!(notify_message("Next", &mut ends), "Next");
@@ -730,7 +719,7 @@ mod tests {
 
     #[test]
     fn byte_format_thresholds() {
-        // 二进制：0x400/0x100000/0x40000000
+        // 2 的幂单位：0x400/0x100000/0x40000000
         assert_eq!(format_bytes_binary(1023), "1023 Bytes");
         assert_eq!(format_bytes_binary(1024), "1.00 KiB");
         assert_eq!(format_bytes_binary(1536), "1.50 KiB");
@@ -768,7 +757,7 @@ mod tests {
 
     #[test]
     fn telnet_translation() {
-        // 下载：IAC IAC → IAC（实证分支）
+        // 下载：IAC IAC → IAC
         assert_eq!(translate_downloaded(&[0xFF, 0xFF, b'a'], true), vec![0xFF, b'a']);
         // 非 telnet 原样
         assert_eq!(translate_downloaded(b"\r\n", false), b"\r\n".to_vec());
@@ -786,7 +775,7 @@ mod tests {
         assert_eq!(modem_type(&s(&["--ymodem"])), ModemType::YModem);
         assert_eq!(modem_type(&s(&["-X"])), ModemType::XModem);
         assert_eq!(modem_type(&s(&[])), ModemType::XModem);
-        // 包大小 → use1k（modemPrepare 两分支实读）
+        // 包大小 → use1k（两分支规则）
         assert_eq!(prepare_use_1k(ModemType::XModem, 1024), Some(true));
         assert_eq!(prepare_use_1k(ModemType::XModem, 128), Some(false));
         assert_eq!(prepare_use_1k(ModemType::YModem, 1024), Some(true));

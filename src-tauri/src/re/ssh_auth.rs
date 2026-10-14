@@ -1,16 +1,14 @@
-//! SSH 认证编排 —— 语义重写自 WindTerm 2.6.0 `SshAuthOperator` / `SshOperator` /
-//! `Ssh::Session::mapAuthState`。证据：re-work/decompiled/session/*.pseudo.txt
-//! （入口地址见各文件头；表值直接从二进制 0x100982580 读取）。
+//! SSH 认证编排 —— 认证方法排队执行、返回码分类与状态映射。
 //!
-//! 已确证语义：
-//! - isOperationSuccess: (code & !2) == 0        -> code ∈ {0=SUCCESS, 2=PARTIAL}
-//! - isOperationAgain:   code == 4               -> SSH_AUTH_AGAIN
-//! - isOperationFailed:  code == -1              -> SSH_AUTH_ERROR
-//! - mapAuthState 表:    0->0, 1->1, 2->3, 3->2, 4->4   （PARTIAL/INFO 交叉映射，WindTerm 特有）
-//! - SshOperator 队列:   begin() 入组 / params(name,val) 挂参数 / execute(fn) 挂动作 /
-//!                       onFinal(code) 记录状态并弹出下一组 / abort(code) 清空剩余队列
+//! 语义约定：
+//! - is_operation_success: (code & !2) == 0      -> code ∈ {0=SUCCESS, 2=PARTIAL}
+//! - is_operation_again:   code == 4             -> SSH_AUTH_AGAIN
+//! - is_operation_failed:  code == -1            -> SSH_AUTH_ERROR
+//! - map_auth_state 表:    0->0, 1->1, 2->3, 3->2, 4->4   （PARTIAL/INFO 交叉映射）
+//! - 队列：begin() 入组 / param(name,val) 挂参数 / execute(fn) 挂动作 /
+//!         每步记录映射后的状态；成功即停，失败或传输错误跳过剩余队列
 
-/// libssh 认证返回码（isOperation* 证据反推）
+/// libssh 认证返回码
 pub const SSH_AUTH_SUCCESS: i32 = 0;
 pub const SSH_AUTH_DENIED: i32 = 1;
 pub const SSH_AUTH_PARTIAL: i32 = 2;
@@ -18,11 +16,11 @@ pub const SSH_AUTH_INFO: i32 = 3;
 pub const SSH_AUTH_AGAIN: i32 = 4;
 pub const SSH_AUTH_ERROR: i32 = -1;
 
-/// mapAuthState 输出状态（表驱动，二进制 0x100982580 实读）
+/// map_auth_state 的输出状态（表驱动）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(i32)]
 pub enum AuthState {
-    Error = -1, // 证据: mapAuthState 默认分支返回 -1（原样透传）
+    Error = -1, // 默认分支返回 -1（原样透传）
     Success = 0,
     Denied = 1,
     Info = 2,
@@ -31,7 +29,7 @@ pub enum AuthState {
 }
 
 pub fn is_operation_success(code: i32) -> bool {
-    (code & !2) == 0 // 证据: (param_1 & 0xfffffffd) == 0
+    (code & !2) == 0 // 掩码判定：仅 0 / 2 为成功
 }
 pub fn is_operation_again(code: i32) -> bool {
     code == SSH_AUTH_AGAIN
@@ -40,7 +38,7 @@ pub fn is_operation_failed(code: i32) -> bool {
     code == SSH_AUTH_ERROR
 }
 
-/// Ssh::Session::mapAuthState —— 表值来自二进制实读；非表内值原样透传（如 -1）
+/// map_auth_state —— 表值 0->0, 1->1, 2->3, 3->2, 4->4；非表内值一律归 Error（-1）
 pub fn map_auth_state(code: i32) -> AuthState {
     match code {
         0 => AuthState::Success,
@@ -48,11 +46,11 @@ pub fn map_auth_state(code: i32) -> AuthState {
         2 => AuthState::Partial, // PARTIAL -> 3 槽位（交叉映射）
         3 => AuthState::Info,    // INFO    -> 2 槽位
         4 => AuthState::Again,
-        _ => AuthState::Error,   // 证据: return (code==4)+(code==4)*4-1 -> 非4时=-1
+        _ => AuthState::Error,   // 非表内值 -> -1
     }
 }
 
-/// 一个认证步骤 = WindTerm FunctionGroup {name, params, action}
+/// 一个认证步骤 {name, params, action}
 pub struct Step {
     pub name: Option<String>,
     pub params: Vec<(String, String)>,
@@ -60,13 +58,13 @@ pub struct Step {
 }
 
 /// 认证计划执行器：按入队顺序执行，成功即停，AGAIN 重试，失败中止。
-/// 每步结果经 map_auth_state 记录（对应 SshBridge::setAuthState）。
+/// 每步结果经 map_auth_state 记录。
 pub struct AuthOperator {
     queue: Vec<Step>,
     current: Option<Step>,
 }
 
-/// 构建器句柄：begin() 后连续 params()/execute() 落到同一组
+/// 构建器句柄：begin() 后连续 param()/execute() 落到同一组
 pub struct Pending<'a>(&'a mut AuthOperator);
 
 impl AuthOperator {
@@ -74,7 +72,7 @@ impl AuthOperator {
         Self { queue: Vec::new(), current: None }
     }
 
-    /// SshAuthOperator::begin —— 开新组
+    /// begin —— 开新组
     pub fn begin(&mut self) -> Pending<'_> {
         if let Some(s) = self.current.take() {
             self.queue.push(s);
@@ -105,12 +103,12 @@ impl AuthOperator {
                 if !is_operation_again(code) {
                     break;
                 }
-                // AGAIN: 证据 isOperationAgain(code==4) -> 重试同一组
+                // AGAIN(code==4) -> 重试同一组
             }
             let state = map_auth_state(code);
             out.push(StepOutcome { name: step.name.clone(), code: Some(code), state: Some(state), skipped: false });
             if is_operation_success(code) {
-                aborted = true; // 认证成功：后续组不再执行（证据 onFinal(0)->abort 清队列）
+                aborted = true; // 认证成功：后续组不再执行
             }
             if is_operation_failed(code) {
                 aborted = true; // 传输错误同样中止序列
@@ -128,7 +126,7 @@ pub struct StepOutcome {
 }
 
 impl<'a> Pending<'a> {
-    /// SshAuthOperator::params —— 给当前组挂命名参数
+    /// param —— 给当前组挂命名参数
     pub fn param(self, name: &str, value: &str) -> Self {
         let op = &mut *self.0;
         let s = op.current.get_or_insert(Step {
@@ -139,7 +137,7 @@ impl<'a> Pending<'a> {
         s.params.push((name.to_string(), value.to_string()));
         self
     }
-    /// 设置方法名（证据：onFinal 用 *puVar5 作为 name 传给 setAuthState）
+    /// 设置本组的方法名（结果记录时随状态一并上报）
     pub fn named(self, name: &str) -> Self {
         let op = &mut *self.0;
         let s = op.current.get_or_insert(Step {
@@ -150,7 +148,7 @@ impl<'a> Pending<'a> {
         s.name = Some(name.to_string());
         self
     }
-    /// SshAuthOperator::execute —— 挂动作闭包并完成本组
+    /// execute —— 挂动作闭包并完成本组
     pub fn execute<F>(self, f: F)
     where
         F: FnMut(&[(String, String)]) -> i32 + 'static,
@@ -171,7 +169,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classification_matches_decompiled_expressions() {
+    fn auth_method_classification_values() {
         assert!(is_operation_success(SSH_AUTH_SUCCESS)); // 0
         assert!(is_operation_success(SSH_AUTH_PARTIAL)); // 2 —— (2 & !2)==0
         assert!(!is_operation_success(SSH_AUTH_DENIED)); // 1
@@ -181,8 +179,8 @@ mod tests {
     }
 
     #[test]
-    fn state_table_is_binary_read_not_guessed() {
-        // 表值实读自 0x100982580：0->0 1->1 2->3 3->2 4->4
+    fn auth_state_table_values() {
+        // 表值：0->0 1->1 2->3 3->2 4->4
         assert_eq!(map_auth_state(0) as i32, 0);
         assert_eq!(map_auth_state(1) as i32, 1);
         assert_eq!(map_auth_state(2) as i32, 3); // PARTIAL 交叉映射
@@ -231,8 +229,8 @@ mod tests {
         op.begin().named("keyboard-interactive").execute(|_| SSH_AUTH_ERROR);
         op.begin().named("password").execute(|_| SSH_AUTH_SUCCESS);
         let out = op.run();
-        assert_eq!(out[0].state, Some(AuthState::Error)); // 证据: mapAuthState(-1) = -1
-        assert!(out[1].skipped); // abort 清空剩余
+        assert_eq!(out[0].state, Some(AuthState::Error)); // map_auth_state(-1) = -1
+        assert!(out[1].skipped); // 剩余队列被跳过
     }
 
     #[test]

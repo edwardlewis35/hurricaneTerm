@@ -136,7 +136,7 @@ body.is-mac.no-native-lights #mac-lights { display: flex; }
 
 /* ---------- 工作区 ---------- */
 #workspace { display: flex; min-height: 0; border-left: 2px solid transparent; }
-/* WindTerm 借鉴：Local/Remote 模式用窗口左缘色带表示（蓝=远程，绿=本地） */
+/* Local/Remote 模式用窗口左缘色带表示（蓝=远程，绿=本地） */
 body.mode-remote #workspace { border-left-color: var(--accent); }
 body.mode-local #workspace { border-left-color: var(--warn); }
 /* 同步输入开启时所有窗格加描边，提示键盘会广播 */
@@ -236,7 +236,7 @@ body.dragging { cursor: col-resize; user-select: none; }
 .xterm { padding: 4px 0 4px 6px; }
 .xterm .xterm-viewport { background: transparent !important; }
 .xterm-decoration-container .wt-hit { background: rgba(240, 173, 78, .22); border-bottom: 1px solid rgba(240, 173, 78, .5); }
-/* WindTerm 风格内置高亮：命中行持久着色 + 左侧色条 */
+/* 内置高亮：命中行持久着色 + 左侧色条 */
 .wt-hl-err { background: rgba(217, 83, 79, .16); box-shadow: inset 2px 0 0 var(--danger); }
 .wt-hl-warn { background: rgba(240, 173, 78, .14); box-shadow: inset 2px 0 0 var(--warn); }
 .wt-hl-ok { background: rgba(92, 184, 92, .12); box-shadow: inset 2px 0 0 var(--ok); }

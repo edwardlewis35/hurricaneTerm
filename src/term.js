@@ -1,12 +1,12 @@
 /* hurricaneTerm — terminal manager: tabs, split groups, themes, search, triggers, zoom, sync input.
- * Original code (MIT). Layout/feature structure mirrors WindTerm. */
+ * Original code (see LICENSE). */
 (function () {
   const T = window.WT;
 
   /* ---------- 主题 ----------
    * tabby-dark / tabby-light 的终端 16 色取自 Tabby 上游
    * tabby-terminal/src/colorSchemes.ts（"Tabby Default" / "Tabby Default Light"）；
-   * 界面令牌取自 tabby-core/src/theme.vars.scss。其余 4 套为 WindTerm 自带主题。
+   * 界面令牌取自 tabby-core/src/theme.vars.scss。其余 4 套为内置深浅色主题。
    * --term-bg 让「活动标签 + 主区」与终端底色无缝衔接（Tabby 的连体观感）。
    */
   function chrome(c) {
@@ -173,7 +173,7 @@
         } else if (proto === 'telnet' && session.host) {
           id = await T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
         } else if (proto === 'serial') {
-          // 串口：target=端口名（实证 session.target）；参数运行期不可改，重连生效
+          // 串口：target=端口名（session.target 键）；参数运行期不可改，重连生效
           id = await T.invoke('connect_serial', {
             target: session.target || session.host || '',
             baudRate: session.baudRate || null,
@@ -231,7 +231,7 @@
           T.invoke('write', { id, data }).catch(() => {});
         }
         if (submitted !== null) {
-          // WindTerm 大纲语义：记录真实提交的命令行，可点击回跳
+          // 大纲语义：记录真实提交的命令行，可点击回跳
           const text = submitted.trim().slice(0, 120);
           if (text) {
             tab.outline.push({ n: tab.outline.length + 1, text, y: term.buffer.active.baseY + term.buffer.active.cursorY });
@@ -574,7 +574,7 @@
       try { return !!t.search.findPrevious(q || UI.lastQuery || ''); } catch (e) { return false; }
     },
 
-    /* ---- triggers engine — 后端语义引擎（re/triggers.rs，WindTerm TriggerCenter 重写）优先，v0 本地回退 ---- */
+    /* ---- triggers engine — 后端语义引擎（re/triggers.rs）优先，v0 本地回退 ---- */
     runTriggers(tab, data) {
       if (!T.s.triggers.length) return;
       T.invoke('triggers_feed', { data }).then((acts) => {
@@ -606,8 +606,8 @@
       } catch (e) {}
     },
 
-    /* ---- WindTerm 风格内置高亮：关键字/地址着色（持久行装饰） ----
-     * 借鉴 WindTerm 的「输出高亮」设计：error/warn/ok/地址 四类默认规则，
+    /* ---- 内置高亮：关键字/地址着色（持久行装饰） ----
+     * 输出高亮设计：error/warn/ok/地址 四类默认规则，
      * 命中即在所在行加持久着色装饰（不随滚动消失），可在设置页整体关闭。
      */
     HIGHLIGHT_RULES: [

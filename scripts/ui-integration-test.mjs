@@ -242,7 +242,7 @@ await flush();
 ok('K1 全关后 Home 重现', !$('#home').hidden);
 ok('K2 无标签时显示品牌位', !!$('.ht-brand'));
 
-/* ============ L. 实机反馈修复 + WindTerm 高亮移植 ============ */
+/* ============ L. 实机反馈修复 + 内置输出高亮 ============ */
 TM.applyTheme('tabby-light');
 ok('L1 浅色主题写入 color-scheme（原生下拉框跟随）', document.documentElement.style.getPropertyValue('--color-scheme') === 'light');
 TM.applyTheme('tabby-dark');

@@ -1,17 +1,15 @@
-//! Filer/cwd 跟踪 —— 语义重写自 WindTerm 2.6.0 `SuperCommander::parseShellCwd`
-//! 证据：re-work/decompiled/session/SuperCommander____parseShellCwd.pseudo.txt
-//!       （entry 1002dcfd0，目标 sha256 d26c6406…35edd1）
+//! Filer/cwd 跟踪 —— shell 集成上报 cwd 的解码。
 //!
-//! 已确证算法（shell 集成上报 cwd 的解码）：
+//! 算法：
 //! 1. 仅当 OS 名包含 "Darwin" 且数据中反斜杠数量 > 1 时解码；否则原样透传
 //! 2. 扫描字节：`\\`   -> 折叠为单个 `\`
 //!              `\xHH` -> 解码为单字节 HH（写回原位置，删除 "xHH" 三字符）
-//! 3. 解码结果经 toUnicode 后 setShellCwd（本模块返回解码后的字节串）
-//! 4. DirScaner 过滤器：QString("\s*%1\s*") 以 ':' 分号切分（证据 initFilters）
+//! 3. 解码结果经 Unicode 转换后设为 shell cwd（本模块返回解码后的字节串）
+//! 4. 目录扫描过滤器：形如 "\s*%1\s*" 的模式以 ':' 分号切分
 
-/// parseShellCwd 的解码核心。os_is_darwin 对应 indexOf("Darwin")!=-1 分支。
+/// shell 上报 cwd 的解码核心。os_is_darwin 对应 OS 名含 "Darwin" 的分支。
 pub fn decode_shell_cwd(raw: &[u8], os_is_darwin: bool) -> Vec<u8> {
-    // 证据守卫：Darwin 且反斜杠计数 > 1，否则原样返回
+    // 守卫：Darwin 且反斜杠计数 > 1，否则原样返回
     if !os_is_darwin || raw.iter().filter(|b| **b == b'\\').count() <= 1 {
         return raw.to_vec();
     }
@@ -20,13 +18,13 @@ pub fn decode_shell_cwd(raw: &[u8], os_is_darwin: bool) -> Vec<u8> {
     while i < raw.len() {
         if raw[i] == b'\\' {
             if i + 1 < raw.len() && raw[i + 1] == b'\\' {
-                // `\\` -> `\`，消费两字符（证据：remove(i+1,1) 后继续）
+                // `\\` -> `\`，消费两字符后继续
                 out.push(b'\\');
                 i += 2;
                 continue;
             }
             if i + 3 < raw.len() && raw[i + 1] == b'x' {
-                // `\xHH` -> 单字节（证据：mid + fromHex + 写回位置 i + remove）
+                // `\xHH` -> 单字节，写回原位置并消费四字符
                 if let Some(b) = hex2(raw[i + 2], raw[i + 3]) {
                     out.push(b);
                     i += 4;
@@ -50,8 +48,7 @@ fn hex2(hi: u8, lo: u8) -> Option<u8> {
     Some(v(hi)? * 16 + v(lo)?)
 }
 
-/// DirScaner::initFilters —— "\s*%1\s*" 以 ':' 分隔的过滤器列表解析
-/// （证据：QString::fromAscii_helper("\\s*%1\\s*") + arg(…, ':', …)）
+/// 目录扫描过滤器列表解析："\s*%1\s*" 形态的模式以 ':' 分隔
 pub fn parse_scan_filters(spec: &str) -> Vec<String> {
     spec.split(':')
         .map(|s| s.trim().to_string())
@@ -71,7 +68,7 @@ mod tests {
 
     #[test]
     fn single_backslash_no_decode() {
-        // 证据守卫：反斜杠计数必须 > 1
+        // 守卫：反斜杠计数必须 > 1
         let raw = b"/home/\\x41";
         assert_eq!(decode_shell_cwd(raw, true), raw.to_vec());
     }
