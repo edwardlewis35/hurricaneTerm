@@ -36,6 +36,10 @@ use tokio::sync::Notify;
 use russh_sftp::client::{SftpSession, error::Error as SftpError};
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 
+#[cfg(test)]
+#[path = "ssh_session_tests.rs"]
+mod session_tests;
+
 /// Entry.writer 的适配：前端写入 -> 转发到 SSH 通道
 pub struct SshInput(pub mpsc::UnboundedSender<Vec<u8>>);
 impl Write for SshInput {
@@ -69,10 +73,10 @@ pub struct SftpEntry {
 
 /// Pause retains the open streams and offsets in this session. It is not a
 /// persistent resume mechanism; cancellation leaves the uniquely named .part.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TransferControl {
-    state: AtomicU8,
-    notify: Notify,
+    state: Arc<AtomicU8>,
+    notify: Arc<Notify>,
 }
 impl TransferControl {
     pub fn new() -> Self { Self::default() }
@@ -261,8 +265,37 @@ pub async fn run(
     mut sftp_rx: mpsc::UnboundedReceiver<SftpReq>,
     proxy: ssh_relay::Proxy,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Cancellation surrounds the whole session, including handshake, auth,
+    // PTY requests and channel backpressure. A stop is not restricted to the
+    // established shell's select loop.
+    tokio::select! {
+        biased;
+        _ = stop_rx.recv() => Ok(()),
+        result = run_session(app, id, host, port, user, password, key_path,
+            rows, cols, config_dir, in_rx, rz_rx, sftp_rx, proxy) => result,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_session(
+    app: Sink,
+    id: String,
+    host: String,
+    port: u16,
+    user: String,
+    password: Option<String>,
+    key_path: Option<String>,
+    rows: u16,
+    cols: u16,
+    config_dir: PathBuf,
+    mut in_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut rz_rx: mpsc::UnboundedReceiver<(u32, u32)>,
+    mut sftp_rx: mpsc::UnboundedReceiver<SftpReq>,
+    proxy: ssh_relay::Proxy,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = Arc::new(Config {
         keepalive_interval: Some(std::time::Duration::from_secs(30)), // SshSession::keepAlive 语义
+        nodelay: true, // interactive input should not wait for a Nagle batch
         ..Default::default()
     });
     let handler = WtHandler {
@@ -272,7 +305,7 @@ pub async fn run(
         },
         log: Vec::new(),
     };
-    let mut session = match proxy {
+    let connect = async { Ok::<_, Box<dyn std::error::Error + Send + Sync>>(match proxy {
         ssh_relay::Proxy::None => client::connect(cfg, (host.as_str(), port), handler).await?,
         proxy => {
             // 架构：libssh 连本地中继 -> 本层 dial_any 统一拨号（SOCKS5/HTTP/ProxyCommand/System）
@@ -282,11 +315,26 @@ pub async fn run(
             })
             .await
             .map_err(|e| e.to_string())??;
-            let (rd, wr) = dialed.split();
-            let stream = ssh_relay::to_tokio(rd, wr).await?;
-            client::connect_stream(cfg, stream, handler).await?
+            match dialed {
+                ssh_relay::Dialed::Tcp(socket) => {
+                    // SOCKS / HTTP CONNECT already return a TCP tunnel. Avoid
+                    // two bridging pumps, buffer copies and spawn_blocking
+                    // round-trips for every subsequent SSH packet.
+                    socket.set_nonblocking(true)?;
+                    socket.set_nodelay(true)?;
+                    let stream = tokio::net::TcpStream::from_std(socket)?;
+                    client::connect_stream(cfg, stream, handler).await?
+                }
+                dialed => {
+                    let (rd, wr, cancel) = dialed.split_with_cancel();
+                    let stream = ssh_relay::to_tokio_with_cancel(rd, wr, cancel).await?;
+                    client::connect_stream(cfg, stream, handler).await?
+                }
+            }
         }
-    };
+    }) };
+    let mut session = tokio::time::timeout(std::time::Duration::from_secs(30), connect)
+        .await.map_err(|_| "SSH 连接或握手超时（30 秒）")??;
     log(&app, &id, format!("已连接 {host}:{port} (ssh-2)"));
 
     // —— 认证序列：none -> publickey -> password -> keyboard-interactive ——
@@ -302,7 +350,8 @@ pub async fn run(
 
     if !authed {
         if let Some(kp) = &key_path {
-            match load_secret_key(expand(kp), None) {
+            let key_path = expand(kp);
+            match tokio::task::spawn_blocking(move || load_secret_key(key_path, None)).await? {
                 Ok(key) => {
                     let pk = PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha512));
                     let r = session.authenticate_publickey(&user, pk).await?;
@@ -374,6 +423,11 @@ pub async fn run(
         .await?;
     chan.request_shell(true).await?;
     log(&app, &id, "shell 已启动".into());
+    let mut stdout_decoder = crate::terminal_io::Utf8Decoder::default();
+    let mut stderr_decoder = crate::terminal_io::Utf8Decoder::default();
+    // JoinSet aborts these tasks on drop. Closing a tab cannot leave detached
+    // transfers retaining SSH handle clones after the shell has been removed.
+    let mut sftp_jobs = tokio::task::JoinSet::new();
 
     loop {
         tokio::select! {
@@ -387,19 +441,19 @@ pub async fn run(
                 let h = ssh_handle.clone();
                 let sink2 = app.clone();
                 let id2 = id.clone();
-                tokio::spawn(async move {
+                sftp_jobs.spawn(async move {
                     handle_sftp_request(&h, req, &sink2, &id2).await;
                 });
             }
+            Some(_) = sftp_jobs.join_next(), if !sftp_jobs.is_empty() => {}
             m = reader.wait() => {
                 match m {
                     Some(ChannelMsg::Data { data }) => {
-                        let s = String::from_utf8_lossy(&data).to_string();
-                        app.emit("pty-output", id.clone(), s.clone());
+                        let s = stdout_decoder.push(&data);
+                        if !s.is_empty() { app.emit("pty-output", id.clone(), s.clone()); }
                         // auto-login：输出流尾窗匹配 自动登录 expect 规则 -> 应答
                         if !s.is_empty() {
-                            al_tail.push_str(&s);
-                            if al_tail.len() > 240 { let cut = al_tail.len()-240; al_tail.drain(..cut); }
+                            crate::terminal_io::append_tail(&mut al_tail, &s, 240);
                             if okm.match_account_expect(AccountPart::Username, &al_tail) {
                                 let _ = chan.data_bytes(bytes::Bytes::from(format!("{}\r", user))).await;
                                 al_tail.clear();
@@ -412,16 +466,20 @@ pub async fn run(
                         }
                     }
                     Some(ChannelMsg::ExtendedData { data, .. }) => {
-                        let s = String::from_utf8_lossy(&data).to_string();
-                        app.emit("pty-output", id.clone(), s);
+                        let s = stderr_decoder.push(&data);
+                        if !s.is_empty() { app.emit("pty-output", id.clone(), s); }
                     }
                     Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
                     _ => {}
                 }
             }
-            _ = stop_rx.recv() => { break; }
         }
     }
+    for decoder in [&mut stdout_decoder, &mut stderr_decoder] {
+        let tail = decoder.finish();
+        if !tail.is_empty() { app.emit("pty-output", id.clone(), tail); }
+    }
+    sftp_jobs.abort_all();
     let _ = ssh_handle
         .disconnect(Disconnect::ByApplication, "bye", "en")
         .await;
@@ -755,9 +813,27 @@ async fn commit_remote(s: &SftpSession, part: &str, target: &str, overwrite: boo
 struct TransferProgress<'a> {
     sink: &'a Sink, session_id: &'a str, transfer_id: &'a str, name: String,
     upload: bool, done: u64, total: u64,
+    emission: std::sync::Mutex<ProgressEmission>,
+}
+#[derive(Default)]
+struct ProgressEmission {
+    last: Option<(std::time::Instant, String)>,
 }
 impl TransferProgress<'_> {
     fn emit(&self, status: &str, error: Option<&str>) {
+        self.emit_at(status, error, std::time::Instant::now());
+    }
+    // One UI update per 100 ms during steady transfer. State transitions and
+    // terminal/error events bypass the gate and carry the exact byte counts.
+    fn emit_at(&self, status: &str, error: Option<&str>, now: std::time::Instant) {
+        {
+            let mut emission = self.emission.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if status == "running" && error.is_none() && emission.last.as_ref().is_some_and(|(last, previous)|
+                previous == "running" && now.saturating_duration_since(*last) < std::time::Duration::from_millis(100)) {
+                return;
+            }
+            emission.last = Some((now, status.to_string()));
+        }
         let mut data = serde_json::json!({ "transferId": self.transfer_id, "sessionId": self.session_id,
             "name": self.name, "direction": if self.upload { "up" } else { "down" },
             "done": self.done, "total": self.total, "status": status });
@@ -851,7 +927,7 @@ fn commit_local(part: &std::path::Path, target: &std::path::Path, overwrite: boo
 
 #[allow(clippy::too_many_arguments)]
 async fn do_sftp_transfer(h: &Arc<client::Handle<WtHandler>>, transfer_id: &str, remote: &str, local: &str, upload: bool, policy: &str, control: &TransferControl, sink: &Sink, id: &str) -> Result<(), String> {
-    let mut progress = TransferProgress { sink, session_id: id, transfer_id, name: if upload { expand(local).file_name().unwrap_or_default().to_string_lossy().into_owned() } else { remote.rsplit('/').next().unwrap_or(remote).to_string() }, upload, done: 0, total: 0 };
+    let mut progress = TransferProgress { sink, session_id: id, transfer_id, name: if upload { expand(local).file_name().unwrap_or_default().to_string_lossy().into_owned() } else { remote.rsplit('/').next().unwrap_or(remote).to_string() }, upload, done: 0, total: 0, emission: Default::default() };
     progress.emit("preparing", None);
     let result: Result<bool, String> = async {
         if !matches!(policy, "overwrite" | "skip" | "rename" | "error") { return Err("无效的文件冲突策略".into()); }
@@ -859,7 +935,10 @@ async fn do_sftp_transfer(h: &Arc<client::Handle<WtHandler>>, transfer_id: &str,
         let s = open_sftp(h).await?;
         if upload {
             let root = expand(local);
-            let nodes = local_tree_controlled(&root, Some(control))?;
+            let scan_control = control.clone();
+            let nodes = tokio::task::spawn_blocking(move || local_tree_controlled(&root, Some(&scan_control)))
+                .await.map_err(|e| e.to_string())??;
+            checkpoint(control, &progress).await?;
             let remote = remote_target(&s, remote).await?;
             let Some(remote) = remote_collision(&s, &remote, policy).await? else { progress.emit("skipped", None); return Ok(false); };
             progress.total = nodes.iter().fold(0u64, |total, n| total.saturating_add(n.size)); progress.emit("running", None);
@@ -874,16 +953,16 @@ async fn do_sftp_transfer(h: &Arc<client::Handle<WtHandler>>, transfer_id: &str,
                 }
                 let Some(target) = remote_collision(&s, &target, policy).await? else { progress.total = progress.total.saturating_sub(node.size); progress.emit("running", None); continue; };
                 // Re-check the source immediately before opening; refuse links.
-                let md = std::fs::symlink_metadata(&node.path).map_err(|e| e.to_string())?;
+                let md = tokio::fs::symlink_metadata(&node.path).await.map_err(|e| e.to_string())?;
                 if !md.is_file() || md.is_symlink() { return Err(format!("源文件已改变：{}", node.path)); }
                 let part = remote_temp(&target, "part");
-                let mut input = std::fs::File::open(&node.path).map_err(|e| e.to_string())?;
+                let mut input = tokio::fs::File::open(&node.path).await.map_err(|e| e.to_string())?;
                 let mut output = s.open_with_flags(&part, OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::EXCLUDE).await.map_err(|e| e.to_string())?;
                 let stream: Result<(), String> = async {
                     let mut buf = vec![0u8; 65536]; let mut copied = 0u64;
                     loop {
                         checkpoint(control, &progress).await?;
-                        let n = std::io::Read::read(&mut input, &mut buf).map_err(|e| e.to_string())?;
+                        let n = input.read(&mut buf).await.map_err(|e| e.to_string())?;
                         if n == 0 { break; }
                         output.write_all(&buf[..n]).await.map_err(|e| e.to_string())?;
                         copied += n as u64; progress.done += n as u64; progress.emit("running", None);
@@ -909,8 +988,11 @@ async fn do_sftp_transfer(h: &Arc<client::Handle<WtHandler>>, transfer_id: &str,
                 for name in &node.parts { if !safe_local_component(name) { return Err(format!("文件名不适合本地文件系统：{name}")); } }
                 let target = node.parts.iter().fold(root.clone(), |p, name| p.join(name));
                 if node.is_dir {
-                    if let Some(md) = local_stat(&target)? { if !md.is_dir() || md.is_symlink() { return Err(format!("目标不是普通目录：{}", target.display())); } }
-                    else { std::fs::create_dir(&target).map_err(|e| e.to_string())?; }
+                    match tokio::fs::symlink_metadata(&target).await {
+                        Ok(md) => if !md.is_dir() || md.is_symlink() { return Err(format!("目标不是普通目录：{}", target.display())); },
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => { tokio::fs::create_dir(&target).await.map_err(|e| e.to_string())?; }
+                        Err(e) => return Err(e.to_string()),
+                    }
                     continue;
                 }
                 let Some(target) = local_collision(&target, policy)? else { progress.total = progress.total.saturating_sub(node.size); progress.emit("running", None); continue; };
@@ -918,21 +1000,25 @@ async fn do_sftp_transfer(h: &Arc<client::Handle<WtHandler>>, transfer_id: &str,
                 if !md.file_type().is_file() { return Err(format!("源文件已改变：{}", node.path)); }
                 let part = local_temp(&target, "part");
                 let mut input = s.open(&node.path).await.map_err(|e| e.to_string())?;
-                let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&part).map_err(|e| e.to_string())?;
+                let mut output = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&part).await.map_err(|e| e.to_string())?;
                 let stream: Result<(), String> = async {
                     let mut buf = vec![0u8; 65536]; let mut copied = 0u64;
                     loop {
                         checkpoint(control, &progress).await?;
                         let n = input.read(&mut buf).await.map_err(|e| e.to_string())?;
                         if n == 0 { break; }
-                        std::io::Write::write_all(&mut output, &buf[..n]).map_err(|e| e.to_string())?;
+                        output.write_all(&buf[..n]).await.map_err(|e| e.to_string())?;
                         copied += n as u64; progress.done += n as u64; progress.emit("running", None);
                     }
                     if copied != node.size { return Err("源文件大小在传输期间改变，请重试".into()); }
-                    output.sync_all().map_err(|e| e.to_string())?; Ok(())
+                    output.flush().await.map_err(|e| e.to_string())?;
+                    output.sync_all().await.map_err(|e| e.to_string())?; Ok(())
                 }.await;
+                // Finish Tokio's pending local write even on cancellation so
+                // received bytes remain in the .part file before it is dropped.
+                let flushed = output.flush().await.map_err(|e| format!("{e}；临时文件：{}", part.display()));
                 let closed = input.close().await.map_err(|e| format!("{e}；临时文件：{}", part.display())); drop(output);
-                if let Err(e) = stream { return Err(format!("{e}；临时文件：{}", part.display())); } closed?;
+                if let Err(e) = stream { return Err(format!("{e}；临时文件：{}", part.display())); } flushed?; closed?;
                 checkpoint(control, &progress).await.map_err(|e| format!("{e}；临时文件：{}", part.display()))?;
                 commit_local(&part, &target, policy == "overwrite")?;
             }
@@ -962,6 +1048,66 @@ fn expand(p: &str) -> PathBuf {
 #[cfg(test)]
 mod sftp_safety_tests {
     use super::*;
+
+    #[test]
+    fn progress_throttles_running_updates_without_losing_exact_completion() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let sink = Sink(Arc::new(move |topic, _, data| observed.lock().unwrap().push((topic.to_string(), data))));
+        let mut progress = TransferProgress { sink: &sink, session_id: "ssh", transfer_id: "copy", name: "data.bin".into(), upload: true,
+            done: 0, total: 1000, emission: Default::default() };
+        let base = std::time::Instant::now();
+        progress.emit_at("preparing", None, base);
+        for millisecond in 0..1000 {
+            progress.done = millisecond;
+            progress.emit_at("running", None, base + std::time::Duration::from_millis(millisecond));
+        }
+        progress.done = progress.total;
+        progress.emit_at("completed", None, base + std::time::Duration::from_millis(999));
+        let events = events.lock().unwrap();
+        let updates: Vec<serde_json::Value> = events.iter().filter(|(topic, _)| topic == "sftp-transfer-progress")
+            .map(|(_, data)| serde_json::from_str(data).unwrap()).collect();
+        assert_eq!(updates.iter().filter(|event| event["status"] == "running").count(), 10);
+        assert_eq!(updates.last().unwrap()["status"], "completed");
+        assert_eq!(updates.last().unwrap()["done"], 1000);
+        assert_eq!(updates.last().unwrap()["total"], 1000);
+        assert_eq!(events.iter().filter(|(topic, _)| topic == "transfer-progress").count(), updates.len());
+    }
+
+    #[test]
+    fn progress_pause_resume_errors_and_terminal_states_bypass_the_time_gate() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let sink = Sink(Arc::new(move |topic, _, data| {
+            if topic == "sftp-transfer-progress" { observed.lock().unwrap().push(serde_json::from_str::<serde_json::Value>(&data).unwrap()); }
+        }));
+        let progress = TransferProgress { sink: &sink, session_id: "ssh", transfer_id: "copy", name: "data.bin".into(), upload: false,
+            done: 73, total: 100, emission: Default::default() };
+        let same_instant = std::time::Instant::now();
+        for status in ["preparing", "running", "paused", "running", "failed", "cancelled", "skipped", "completed"] {
+            progress.emit_at(status, None, same_instant);
+        }
+        progress.emit_at("running", Some("read error"), same_instant);
+        progress.emit_at("running", Some("second error"), same_instant);
+        let events = events.lock().unwrap();
+        let statuses: Vec<&str> = events.iter().map(|event| event["status"].as_str().unwrap()).collect();
+        assert_eq!(statuses, ["preparing", "running", "paused", "running", "failed", "cancelled", "skipped", "completed", "running", "running"]);
+        assert_eq!(events.last().unwrap()["done"], 73);
+        assert_eq!(events.last().unwrap()["error"], "second error");
+    }
+
+    #[tokio::test]
+    async fn cloned_control_cancels_the_blocking_directory_scan() {
+        let dir = scratch();
+        let scan_dir = dir.clone();
+        let control = TransferControl::new();
+        let scan_control = control.clone();
+        control.cancel();
+        let result = tokio::task::spawn_blocking(move || local_tree_controlled(&scan_dir, Some(&scan_control))).await.unwrap();
+        assert!(result.unwrap_err().contains("已取消"));
+        // The path is task-owned; cancellation happens before any entries are read.
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn scratch() -> PathBuf {
         let p = std::env::temp_dir().join(format!("hurricane-sftp-unit-{}", uuid::Uuid::new_v4()));
@@ -1010,14 +1156,14 @@ mod sftp_safety_tests {
         let copy = control.clone();
         let job = tokio::spawn(async move {
             let sink = Sink(Arc::new(|_, _, _| {}));
-            let progress = TransferProgress { sink: &sink, session_id: "s", transfer_id: "t", name: "f".into(), upload: true, done: 0, total: 1 };
+            let progress = TransferProgress { sink: &sink, session_id: "s", transfer_id: "t", name: "f".into(), upload: true, done: 0, total: 1, emission: Default::default() };
             checkpoint(&copy, &progress).await
         });
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(!job.is_finished()); control.resume(); assert!(job.await.unwrap().is_ok());
         control.cancel(); control.resume(); assert!(control.is_cancelled());
         let sink = Sink(Arc::new(|_, _, _| {}));
-        let progress = TransferProgress { sink: &sink, session_id: "s", transfer_id: "t", name: "f".into(), upload: true, done: 0, total: 1 };
+        let progress = TransferProgress { sink: &sink, session_id: "s", transfer_id: "t", name: "f".into(), upload: true, done: 0, total: 1, emission: Default::default() };
         assert!(checkpoint(&control, &progress).await.is_err());
     }
 

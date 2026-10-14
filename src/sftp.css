@@ -101,6 +101,39 @@
 .sftp-pane.drop-target {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
+.sftp-table tr.drop-directory td {
+  background: var(--accent-bg);
+  box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);
+}
+.sftp-table tr[data-path] {
+  user-select: none;
+  -webkit-user-drag: none;
+  touch-action: none;
+}
+#sftp-panel.sftp-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+.sftp-drag-ghost {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border-solid);
+  border-radius: var(--r);
+  background: var(--bg2);
+  color: var(--fg2);
+  box-shadow: var(--dialog-shadow);
+  font-size: 12px;
+}
+.sftp-drag-ghost.valid {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .sftp-nav {
   display: flex;
   align-items: center;

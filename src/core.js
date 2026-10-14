@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.10';
+  const VERSION = '0.7.11';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -22,6 +22,7 @@ window.WT = (function () {
       theme: 'tabby-dark',
       fontSize: 13,
       fontFamily: '',
+      backgroundOpacity: 100,
       triggers: [],
       sessions: [],
       sync: false,
@@ -54,7 +55,7 @@ window.WT = (function () {
     },
 
     persistSettings() {
-      const keys = ['theme', 'fontSize', 'fontFamily', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
+      const keys = ['theme', 'fontSize', 'fontFamily', 'backgroundOpacity', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
         'statusBar', 'tooltips', 'homeOnStart', 'activityDot', 'builtinHighlight',
         'copyOnSelect', 'rightClickPaste', 'sessionLog', 'lastUpdateCheck', 'updateInfo', 'sftp'];
       const o = {};
@@ -190,16 +191,14 @@ window.WT = (function () {
     await WT.listen('pty-output', (e) => {
       const { id, data } = e.payload;
       const tab = WT.term.findByPty(id);
-      if (!tab) return;
-      // 高亮要在 write 回调里跑（xterm 异步解析），触发器不依赖光标位置可先跑
-      tab.term.write(data, () => WT.term.runHighlights(tab, data));
+      if (!tab || tab._closing) return;
+      WT.term.receiveOutput(tab, data);
       if (tab.logging) tab.logBuf = (tab.logBuf || '') + data;
       // 活动通知：后台标签有输出且开了 notify → 圆点
       if (tab.notify && WT.s.activityDot !== false && WT.term.active !== tab.id && !tab.activity) {
         tab.activity = true;
         WT.term.renderTabbar();
       }
-      WT.term.runTriggers(tab, data);
     });
     await WT.listen('re-log', (e) => { try { WT.ui.log(e.payload.data); } catch (_) {} });
     await WT.listen('transfer-progress', (e) => {
@@ -216,7 +215,7 @@ window.WT = (function () {
       if (!tab || tab.exited) return;
       WT.flushLogs(tab);
       tab.exited = true;
-      tab.term.write('\r\n\x1b[2m[进程已退出]\x1b[0m\r\n');
+      WT.term.receiveOutput(tab, '\r\n\x1b[2m[进程已退出]\x1b[0m\r\n');
       WT.term.renderTabbar();
       WT.ui.log('会话退出 ' + e.payload.id.slice(0, 8));
     });

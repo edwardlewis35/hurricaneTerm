@@ -6,28 +6,31 @@
 mod re;
 mod jump;
 mod files;
+mod pty_child;
+mod terminal_io;
 mod ssh_live;
 mod ssh_relay;
 #[cfg(unix)]
 mod serial_live;
 mod tcp_live;
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 type BoxedWriter = Box<dyn Write + Send>;
+type SessionWriter = Arc<tokio::sync::Mutex<BoxedWriter>>;
 type BoxedResize = Box<dyn Fn(u16, u16) -> Result<(), String> + Send>;
-type BoxedChild = Box<dyn Child + Send + Sync>;
 
 struct Entry {
-    writer: BoxedWriter,
+    writer: SessionWriter,
     resize: BoxedResize,
-    child: Option<Arc<Mutex<BoxedChild>>>,
+    killer: Option<pty_child::Killer>,
     closer: Option<Box<dyn Fn() + Send>>,
     sftp: Option<tokio::sync::mpsc::UnboundedSender<ssh_live::SftpReq>>,
 }
@@ -176,37 +179,39 @@ fn spawn(
     });
 
     let id = Uuid::new_v4().to_string();
+    let output_stopped = Arc::new(AtomicBool::new(false));
 
     {
         let id2 = id.clone();
         let app2 = app.clone();
+        let stopped = output_stopped.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut decoder = terminal_io::Utf8Decoder::default();
             loop {
+                if stopped.load(Ordering::Acquire) { break; }
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        let data = decoder.finish();
+                        if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
                         break;
                     }
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data });
+                        if stopped.load(Ordering::Acquire) { break; }
+                        let data = decoder.push(&buf[..n]);
+                        if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                     }
                 }
             }
         });
     }
 
-    let child = Arc::new(Mutex::new(child));
-    {
-        let c = Arc::clone(&child);
-        let id3 = id.clone();
-        let app3 = app.clone();
-        std::thread::spawn(move || {
-            let _ = c.lock().unwrap().wait();
-            let _ = app3.emit("pty-exit", ExitPayload { id: id3 });
-        });
-    }
+    let id3 = id.clone();
+    let app3 = app.clone();
+    let killer = pty_child::monitor_child(child, move || {
+        let _ = app3.emit("pty-exit", ExitPayload { id: id3 });
+    });
 
     state
         .0
@@ -215,10 +220,10 @@ fn spawn(
         .insert(
             id.clone(),
             Entry {
-                writer: Box::new(writer),
+                writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
                 resize,
-                child: Some(child),
-                closer: None,
+                killer: Some(killer),
+                closer: Some(Box::new(move || { output_stopped.store(true, Ordering::Release); })),
                 sftp: None,
             },
         );
@@ -254,9 +259,12 @@ fn connect_telnet(
         let app2 = app.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut decoder = terminal_io::Utf8Decoder::default();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        let data = decoder.finish();
+                        if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
                         break;
                     }
@@ -272,7 +280,7 @@ fn connect_telnet(
                             );
                         }
                         if !o.data.is_empty() {
-                            let data = String::from_utf8_lossy(&o.data).to_string();
+                            let data = decoder.push(&o.data);
                             let _ = app2.emit(
                                 "pty-output",
                                 OutPayload { id: id2.clone(), data },
@@ -287,9 +295,9 @@ fn connect_telnet(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer: Box::new(writer),
+            writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
             resize: Box::new(|_r, _c| Ok(())),
-            child: None,
+            killer: None,
             closer: Some(Box::new(move || {
                 let _ = killer.shutdown(std::net::Shutdown::Both);
             })),
@@ -381,11 +389,11 @@ fn connect_ssh(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer: Box::new(ssh_live::SshInput(ssh_in)),
+            writer: Arc::new(tokio::sync::Mutex::new(Box::new(ssh_live::SshInput(ssh_in)))),
             resize: Box::new(move |r, c| {
                 rz.send((c as u32, r as u32)).map_err(|_| "closed".to_string())
             }),
-            child: None,
+            killer: None,
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
@@ -442,9 +450,9 @@ fn connect_serial(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer: Box::new(ctl.writer), // Box<dyn SerialPort>: Write + Send（trait 超界）
+            writer: Arc::new(tokio::sync::Mutex::new(Box::new(ctl.writer))), // Box<dyn SerialPort>: Write + Send
             resize: Box::new(|_r, _c| Ok(())), // 串口无窗口尺寸概念
-            child: None,
+            killer: None,
             sftp: None,
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
@@ -499,9 +507,9 @@ fn connect_tcp(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer,
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
             resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义
-            child: None,
+            killer: None,
             sftp: None,
             closer: Some(Box::new(move || {
                 let _ = stop.send(()); // 通知 pump
@@ -513,11 +521,20 @@ fn connect_tcp(
 }
 
 #[tauri::command]
-fn write(state: State<PtyState>, id: String, data: String) -> Result<(), String> {
-    let mut map = state.0.lock().map_err(|e| e.to_string())?;
-    let e = map.get_mut(&id).ok_or("no such pty")?;
-    e.writer.write_all(data.as_bytes()).map_err(|x| x.to_string())?;
-    e.writer.flush().map_err(|x| x.to_string())
+async fn write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
+    let writer = {
+        let map = state.0.lock().map_err(|e| e.to_string())?;
+        map.get(&id).ok_or("no such pty")?.writer.clone()
+    };
+    // Only this session's writer is locked while IO can block. Other sessions,
+    // close, resize and SFTP calls never wait on a global map lock held by IO.
+    // Tokio's FIFO mutex serializes input without consuming blocking workers
+    // while another write is pending (important for quick typing / paste).
+    let mut writer = writer.lock_owned().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
 }
 /* ---------- PuTTY 式会话落盘日志（设置页开关；前端缓冲后按秒刷盘） ---------- */
 #[derive(Default)]
@@ -570,15 +587,16 @@ fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<()
 }
 
 #[tauri::command]
-fn kill(state: State<PtyState>, id: String) -> Result<(), String> {
-    let mut map = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(e) = map.remove(&id) {
-        if let Some(c) = &e.child {
-            let _ = c.lock().unwrap().kill();
-        }
-        if let Some(cl) = &e.closer {
-            cl();
-        }
+async fn kill(state: State<'_, PtyState>, id: String) -> Result<(), String> {
+    let entry = state.0.lock().map_err(|e| e.to_string())?.remove(&id);
+    // Removing the entry is idempotent; release the global map before any
+    // signal, socket shutdown or destructor runs. None run on the UI thread.
+    if let Some(mut entry) = entry {
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Some(close) = &entry.closer { close(); }
+            if let Some(killer) = &mut entry.killer { let _ = killer.kill(); }
+            drop(entry);
+        }).await.map_err(|e| e.to_string())?;
     }
     Ok(())
 }

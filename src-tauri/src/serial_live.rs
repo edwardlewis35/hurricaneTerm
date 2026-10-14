@@ -269,12 +269,13 @@ pub fn spawn_session(
 /// 泛型化以便用 UnixStream 单测（生产传 RawPort）。
 pub fn pump<R: Read>(mut reader: R, sink: &Sink, id: &str, stop: &mut mpsc::UnboundedReceiver<()>) {
     let mut buf = [0u8; 4096];
+    let mut decoder = crate::terminal_io::Utf8Decoder::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => {} // 空读节拍
             Ok(n) => {
-                let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                sink.emit("pty-output", id.to_string(), data);
+                let data = decoder.push(&buf[..n]);
+                if !data.is_empty() { sink.emit("pty-output", id.to_string(), data); }
             }
             Err(e)
                 if e.kind() == io::ErrorKind::TimedOut
@@ -286,6 +287,8 @@ pub fn pump<R: Read>(mut reader: R, sink: &Sink, id: &str, stop: &mut mpsc::Unbo
             break;
         }
     }
+    let tail = decoder.finish();
+    if !tail.is_empty() { sink.emit("pty-output", id.to_string(), tail); }
 }
 
 #[cfg(test)]

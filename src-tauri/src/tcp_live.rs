@@ -497,12 +497,13 @@ fn p_variant(p: &ResolvedProxy) -> &'static str {
 /// 输出泵（与串口同构：超时轮询 + stop 通道）
 pub fn pump<R: Read>(mut reader: R, sink: Sink, id: &str, stop: &mut mpsc::UnboundedReceiver<()>) {
     let mut buf = [0u8; 8192];
+    let mut decoder = crate::terminal_io::Utf8Decoder::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                sink.emit("pty-output", id.to_string(), data);
+                let data = decoder.push(&buf[..n]);
+                if !data.is_empty() { sink.emit("pty-output", id.to_string(), data); }
             }
             Err(e)
                 if e.kind() == io::ErrorKind::TimedOut
@@ -513,6 +514,8 @@ pub fn pump<R: Read>(mut reader: R, sink: Sink, id: &str, stop: &mut mpsc::Unbou
             break;
         }
     }
+    let tail = decoder.finish();
+    if !tail.is_empty() { sink.emit("pty-output", id.to_string(), tail); }
 }
 
 #[cfg(test)]

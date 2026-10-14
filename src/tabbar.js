@@ -63,13 +63,13 @@
   border:1px solid var(--accent); border-radius:var(--r-sm); padding:0 4px; height:19px; font:inherit; }
 
 .ht-actions { display:flex; align-items:center; gap:0; flex:0 0 auto; height:100%; padding:0 4px; }
-.ht-plus, .ht-caret { display:flex; align-items:center; justify-content:center; border-radius:var(--r);
+.ht-plus, .ht-caret, .ht-split { display:flex; align-items:center; justify-content:center; border-radius:var(--r);
   cursor:default; color:var(--fg2); transition:var(--t); }
-.ht-plus { width:30px; height:28px; }
-.ht-caret { width:22px; height:28px; }
-.ht-split { width:30px; height:28px; margin-left:4px; }
+.ht-plus { width:30px; height:30px; }
+.ht-caret { width:30px; height:30px; }
+.ht-split { width:30px; height:30px; margin-left:4px; }
 .ht-actions button { padding:0; border:0; background:transparent; color:var(--fg2); }
-.ht-plus svg, .ht-caret svg { width:13px; height:13px; }
+.ht-plus svg, .ht-caret svg, .ht-split svg { width:var(--ico-titlebar, 16px); height:var(--ico-titlebar, 16px); }
 .ht-plus:hover, .ht-caret:hover, .ht-split:hover { background:var(--surface-hover); color:var(--fg3); }
 `;
 

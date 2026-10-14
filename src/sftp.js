@@ -76,6 +76,9 @@
     modalClose,
     clipboard,
     dragSelection,
+    dragGhost,
+    suppressDragClickUntil = 0,
+    dropGeneration = 0,
     focused = "local",
     activeWorkers = 0,
     searchTimer,
@@ -179,6 +182,7 @@
   }
   function renderShell() {
     if (!root || !current) return;
+    cancelDrag();
     const p = prefs(),
       tab = current.tab,
       isSsh = connected();
@@ -344,7 +348,7 @@
         )
         .join(
           "",
-        )}</tr></thead><tbody>${entries.map((e) => `<tr data-path="${esc(e.path)}" class="${p.selected.has(e.path) ? "selected" : ""}" draggable="true" aria-selected="${p.selected.has(e.path)}"><td title="${esc(e.name)}"><div class="sftp-file${e.is_dir ? " directory" : /\.(png|jpe?g|gif|webp|bmp)$/i.test(e.name) ? " image" : ""}">${svg(e.is_dir ? "folder" : "output")}<span>${esc(e.name)}</span>${e.is_link ? '<i class="sftp-link">↗</i>' : ""}</div></td><td>${e.is_dir ? "—" : size(e.size || 0)}</td><td>${date(e.modified)}</td><td class="${side === "remote" ? "sftp-perms" : ""}">${side === "remote" ? permissions(e.permissions) : e.is_dir ? "目录" : esc(e.name.includes(".") ? e.name.split(".").pop().toUpperCase() : "文件")}</td></tr>`).join("")}</tbody></table>${entries.length ? "" : '<div class="sftp-empty">' + (p.filter ? "没有匹配的文件" : "目录为空") + "</div>"}`;
+        )}</tr></thead><tbody>${entries.map((e) => `<tr data-path="${esc(e.path)}" class="${p.selected.has(e.path) ? "selected" : ""}" draggable="false" aria-selected="${p.selected.has(e.path)}"><td title="${esc(e.name)}"><div class="sftp-file${e.is_dir ? " directory" : /\.(png|jpe?g|gif|webp|bmp)$/i.test(e.name) ? " image" : ""}">${svg(e.is_dir ? "folder" : "output")}<span>${esc(e.name)}</span>${e.is_link ? '<i class="sftp-link">↗</i>' : ""}</div></td><td>${e.is_dir ? "—" : size(e.size || 0)}</td><td>${date(e.modified)}</td><td class="${side === "remote" ? "sftp-perms" : ""}">${side === "remote" ? permissions(e.permissions) : e.is_dir ? "目录" : esc(e.name.includes(".") ? e.name.split(".").pop().toUpperCase() : "文件")}</td></tr>`).join("")}</tbody></table>${entries.length ? "" : '<div class="sftp-empty">' + (p.filter ? "没有匹配的文件" : "目录为空") + "</div>"}`;
     list
       .querySelector("[data-retry]")
       ?.addEventListener("click", () => load(c, side, p.path));
@@ -361,6 +365,10 @@
     list.querySelectorAll("tr[data-path]").forEach((row) => {
       const e = p.entries.find((x) => x.path === row.dataset.path);
       row.onclick = (ev) => {
+        if (Date.now() < suppressDragClickUntil) {
+          ev.preventDefault();
+          return;
+        }
         focusSide(side);
         selectRow(side, e, ev);
       };
@@ -377,21 +385,10 @@
         }
         contextMenu(side, ev.clientX, ev.clientY);
       };
-      row.ondragstart = (ev) => {
-        if (!p.selected.has(e.path)) {
-          p.selected.clear();
-          p.selected.add(e.path);
-        }
-        dragSelection = { context: c, side, entries: selected(c, side) };
-        ev.dataTransfer.setData("application/x-hurricane-files", "internal");
-        ev.dataTransfer.effectAllowed = "copy";
-      };
-      row.ondragend = () => {
-        dragSelection = null;
-        root
-          .querySelectorAll(".drop-target")
-          .forEach((e) => e.classList.remove("drop-target"));
-      };
+      // Tauri's native file-drop handler replaces HTML5 DnD on Windows. Use
+      // pointer capture for pane-to-pane transfers, retaining native OS drops.
+      row.ondragstart = (ev) => ev.preventDefault();
+      row.onpointerdown = (ev) => beginDrag(ev, c, side, e);
     });
     const sel = selected(c, side),
       total = sel.reduce((n, e) => n + (e.is_dir ? 0 : e.size || 0), 0);
@@ -524,24 +521,95 @@
         }
       }
     });
-    pane.ondragover = (ev) => {
-      if (dragSelection && dragSelection.side !== side) {
-        ev.preventDefault();
-        pane.classList.add("drop-target");
-      }
-    };
-    pane.ondragleave = (ev) => {
-      if (!pane.contains(ev.relatedTarget))
-        pane.classList.remove("drop-target");
-    };
-    pane.ondrop = guard(async (ev) => {
-      ev.preventDefault();
-      pane.classList.remove("drop-target");
-      const d = dragSelection;
-      if (!d) return;
-      dragSelection = null;
-      if (d.side !== side) await enqueue(d.context, d.side, d.entries, c, side);
+    // Never let a browser navigate to an OS-dropped file. The Tauri callback
+    // below is the only path accepting native paths, preventing double sends.
+    pane.ondragover = (ev) => ev.preventDefault();
+    pane.ondrop = (ev) => ev.preventDefault();
+  }
+  function clearDropTargets() {
+    root?.querySelectorAll(".drop-target,.drop-directory").forEach((el) => {
+      el.classList.remove("drop-target", "drop-directory");
     });
+  }
+  function cancelDrag() {
+    const d = dragSelection;
+    dragSelection = null;
+    if (d && root?.hasPointerCapture?.(d.pointerId))
+      root.releasePointerCapture(d.pointerId);
+    dragGhost?.remove();
+    dragGhost = null;
+    root?.classList.remove("sftp-dragging");
+    clearDropTargets();
+  }
+  function dropTarget(x, y, sourceSide) {
+    if (!Panel.isOpen() || root.querySelector(".sftp-modal")) return null;
+    const el = document.elementFromPoint(x, y),
+      pane = el?.closest(".sftp-pane");
+    if (!pane || !root.contains(pane)) return null;
+    const side = pane.dataset.side, c = current;
+    if (side === sourceSide || (side === "remote" && !connected(c)) || c[side].loading || c[side].error)
+      return null;
+    const row = el.closest("tr[data-path]"),
+      directory = c[side].entries.find((e) => e.path === row?.dataset.path && e.is_dir);
+    return { context: c, side, path: directory?.path || c[side].path, pane, row: directory ? row : null };
+  }
+  function highlightDrop(target) {
+    clearDropTargets();
+    target?.pane.classList.add("drop-target");
+    target?.row?.classList.add("drop-directory");
+  }
+  function beginDrag(ev, c, side, entry) {
+    if (ev.button !== 0 || ev.isPrimary === false || root.querySelector(".sftp-modal")) return;
+    if (side === "remote" && !connected(c)) return;
+    cancelDrag();
+    suppressDragClickUntil = 0;
+    dragSelection = { context: c, side, entry, sourceSeq: c[side].seq, pointerId: ev.pointerId, x: ev.clientX, y: ev.clientY, active: false };
+  }
+  function moveDrag(ev) {
+    const d = dragSelection;
+    if (!d || ev.pointerId !== d.pointerId) return;
+    if (current !== d.context || d.context[d.side].seq !== d.sourceSeq || (d.side === "remote" && !connected(d.context)) || !Panel.isOpen() || root.querySelector(".sftp-modal")) return cancelDrag();
+    if (!d.active && Math.hypot(ev.clientX - d.x, ev.clientY - d.y) < 6) return;
+    ev.preventDefault();
+    if (!d.active) {
+      d.active = true;
+      root.setPointerCapture?.(ev.pointerId);
+      const p = d.context[d.side];
+      if (!p.selected.has(d.entry.path)) {
+        p.selected.clear();
+        p.selected.add(d.entry.path);
+        p.anchor = d.entry.path;
+      }
+      d.entries = selected(d.context, d.side).map((e) => ({ ...e }));
+      root.classList.add("sftp-dragging");
+      dragGhost = document.createElement("div");
+      dragGhost.className = "sftp-drag-ghost";
+      document.body.appendChild(dragGhost);
+    }
+    const target = dropTarget(ev.clientX, ev.clientY, d.side);
+    highlightDrop(target);
+    dragGhost.textContent = `${d.entries.length} 项 · ${target ? (d.side === "local" ? "上传到 " : "下载到 ") + target.path : "拖到另一栏传输"}`;
+    dragGhost.style.left = ev.clientX + 14 + "px";
+    dragGhost.style.top = ev.clientY + 14 + "px";
+    dragGhost.classList.toggle("valid", !!target);
+    const list = target?.pane.querySelector(".sftp-list");
+    if (list) {
+      const r = list.getBoundingClientRect();
+      if (ev.clientY < r.top + 24) list.scrollTop -= 18;
+      else if (ev.clientY > r.bottom - 24) list.scrollTop += 18;
+    }
+  }
+  async function finishDrag(ev) {
+    const d = dragSelection;
+    if (!d || ev.pointerId !== d.pointerId) return;
+    const target = d.active && current === d.context ? dropTarget(ev.clientX, ev.clientY, d.side) : null;
+    if (d.active) {
+      ev.preventDefault();
+      suppressDragClickUntil = Date.now() + 400;
+    }
+    cancelDrag();
+    if (d.active && current === d.context) renderList(d.side);
+    if (target) await enqueue(d.context, d.side, d.entries, target.context, target.side, target.path);
   }
   async function navAction(side, action) {
     const c = current,
@@ -880,14 +948,14 @@
       ),
     );
   }
-  async function copyEntry(source, sourceSide, e, target, targetSide, move) {
+  async function copyEntry(source, sourceSide, e, target, targetSide, move, targetPath = target[targetSide].path) {
     if (sourceSide !== targetSide) {
       if (move) throw new Error("跨栏请先传输，确认完成后再删除源文件");
-      return enqueue(source, sourceSide, [e], target, targetSide);
+      return enqueue(source, sourceSide, [e], target, targetSide, targetPath);
     }
     if (sourceSide === "remote" && source.id !== target.id)
       throw new Error("不同 SSH 会话之间请通过本地目录中转");
-    const to = join(target[targetSide].path, e.name, targetSide);
+    const to = join(targetPath, e.name, targetSide);
     if (to === e.path) throw new Error("目标和源路径相同");
     await invoke(target, targetSide, "copy", {
       from: e.path,
@@ -1069,12 +1137,12 @@
     prefs().history = prefs().history.slice(0, 200);
     save();
   }
-  async function enqueue(source, side, entries, target, destSide) {
+  async function enqueue(source, side, entries, target, destSide, targetPath = target[destSide].path) {
     const remote = side === "local" ? target : source;
     if (!connected(remote)) throw new Error("传输需要已连接的 SSH 会话");
     if (side === destSide) throw new Error("跨栏传输需要本地与远程两栏");
     for (const e of entries) {
-      const dest = join(target[destSide].path, e.name, destSide),
+      const dest = join(targetPath, e.name, destSide),
         from = e.path,
         key = `${remote.id}|${side}|${from}|${dest}`;
       if (
@@ -1351,50 +1419,63 @@
       if (!root) return;
       root.hidden = true;
       root.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && dragSelection) {
+          ev.stopPropagation();
+          ev.preventDefault();
+          cancelDrag();
+          return;
+        }
         if (ev.key === "Escape" && !ev.target.closest(".sftp-modal")) {
           ev.stopPropagation();
           this.close();
         }
       });
+      root.addEventListener("pointermove", moveDrag);
+      root.addEventListener("pointerup", guard(finishDrag));
+      root.addEventListener("pointercancel", cancelDrag);
+      window.addEventListener("pointerup", guard(finishDrag));
+      window.addEventListener("blur", cancelDrag);
       window.addEventListener("resize", layout);
       const view = window.__TAURI__?.webview?.getCurrentWebview?.();
       if (view?.onDragDropEvent)
         view
           .onDragDropEvent(
             guard(async (event) => {
-              if (!this.isOpen()) return;
+              // Native callbacks must not reinterpret an internal pointer drag
+              // as an external file drop or enqueue it a second time.
+              if (!this.isOpen() || dragSelection) return;
               const p = event.payload;
               if (p.type === "leave") {
-                root
-                  .querySelectorAll(".drop-target")
-                  .forEach((e) => e.classList.remove("drop-target"));
+                clearDropTargets();
                 return;
               }
               const position = p.position || {},
-                el = document.elementFromPoint(
+                target = dropTarget(
                   position.x / (window.devicePixelRatio || 1),
                   position.y / (window.devicePixelRatio || 1),
-                ),
-                pane = el?.closest(".sftp-pane");
-              if (!pane) return;
-              const side = pane.dataset.side;
+                );
+              highlightDrop(target);
+              if (!target) return;
               if (p.type === "over" || p.type === "enter") {
-                pane.classList.add("drop-target");
                 return;
               }
               if (p.type === "drop") {
-                pane.classList.remove("drop-target");
-                const c = current;
+                clearDropTargets();
+                // Capture the pane, session and folder before asynchronous
+                // stat calls; navigation must not redirect a pending drop.
+                const { context: c, side, path: targetPath } = target,
+                  generation = dropGeneration;
                 const entries = [];
-                for (const path of p.paths || []) {
+                for (const path of new Set(p.paths || [])) {
                   const e = await T.invoke("fs_stat", { path });
                   if (e) entries.push(e);
                 }
+                if (!this.isOpen() || generation !== dropGeneration || root.querySelector(".sftp-modal")) return;
                 if (side === "remote")
-                  await enqueue(c, "local", entries, c, "remote");
+                  await enqueue(c, "local", entries, c, "remote", targetPath);
                 else
                   for (const e of entries)
-                    await copyEntry(c, "local", e, c, "local", false);
+                    await copyEntry(c, "local", e, c, "local", false, targetPath);
               }
             }),
           )
@@ -1422,6 +1503,8 @@
       ]);
     },
     hide() {
+      dropGeneration++;
+      cancelDrag();
       if (modalClose) {
         const close = modalClose;
         close();

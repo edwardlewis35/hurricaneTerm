@@ -1,0 +1,130 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { JSDOM, VirtualConsole } from 'jsdom';
+
+const source = fileURLToPath(new URL('../src/', import.meta.url));
+const errors = [], results = [];
+const vc = new VirtualConsole(); vc.on('jsdomError', e => errors.push(e.message));
+const dom = new JSDOM(`<!doctype html><html><body>
+  <div id="modal"><form id="form"><label for="theme">配色</label>
+  <select id="theme" name="theme" required><option value="dark">Dark</option>
+    <option value="disabled" disabled>Disabled</option><option value="light">Light</option>
+    <optgroup label="Other"><option value="solarized">Solarized</option><option value="snow">Snow</option></optgroup>
+    <option value="hidden" hidden>Hidden</option></select></form></div>
+  <div id="dynamic"></div><div class="xterm" id="terminal"></div><button id="outside">Outside</button>
+  <select id="native" multiple><option>one</option></select>
+</body></html>`, { runScripts: 'dangerously', pretendToBeVisual: true, url: 'http://tauri.localhost', virtualConsole: vc });
+const { window: w } = dom, d = w.document;
+const style = d.createElement('style'); style.textContent = readFileSync(source + 'style.css', 'utf8'); d.head.appendChild(style);
+w.Element.prototype.scrollIntoView = function () {};
+const globalListeners = [], resetTargets = [];
+const addEventListener = w.EventTarget.prototype.addEventListener;
+w.EventTarget.prototype.addEventListener = function (name, listener, options) {
+  if (this === d || this === w) globalListeners.push([this, name]);
+  if (name === 'reset') resetTargets.push(this);
+  return addEventListener.call(this, name, listener, options);
+};
+for (const name of ['icons.js', 'common-controls.js']) w.eval(readFileSync(source + name, 'utf8'));
+const check = (name, value) => results.push([!!value, name]);
+const wait = async () => { for (let i = 0; i < 3; i++) await new Promise(r => setTimeout(r, 0)); };
+const key = (button, name) => button.dispatchEvent(new w.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+const select = d.querySelector('#theme'), button = select.parentElement.querySelector('button');
+let changes = 0, inputs = 0, outerEscapes = 0;
+select.addEventListener('input', () => inputs++); select.addEventListener('change', () => changes++);
+d.querySelector('#modal').addEventListener('keydown', e => { if (e.key === 'Escape') outerEscapes++; });
+button.focus();
+check('Original select still supplies named form data', new w.FormData(d.querySelector('form')).get('theme') === 'dark');
+check('Native select leaves keyboard and accessibility navigation', select.tabIndex === -1 && select.getAttribute('aria-hidden') === 'true');
+check('Enhanced control has a labelled combobox role', button.getAttribute('role') === 'combobox' && button.getAttribute('aria-label') === '配色');
+check('Required status is announced', button.getAttribute('aria-required') === 'true');
+check('Multi-select keeps native behavior', !d.querySelector('#native').parentElement.classList.contains('wt-select'));
+key(button, 'ArrowDown');
+check('Arrow opens list without changing form data', button.getAttribute('aria-expanded') === 'true' && select.value === 'dark');
+check('Listbox uses a theme-controlled portal', d.querySelector('.wt-select-menu')?.parentElement === d.body && d.querySelector('[role="listbox"]'));
+check('Grouped and disabled choices are announced', !!d.querySelector('.wt-select-group') && d.querySelector('[aria-disabled="true"][role="option"]'));
+check('Hidden option does not appear', !Array.from(d.querySelectorAll('[role="option"]')).some(o => o.textContent.includes('Hidden')));
+key(button, 'ArrowDown');
+check('Keyboard skips disabled option', button.getAttribute('aria-activedescendant')?.endsWith('-2'));
+key(button, 'Enter');
+check('Enter commits selected value to native business source', select.value === 'light');
+check('User commit sends one input and one change event', changes === 1 && inputs === 1);
+check('Committed value is shown and accessible list is closed', button.textContent.includes('Light') && button.getAttribute('aria-expanded') === 'false' && !d.querySelector('.wt-select-menu'));
+check('Focus stays on keyboard control after commit', d.activeElement === button);
+key(button, ' '); key(button, 'Home');
+check('Home picks first enabled option', button.getAttribute('aria-activedescendant')?.endsWith('-0'));
+key(button, 'Escape');
+check('Escape only cancels dropdown, preserving current value', select.value === 'light' && !w.CommonControls.isOpen);
+check('Dropdown escape does not close outer modal', outerEscapes === 0);
+key(button, 'Escape');
+check('Closed dropdown lets modal handle Escape', outerEscapes === 1);
+key(button, 'End'); key(button, 'Enter');
+check('End commits last visible choice', select.value === 'snow');
+key(button, 's');
+check('Typeahead cycles repeated starting letter', button.getAttribute('aria-activedescendant')?.endsWith('-3'));
+key(button, 'Enter');
+check('Typeahead commit updates form data', select.value === 'solarized');
+button.click();
+const beforeTheme = d.querySelector('.wt-select-menu');
+d.documentElement.style.setProperty('--bg2', '#ffffff'); d.documentElement.style.setProperty('--fg', '#222222');
+await wait();
+check('Theme switch retains opened dropdown and selection', d.querySelector('.wt-select-menu') === beforeTheme && select.value === 'solarized');
+check('Menu styling uses shared live theme variables', /\.wt-select-menu[^}]*background: var\(--bg2\)/s.test(style.textContent) && /\.wt-select-option\.is-active[^}]*var\(--surface-active\)/s.test(style.textContent));
+d.querySelector('#outside').dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
+check('Outside pointer closes dropdown', !w.CommonControls.isOpen);
+button.focus(); button.click(); key(button, 'Tab');
+check('Tab closes popup without trapping browser focus', !w.CommonControls.isOpen);
+select.value = 'dark'; select.dispatchEvent(new w.Event('change', { bubbles: true }));
+check('Programmatic native change refreshes visual value', button.textContent.includes('Dark'));
+select.disabled = true; await wait();
+check('Dynamic disable reaches the visible control', button.disabled);
+button.click(); check('Disabled control cannot open popup', !w.CommonControls.isOpen);
+select.disabled = false; select.hidden = true; await wait();
+check('Dynamic hidden state does not leave a phantom button', select.parentElement.hidden);
+select.hidden = false; await wait();
+button.focus(); button.click(); d.querySelector('#modal').hidden = true; await wait();
+check('Hiding ancestor closes orphaned dropdown', !w.CommonControls.isOpen);
+d.querySelector('#modal').hidden = false; await wait();
+select.focus(); check('Native focus requests redirect to visible accessible control', d.activeElement === button);
+d.querySelector('#form').reset(); await wait();
+check('Form reset refreshes selected text', select.value === 'dark' && button.textContent.includes('Dark'));
+select.appendChild(new w.Option('Zebra', 'zebra')); await wait(); button.click(); key(button, 'End'); key(button, 'Enter');
+check('Dynamically appended options appear and commit', select.value === 'zebra');
+select.options[select.selectedIndex].textContent = '<script>renamed</script>'; await wait();
+check('Option labels render safely as text', button.textContent.includes('<script>renamed</script>') && !button.querySelector('script'));
+d.querySelector('#dynamic').innerHTML = '<label>Protocol<select data-k="protocol"><option value="ssh">SSH</option><option value="tcp">TCP</option></select></label>';
+await wait();
+let dynamic = d.querySelector('#dynamic select'), trigger = dynamic.parentElement.querySelector('button');
+check('Dynamically rendered form upgrades automatically', !!trigger && trigger.getAttribute('aria-label') === 'Protocol');
+dynamic.addEventListener('change', () => { d.querySelector('#dynamic').innerHTML = '<select aria-label="Protocol"><option value="tcp" selected>TCP updated</option></select>'; });
+trigger.click(); key(trigger, 'End'); key(trigger, 'Enter'); await wait();
+dynamic = d.querySelector('#dynamic select'); trigger = dynamic.parentElement.querySelector('button');
+check('Existing change handler can replace entire field without orphan popup', trigger.textContent.includes('TCP updated') && !w.CommonControls.isOpen);
+const count = d.querySelectorAll('.wt-select').length;
+for (let i = 0; i < 5; i++) w.CommonControls.refresh(); await wait();
+check('Repeated refresh is idempotent', d.querySelectorAll('.wt-select').length === count);
+trigger.click(); d.querySelector('#dynamic').replaceChildren(); await wait();
+check('Removing rendered form cleans active portal', !w.CommonControls.isOpen && !d.querySelector('.wt-select-menu'));
+const listenerCount = globalListeners.length;
+for (let i = 0; i < 100; i++) {
+  const form = d.querySelector('#form');
+  const replacement = d.createElement('select'); replacement.setAttribute('aria-label', 'Temporary');
+  replacement.innerHTML = '<option>one</option><option>two</option>';
+  form.appendChild(replacement); await wait();
+  replacement.parentElement.querySelector('button').click();
+  replacement.parentElement.remove(); await wait();
+}
+check('100 repeated mount/dispose cycles leave no floating dropdown', !w.CommonControls.isOpen && !d.querySelector('.wt-select-menu'));
+check('Repeated fields do not add global document or window listeners', globalListeners.length === listenerCount);
+check('Long-lived forms do not retain per-field reset callbacks', resetTargets.length === 1 && resetTargets[0] === d);
+check('Repeated removal leaves only the original native select in its form', d.querySelectorAll('#form select').length === 1 && d.querySelectorAll('#form .wt-select').length === 1);
+d.querySelector('#terminal').innerHTML = '<div><select><option>terminal output</option></select></div>'; await wait();
+check('Terminal output is excluded from control observer work', !d.querySelector('#terminal .wt-select'));
+const css = readFileSync(source + 'style.css', 'utf8'), tabs = readFileSync(source + 'tabbar.js', 'utf8');
+check('Titlebar action icons have one shared size across platforms', css.includes('--ico-titlebar: 16px') && !css.includes('body.is-mac { --ico:'));
+check('Split toolbar button participates in same center-aligned layout', tabs.includes('.ht-plus, .ht-caret, .ht-split { display:flex; align-items:center; justify-content:center;'));
+check('Output keyword highlights no longer draw persistent colored side lines', ['err', 'warn', 'ok', 'addr'].every(kind => !new RegExp(`\\.wt-hl-${kind}\\s*\\{[^}]*box-shadow`).test(css)));
+check('No runtime errors during complete interactions', errors.length === 0);
+for (const [pass, name] of results) console.log(`${pass ? 'PASS' : 'FAIL'} ${name}`);
+console.log(`\n${results.filter(r => r[0]).length}/${results.length} PASS; ${errors.length} JS errors`);
+dom.window.close();
+if (results.some(r => !r[0]) || errors.length) process.exitCode = 1;

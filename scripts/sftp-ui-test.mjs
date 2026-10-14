@@ -35,7 +35,7 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
   const { window: w } = dom, d = w.document;
   const stores = new Map();
   const localHome = '/home/local', remoteHomes = { 'ssh-a': '/home/alice', 'ssh-b': '/srv/bob' };
-  let revision = 1, persisted = 0, interceptor = null, nativeDrop, nativeTarget;
+  let revision = 1, persisted = 0, interceptor = null, nativeDrop, nativeTarget, hitPosition;
   function store(side, id) {
     const key = side === 'local' ? 'local' : id;
     if (!stores.has(key)) stores.set(key, new Map());
@@ -99,10 +99,12 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
   w.Profiles = { isOpen: () => false };
   w.confirm = message => { calls.push(['confirm', { message }]); return confirmAnswers.shift() ?? false; };
   w.Element.prototype.scrollIntoView = function () {};
-  w.Element.prototype.setPointerCapture = function () {};
+  w.Element.prototype.setPointerCapture = function (id) { (this.testPointerCapture ||= new Set()).add(id); };
+  w.Element.prototype.hasPointerCapture = function (id) { return !!this.testPointerCapture?.has(id); };
+  w.Element.prototype.releasePointerCapture = function (id) { this.testPointerCapture?.delete(id); };
   w.navigator.clipboard = { writeText: async text => calls.push(['clipboard', { text }]) };
   w.__TAURI__ = { webview: { getCurrentWebview: () => ({ onDragDropEvent: async callback => { nativeDrop = callback; return () => {}; } }) } };
-  d.elementFromPoint = () => nativeTarget;
+  d.elementFromPoint = (x, y) => { hitPosition = { x, y }; return nativeTarget; };
   // Menu rendering is the surrounding application's dependency. Menu handlers come from sftp.js.
   w.TabBar = {
     openMenu(x, y, build) {
@@ -118,7 +120,7 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
   for (const name of ['style.css', 'sftp.css']) {
     const style = d.createElement('style'); style.dataset.file = name; style.textContent = readFileSync(SRC + '/' + name, 'utf8'); d.head.appendChild(style);
   }
-  for (const name of ['icons.js', 'term.js', 'sftp.js']) w.eval(readFileSync(SRC + '/' + name, 'utf8'));
+  for (const name of ['icons.js', 'common-controls.js', 'term.js', 'sftp.js']) w.eval(readFileSync(SRC + '/' + name, 'utf8'));
   const P = w.SftpPanel, TM = T.term;
   let activeTab = active;
   TM.tabs = Object.fromEntries(active ? [[active.id, active]] : []); TM.order = active ? [active.id] : []; TM.activeTab = () => activeTab;
@@ -176,9 +178,25 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
     const n = sourceMap.get(args.upload ? args.local : args.remote), total = n.is_dir ? 0 : Buffer.byteLength(n.content);
     P.progress({ transferId: id, sessionId: args.id, done: total, total, status }); tr.resolve(null); transfers.delete(id); await settle();
   }
+  function pointer(type, target, opts = {}) {
+    const ev = new w.MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 10, ...opts });
+    Object.defineProperty(ev, 'pointerId', { value: opts.pointerId ?? 1 });
+    Object.defineProperty(ev, 'isPrimary', { value: opts.isPrimary ?? true });
+    target.dispatchEvent(ev);
+    return ev;
+  }
+  async function drag(fromSide, name, target) {
+    pointer('pointerdown', row(fromSide, name)); nativeTarget = target;
+    pointer('pointermove', q('#sftp-panel'), { clientX: 80, clientY: 80 });
+    pointer('pointerup', q('#sftp-panel'), { clientX: 80, clientY: 80 }); await settle();
+  }
   return { w, d, T, TM, P, calls, errors, toasts, confirmAnswers, transfers, q, qa, pane, rows, row, put, store, list, need, go, action, key, clickRow, menu, dialog, finish,
+    pointer, drag,
+    setHitTarget(target) { nativeTarget = target; },
+    get hitPosition() { return hitPosition; },
     setInterceptor(fn) { interceptor = fn; },
     async nativeDrop(paths, side) { nativeTarget = pane(side); await nativeDrop({ payload: { type: 'drop', paths, position: { x: 10, y: 10 } } }); await settle(); },
+    async nativeEvent(payload, target) { nativeTarget = target; await nativeDrop({ payload }); await settle(); },
     async activate(next) { activeTab = next; if (next) { TM.tabs[next.id] = next; if (!TM.order.includes(next.id)) TM.order.push(next.id); } P.onSessionChange(); await settle(); },
     get persisted() { return persisted; },
     async close() { for (const tr of transfers.values()) tr.reject(new Error('cancelled during test cleanup')); transfers.clear(); await settle(); dom.window.close(); },
@@ -402,13 +420,11 @@ await scenario('I 首次主目录解析 stale 防护', async h => {
 
 await scenario('K 拖放与失败重试', async h => {
   await h.P.open(); await h.go('remote', '/home/alice/target');
-  const dataTransfer = { setData() {}, effectAllowed: '' };
-  const start = new h.w.Event('dragstart', { bubbles: true, cancelable: true }); Object.defineProperty(start, 'dataTransfer', { value: dataTransfer }); h.row('local', 'alpha.txt').dispatchEvent(start);
+  await h.drag('local', 'alpha.txt', h.pane('local'));
   const same = new h.w.Event('drop', { bubbles: true, cancelable: true }); h.pane('local').dispatchEvent(same); await settle();
   check('K1 同栏内部拖放不尝试复制自己，preventDefault同步生效', same.defaultPrevented && !h.calls.some(([c]) => c === 'fs_copy'));
-  const nextStart = new h.w.Event('dragstart', { bubbles: true, cancelable: true }); Object.defineProperty(nextStart, 'dataTransfer', { value: dataTransfer }); h.row('local', 'alpha.txt').dispatchEvent(nextStart);
-  const other = new h.w.Event('drop', { bubbles: true, cancelable: true }); h.pane('remote').dispatchEvent(other); await until(() => h.transfers.size === 1); const dropped = h.P.tasks.at(-1); await h.finish(dropped.id);
-  check('K2 内部跨栏拖放排队并真实上传', other.defaultPrevented && h.store('remote', 'ssh-a').has('/home/alice/target/alpha.txt'));
+  await h.drag('local', 'alpha.txt', h.pane('remote')); await until(() => h.transfers.size === 1); const dropped = h.P.tasks.at(-1); await h.finish(dropped.id);
+  check('K2 Pointer跨栏拖放排队并真实上传，无需HTML5原生dragstart', h.store('remote', 'ssh-a').has('/home/alice/target/alpha.txt'));
   h.put('local', null, '/tmp/external.txt', { content: 'native drop' }); await h.nativeDrop(['/tmp/external.txt'], 'remote'); await until(() => h.transfers.size === 1); const native = h.P.tasks.at(-1); await h.finish(native.id);
   check('K3 原生文件拖入通过 fs_stat 校验并真实上传', h.calls.some(([c, a]) => c === 'fs_stat' && a.path === '/tmp/external.txt') && h.need('remote', 'ssh-a', '/home/alice/target/external.txt').content === 'native drop');
   let fail = true;
@@ -424,16 +440,100 @@ await scenario('K 拖放与失败重试', async h => {
   await h.finish(retry.id); check('K6 重试后成功传输并清除错误', retry.status === 'completed' && !retry.error && h.need('remote', 'ssh-a', '/home/alice/target/beta.txt').content.length === 60);
 });
 
+await scenario('L Pointer拖放完整路径', async h => {
+  await h.P.open();
+  const panel = h.q('#sftp-panel');
+  h.pointer('pointerdown', h.row('local', 'alpha.txt'));
+  h.pointer('pointermove', panel, { clientX: 12, clientY: 12 });
+  check('L1 未超过拖动阈值时不捕获指针、不创建悬浮层', !panel.hasPointerCapture(1) && !h.q('.sftp-drag-ghost'));
+  h.pointer('pointerup', panel, { clientX: 12, clientY: 12 }); h.clickRow('local', 'alpha.txt');
+  check('L2 普通点击仍能选择文件且不会开始传输', h.P.context.local.selected.has('/home/local/alpha.txt') && h.P.tasks.length === 0);
+  h.clickRow('local', 'beta.txt'); h.clickRow('local', 'zeta.log', { ctrlKey: true });
+  h.pointer('pointerdown', h.row('local', 'beta.txt')); h.setHitTarget(h.row('remote', 'docs'));
+  const move = h.pointer('pointermove', panel, { clientX: 90, clientY: 90 });
+  check('L3 跨平台Pointer拖动实际捕获、保留多选并显示目标目录', move.defaultPrevented && panel.hasPointerCapture(1) && h.q('.sftp-drag-ghost').textContent.includes('2 项 · 上传到 /home/alice/docs') && h.row('remote', 'docs').classList.contains('drop-directory'));
+  check('L4 透明浮层不拦截命中测试，源行禁用HTML5拖动', h.w.getComputedStyle(h.q('.sftp-drag-ghost')).pointerEvents === 'none' && h.row('local', 'beta.txt').draggable === false);
+  h.setHitTarget(h.pane('local')); h.pointer('pointermove', panel, { clientX: 60, clientY: 60 });
+  check('L5 移入同栏后清除旧目标高亮且提示另一栏', !h.q('.drop-target,.drop-directory') && h.q('.sftp-drag-ghost').textContent.includes('拖到另一栏'));
+  h.setHitTarget(h.row('remote', 'docs')); h.pointer('pointermove', panel, { clientX: 90, clientY: 90 });
+  h.put('local', null, '/tmp/unrelated.txt', { content: 'must not upload' });
+  await h.nativeEvent({ type: 'drop', paths: ['/tmp/unrelated.txt'], position: { x: 90, y: 90 } }, h.row('remote', 'docs'));
+  const domDrop = new h.w.Event('drop', { bubbles: true, cancelable: true }); h.pane('remote').dispatchEvent(domDrop);
+  check('L6 Native/DOM事件竞争不会重复或注入Pointer拖动传输', domDrop.defaultPrevented && h.P.tasks.length === 0 && !h.calls.some(([c, a]) => c === 'fs_stat' && a.path === '/tmp/unrelated.txt'));
+  h.pointer('pointerup', panel, { clientX: 90, clientY: 90 }); await until(() => h.transfers.size === 1);
+  check('L7 释放时传输两项到悬停文件夹，所有悬浮层和捕获已释放', h.P.tasks.length === 2 && h.P.tasks.every(t => t.target.startsWith('/home/alice/docs/')) && !h.q('.sftp-drag-ghost,.drop-target,.drop-directory') && !panel.hasPointerCapture(1));
+  for (const task of h.P.tasks) { await until(() => h.transfers.has(task.id)); await h.finish(task.id); }
+  check('L8 多选Pointer拖动真实上传两项，未上传竞争事件文件', h.need('remote', 'ssh-a', '/home/alice/docs/beta.txt').content.length === 60 && h.need('remote', 'ssh-a', '/home/alice/docs/zeta.log').content.length === 180 && !h.store('remote', 'ssh-a').has('/home/alice/docs/unrelated.txt'));
+  await h.drag('remote', 'alpha.txt', h.row('local', 'target')); await until(() => h.transfers.size === 1); const download = h.P.tasks.at(-1); await h.finish(download.id);
+  check('L9 远程拖到本地文件夹真实下载', download.direction === 'down' && h.need('local', null, '/home/local/target/alpha.txt').content === 'alpha original');
+});
+
+await scenario('M 拖放取消与遮挡', async h => {
+  await h.P.open();
+  const panel = h.q('#sftp-panel'), start = () => {
+    h.pointer('pointerdown', h.row('local', 'beta.txt')); h.setHitTarget(h.row('remote', 'target'));
+    h.pointer('pointermove', panel, { clientX: 90, clientY: 90 });
+  };
+  start(); h.pointer('pointercancel', panel); h.pointer('pointerup', panel, { clientX: 90, clientY: 90 });
+  check('M1 Pointer取消清理并且不传输', !h.q('.sftp-drag-ghost,.drop-target') && h.P.tasks.length === 0);
+  start(); panel.dispatchEvent(new h.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check('M2 Escape只取消当前拖动，文件面板保持开启', h.P.isOpen() && !h.q('.sftp-drag-ghost') && h.P.tasks.length === 0);
+  start(); await h.activate(tab('ssh-b', 'beta.example', 'bob')); h.pointer('pointerup', panel, { clientX: 90, clientY: 90 });
+  check('M3 切换会话取消旧拖动且不向新会话发送文件', h.P.context.id === 'ssh-b' && h.P.tasks.length === 0 && !h.q('.sftp-drag-ghost'));
+  start(); h.P.hide(); h.pointer('pointerup', panel, { clientX: 90, clientY: 90 });
+  check('M4 隐藏工作区释放指针和浮层，不遗留传输', !panel.hasPointerCapture(1) && !h.q('.sftp-drag-ghost') && h.P.tasks.length === 0);
+  await h.P.open(); start(); await h.go('local', '/home/local/docs'); h.pointer('pointermove', panel, { clientX: 91, clientY: 91 }); h.pointer('pointerup', panel, { clientX: 91, clientY: 91 });
+  check('M5 源目录导航使拖动失效，不能发送旧列表文件', !h.q('.sftp-drag-ghost') && h.P.tasks.length === 0);
+  await h.action(null, 'settings'); h.put('local', null, '/tmp/modal.txt', { content: 'blocked' });
+  await h.nativeEvent({ type: 'drop', paths: ['/tmp/modal.txt'], position: { x: 90, y: 90 } }, h.pane('remote'));
+  check('M6 模态弹层阻止底下文件窗接收原生拖动', h.P.tasks.length === 0 && !h.calls.some(([c, a]) => c === 'fs_stat' && a.path === '/tmp/modal.txt'));
+  await h.dialog('取消');
+  const outside = h.d.createElement('section'); outside.className = 'sftp-pane'; outside.dataset.side = 'remote'; h.d.body.appendChild(outside);
+  await h.nativeEvent({ type: 'over', position: { x: 90, y: 90 } }, outside);
+  check('M7 面板外同名元素不会成为传输目标', !h.q('.drop-target'));
+});
+
+await scenario('N 原生文件拖动坐标/去重/路径快照', async h => {
+  await h.P.open(); h.put('local', null, '/tmp/external.txt', { content: 'native content' });
+  Object.defineProperty(h.w, 'devicePixelRatio', { value: 2, configurable: true });
+  await h.nativeEvent({ type: 'enter', paths: ['/tmp/external.txt'], position: { x: 40, y: 60 } }, h.row('remote', 'target'));
+  equal('N1 原生物理坐标按DPR转成DOM坐标', h.hitPosition, { x: 20, y: 30 });
+  check('N2 原生文件悬停在目录行显示目录目标', h.row('remote', 'target').classList.contains('drop-directory'));
+  await h.nativeEvent({ type: 'over', position: { x: 40, y: 60 } }, h.pane('local'));
+  check('N3 原生光标移栏仅保留当前栏高亮', h.pane('local').classList.contains('drop-target') && !h.pane('remote').classList.contains('drop-target') && !h.q('.drop-directory'));
+  await h.nativeEvent({ type: 'leave' }, null); check('N4 原生取消清除所有目标', !h.q('.drop-target,.drop-directory'));
+  await h.nativeEvent({ type: 'drop', paths: ['/tmp/external.txt', '/tmp/external.txt'], position: { x: 40, y: 60 } }, h.row('remote', 'target'));
+  await until(() => h.transfers.size === 1); const tr = h.P.tasks.at(-1); await h.finish(tr.id);
+  check('N5 同次原生拖入去重并发送至目录行而非当前目录', h.P.tasks.length === 1 && h.calls.filter(([c, a]) => c === 'fs_stat' && a.path === '/tmp/external.txt').length === 1 && h.need('remote', 'ssh-a', '/home/alice/target/external.txt').content === 'native content');
+  let release;
+  h.put('local', null, '/tmp/delayed.txt', { content: 'captured target' });
+  h.setInterceptor((command, args) => command === 'fs_stat' && args.path === '/tmp/delayed.txt' ? new Promise(resolve => { release = () => resolve({ name: 'delayed.txt', path: args.path, is_dir: false, size: 15 }); }) : null);
+  const pending = h.nativeEvent({ type: 'drop', paths: ['/tmp/delayed.txt'], position: { x: 40, y: 60 } }, h.row('remote', 'target'));
+  await until(() => release); await h.go('remote', '/home/alice/docs'); await h.activate(tab('ssh-b', 'beta.example', 'bob')); release(); await pending;
+  await until(() => h.transfers.size === 1); const captured = h.P.tasks.at(-1); await h.finish(captured.id);
+  check('N6 stat慢响应期间导航/切换会话仍保持drop时的目录和SSH会话', captured.sessionId === 'ssh-a' && captured.target === '/home/alice/target/delayed.txt' && h.store('remote', 'ssh-a').has(captured.target) && !h.store('remote', 'ssh-b').has('/srv/bob/delayed.txt'));
+  let releaseClosed;
+  h.setInterceptor((command, args) => command === 'fs_stat' && args.path === '/tmp/closed.txt' ? new Promise(resolve => { releaseClosed = () => resolve({ name: 'closed.txt', path: args.path, is_dir: false, size: 5 }); }) : null);
+  const closing = h.nativeDrop(['/tmp/closed.txt'], 'remote'); await until(() => releaseClosed); h.P.hide(); await h.P.open(); releaseClosed(); await closing;
+  check('N7 stat等待期间关闭再打开面板也取消旧原生拖动', h.P.tasks.length === 2);
+});
+
 await scenario('J 主主题继承', async h => {
   await h.P.open(); await h.action(null, 'settings'); const select = h.q('[data-pref="layout"]');
   const rule = (file, selector) => [...h.q(`style[data-file="${file}"]`).sheet.cssRules].find(r => r.selectorText === selector)?.style;
   equal('J1 SFTP 外壳、列表、弹层全部引用主主题令牌', [rule('sftp.css', '#sftp-panel').getPropertyValue('background'), rule('sftp.css', '.sftp-pane').getPropertyValue('background'), rule('sftp.css', '.sftp-modal-box').getPropertyValue('background')], ['var(--bg2)', 'var(--bg)', 'var(--bg2)']);
   equal('J2 SFTP 下拉框/option 继承公共主题控件规则', [rule('style.css', 'input, select, textarea').getPropertyValue('background'), rule('style.css', 'option, optgroup').getPropertyValue('background')], ['var(--input-bg)', 'var(--input-bg)']);
+  const trigger = select.parentElement.querySelector('.wt-select-trigger');
+  check('J5 SFTP动态对话框真正升级为现代下拉按钮', !!trigger && trigger.getAttribute('role') === 'combobox' && select.classList.contains('wt-select-native'));
+  trigger.click(); await settle(); const dropdown = h.q('.wt-select-menu');
+  check('J6 现代下拉真实打开，选项映射原始业务select', !!dropdown && dropdown.getAttribute('role') === 'listbox' && dropdown.querySelectorAll('[role="option"]').length === 4 && trigger.getAttribute('aria-expanded') === 'true');
   for (const [name, theme] of Object.entries(h.TM.THEMES)) {
     h.TM.applyTheme(name);
     check(`J3 ${name} 正确更新所有 SFTP 依赖令牌`, ['--bg', '--bg2', '--input-bg', '--fg', '--accent', '--color-scheme'].every(k => h.d.documentElement.style.getPropertyValue(k) === theme.vars[k]));
-    check(`J4 ${name} 已打开下拉框保持选择与 DOM`, h.q('[data-pref="layout"]') === select && select.value === 'horizontal' && h.d.documentElement.style.colorScheme === theme.vars['--color-scheme']);
+    check(`J4 ${name} 已打开现代下拉框保持选择与 DOM`, h.q('[data-pref="layout"]') === select && select.value === 'horizontal' && h.q('.wt-select-menu') === dropdown && h.d.documentElement.style.colorScheme === theme.vars['--color-scheme']);
   }
+  dropdown.querySelector('[data-index="2"]').click(); await settle(); await h.dialog('保存');
+  check('J7 通过现代下拉真实选择后保存SFTP布局', h.T.s.sftp.layout === 'vertical' && h.q('#sftp-panel').dataset.layout === 'vertical' && !h.q('.wt-select-menu'));
 });
 
 console.log(results.map(r => `${r.pass ? 'PASS' : 'FAIL'} ${r.name}${r.detail ? ' — ' + r.detail : ''}`).join('\n'));

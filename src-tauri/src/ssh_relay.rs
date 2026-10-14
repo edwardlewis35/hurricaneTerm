@@ -18,6 +18,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 // ---------------------------------------------------------------- 双工抽象
@@ -223,6 +224,22 @@ pub enum Dialed {
 }
 
 impl Dialed {
+    /// Process stdio readers need an explicit cancellation flag: merely
+    /// closing the Tokio duplex cannot wake a blocking read from an idle
+    /// ProxyCommand which ignores EOF on stdin.
+    pub fn split_with_cancel(self) -> (BoxedReader, BoxedWriter, Option<Arc<AtomicBool>>) {
+        match self {
+            Dialed::Process(mut process) => {
+                let cancel = process.cancel.clone();
+                let (reader, writer) = process.split_duplex();
+                (reader, writer, Some(cancel))
+            }
+            dialed => {
+                let (reader, writer) = dialed.split();
+                (reader, writer, None)
+            }
+        }
+    }
     pub fn into_boxed(self) -> BoxedDuplex {
         match self {
             Dialed::Tcp(s) => Box::new(s),
@@ -594,7 +611,9 @@ pub fn dial_proxy_command(p: &ProxyCommandSpec, target: &Target) -> io::Result<P
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    // Backpressure caps queued proxy output at 16 * 32 KiB instead of letting
+    // a fast stdout/stderr producer grow an unbounded allocation queue.
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(16);
     for stream in [Box::new(stdout) as Box<dyn Read + Send>, Box::new(stderr)] {
         let tx = tx.clone();
         std::thread::spawn(move || {
@@ -619,6 +638,7 @@ pub fn dial_proxy_command(p: &ProxyCommandSpec, target: &Target) -> io::Result<P
         stdin: Some(stdin),
         rx: Some(rx),
         pending: VecDeque::new(),
+        cancel: Arc::new(AtomicBool::new(false)),
     })
 }
 
@@ -630,6 +650,7 @@ pub struct ProcessDuplex {
     stdin: Option<std::process::ChildStdin>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
     pending: VecDeque<u8>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl ProcessDuplex {
@@ -639,7 +660,7 @@ impl ProcessDuplex {
         let stdin = self.stdin.take().expect("stdin held");
         let rx = self.rx.take().expect("rx held");
         (
-            Box::new(ProcReader { child, rx, pending: std::mem::take(&mut self.pending) }),
+            Box::new(ProcReader { child, rx, pending: std::mem::take(&mut self.pending), cancel: self.cancel.clone() }),
             Box::new(ProcWriter(stdin)),
         )
     }
@@ -649,14 +670,17 @@ struct ProcReader {
     child: std::process::Child,
     rx: mpsc::Receiver<Vec<u8>>,
     pending: VecDeque<u8>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Read for ProcReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pending.is_empty() {
-            match self.rx.recv() {
+        while self.pending.is_empty() {
+            if self.cancel.load(Ordering::Acquire) { return Ok(0); }
+            match self.rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(chunk) => self.pending.extend(chunk),
-                Err(_) => return Ok(0), // 两路读线程都结束 → EOF
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(0),
             }
         }
         let n = buf.len().min(self.pending.len());
@@ -750,17 +774,28 @@ impl Drop for ProcessDuplex {
 /// T 约束）。内部 tokio::io::duplex 双缓冲 + 两个泵任务；须在 tokio 运行时上下文调用。
 /// 纯 TCP 隧道优先走 Dialed::Tcp → tokio::net::TcpStream::from_std（零额外拷贝）。
 pub async fn to_tokio(
+    rd: BoxedReader,
+    wr: BoxedWriter,
+) -> io::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static> {
+    to_tokio_with_cancel(rd, wr, None).await
+}
+
+pub async fn to_tokio_with_cancel(
     mut rd: BoxedReader,
     mut wr: BoxedWriter,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> io::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (mut push_tx, push_rx) = tokio::io::duplex(64 * 1024); // std→russh
     let (pull_tx, mut pull_rx) = tokio::io::duplex(64 * 1024); // russh→std
+    let cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let reader_cancel = cancel.clone();
 
     // std → push_tx：阻塞 read 放 spawn_blocking，避免占死工作线程；
     // 句柄随闭包往返（spawn_blocking 消耗捕获，故把 rd 传回来）
     tokio::spawn(async move {
         loop {
+            if reader_cancel.load(Ordering::Acquire) { break; }
             let (read, rd_back) = tokio::task::spawn_blocking(move || {
                 let mut b = vec![0u8; 32 * 1024];
                 let out = match rd.read(&mut b) {
@@ -812,12 +847,18 @@ pub async fn to_tokio(
     Ok(TokioBridge {
         rd: push_rx,
         wr: pull_tx,
+        cancel,
     })
 }
 
 struct TokioBridge {
     rd: tokio::io::DuplexStream,
     wr: tokio::io::DuplexStream,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for TokioBridge {
+    fn drop(&mut self) { self.cancel.store(true, Ordering::Release); }
 }
 
 impl tokio::io::AsyncRead for TokioBridge {
@@ -1305,6 +1346,39 @@ mod tests {
             line.push(b[0]);
         }
         assert_eq!(line, b"async-ping");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_idle_proxy_bridge_kills_and_reaps_its_process() {
+        let directory = std::env::temp_dir().join(format!("hurricane-proxy-close-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let pid_file = directory.join("proxy.pid");
+        std::fs::write(directory.join("fixture.sh"), "printf '%s' \"$$\" > proxy.pid\ntrap '' HUP\nexec /bin/sleep 600\n").unwrap();
+        // exec leaves exactly one fixture process. It ignores HUP and never
+        // reads stdin, so dropping the write half alone cannot make it exit.
+        let proxy = Proxy::ProxyCommand(ProxyCommandSpec {
+            cmd: "/bin/sh fixture.sh".into(),
+            working_directory: Some(directory.to_string_lossy().into()),
+            environment: Vec::new(),
+        });
+        let (reader, writer, cancel) = dial_any(&proxy, "fixture", 22, Duration::from_secs(2)).unwrap().split_with_cancel();
+        let stream = to_tokio_with_cancel(reader, writer, cancel).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let pid: libc::pid_t = loop {
+            if let Ok(pid) = std::fs::read_to_string(&pid_file).and_then(|text| text.parse().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))) { break pid; }
+            assert!(tokio::time::Instant::now() < deadline, "fixture process started");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        // Ensure the reader pump has entered its wait for process output.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(stream);
+        let reaped = tokio::time::timeout(Duration::from_secs(2), async {
+            while unsafe { libc::kill(pid, 0) } == 0 { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await;
+        if reaped.is_err() { unsafe { libc::kill(pid, libc::SIGKILL); } }
+        std::fs::remove_dir_all(directory).unwrap();
+        reaped.expect("dropping an idle ProxyCommand bridge must kill and reap its owned process");
     }
 
     #[test]

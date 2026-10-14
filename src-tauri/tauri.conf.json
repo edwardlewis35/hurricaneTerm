@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "hurricaneTerm",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "identifier": "io.github.edwardlewis35.hurricaneterm",
   "build": {
     "frontendDist": "../dist",
@@ -10,6 +10,7 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "hurricaneTerm",
@@ -20,7 +21,8 @@
         "center": true,
         "resizable": true,
         "decorations": false,
-        "backgroundColor": "#0e151d"
+        "transparent": true,
+        "backgroundColor": "#00000000"
       }
     ],
     "security": {

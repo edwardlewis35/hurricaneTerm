@@ -81,6 +81,10 @@
 
     let h = `<h2 class="st-h">外观</h2><p class="st-sub">主题、字号与窗口元素显隐。</p>`;
     h += card('主题', grid);
+    const opacity = window.Appearance ? Appearance.percentage() : 100;
+    h += card('背景透明度', row('背景不透明度', '只调整背景，文字和图标保持清晰。100% 为实色。',
+      `<div class="st-opacity-control"><input type="range" min="20" max="100" step="1" value="${opacity}" data-opacity aria-label="背景不透明度"><output data-opacity-value>${opacity}%</output></div>`)
+      + `<div class="st-opacity-preview"><div class="st-opacity-sample">hurricaneTerm · 文本保持清晰</div></div><p class="st-opacity-note">${window.Appearance?.isNative() ? '降低不透明度会透出窗口背后的内容。' : '浏览器使用棋盘背景预览透明度；桌面版会透出窗口背后的内容。'}</p>`);
     h += card('字号与状态栏',
       row('终端字号', '也可用 Ctrl+= / Ctrl+- 调整，范围 8–28',
         `<input type="number" min="8" max="28" step="1" data-num="fontSize" value="${esc(T.s.fontSize)}" style="width:78px">`)
@@ -112,7 +116,7 @@
       + row('会话输出落盘（PuTTY Logging）', '新会话的终端输出写入 配置目录/logs/session-*.log；仅对新开会话生效', toggle('sessionLog', !!T.s.sessionLog))
     );
     h += card('输出高亮',
-      row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中行持久着色', toggle('builtinHighlight', T.s.builtinHighlight !== false))
+      row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中关键词短暂着色，6秒后消退', toggle('builtinHighlight', T.s.builtinHighlight !== false))
       + `<div class="st-row"><div class="st-l"><i>
           <span class="wt-hl-err" style="padding:0 6px;border-radius:3px">error / failed / fatal</span>
           <span class="wt-hl-warn" style="padding:0 6px;border-radius:3px">warn / timeout</span>
@@ -246,6 +250,11 @@
       };
     });
     // 数字
+    const opacity = bodyEl.querySelector('[data-opacity]');
+    if (opacity && window.Appearance) {
+      opacity.addEventListener('input', () => Appearance.setOpacity(opacity.value, { persist: false }));
+      opacity.addEventListener('change', () => Appearance.setOpacity(opacity.value));
+    }
     bodyEl.querySelectorAll('[data-num]').forEach((i) => {
       i.onchange = () => {
         const v = Math.max(8, Math.min(28, parseInt(i.value, 10) || 13));

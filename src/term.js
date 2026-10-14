@@ -41,7 +41,7 @@
   const CHROME_DARK = {
     bg: '#131d27', bg2: '#1d272d', bg3: '#0e151d', bg4: '#20333e',
     fg: '#cccccc', fg2: 'rgba(255,255,255,.5)', fg3: '#ced9e2',
-    accent: '#3ecf8e', accentBg: 'rgba(62,207,142,.16)', accentSoft: 'rgba(62,207,142,.32)',
+    accent: '#4fadff', accentBg: 'rgba(0,89,165,.349)', accentSoft: 'rgba(79,173,255,.3)',
     border: 'rgba(255,255,255,.1)', borderSolid: '#24313c',
     inputBg: '#181e23', surface: 'rgba(255,255,255,.025)', surfaceHover: 'rgba(255,255,255,.05)',
     danger: '#d9534f', warn: '#f0ad4e', ok: '#5cb85c',
@@ -50,7 +50,7 @@
     scheme: 'light',
     bg: '#f2f3f5', bg2: '#ffffff', bg3: '#e6e8eb', bg4: '#dfe2e6',
     fg: '#2b2b2b', fg2: 'rgba(0,0,0,.5)', fg3: '#1f2328',
-    accent: '#0e9f6e', accentBg: 'rgba(14,159,110,.14)', accentSoft: 'rgba(14,159,110,.3)',
+    accent: '#4fadff', accentBg: 'rgba(0,89,165,.349)', accentSoft: 'rgba(79,173,255,.3)',
     border: 'rgba(0,0,0,.1)', borderSolid: '#d6d9dd',
     inputBg: '#ffffff', surface: 'rgba(0,0,0,.03)', surfaceHover: 'rgba(0,0,0,.06)',
     danger: '#c82829', warn: '#b58900', ok: '#718c00',
@@ -59,7 +59,7 @@
   // Tabby Default（终端）
   const TABBY_DARK_TERM = {
     background: '#171717', foreground: '#cacaca', cursor: '#bbbbbb', cursorAccent: '#171717',
-    selectionBackground: 'rgba(62,207,142,.26)',
+    selectionBackground: '#0059a559',
     black: '#000000', red: '#ff615a', green: '#b1e969', yellow: '#ebd99c', blue: '#5da9f6',
     magenta: '#e86aff', cyan: '#82fff7', white: '#dedacf',
     brightBlack: '#313131', brightRed: '#f58c80', brightGreen: '#ddf88f', brightYellow: '#eee5b2',
@@ -68,7 +68,7 @@
   // Tabby Default Light（终端）
   const TABBY_LIGHT_TERM = {
     background: '#ffffff', foreground: '#4d4d4c', cursor: '#4d4d4c', cursorAccent: '#ffffff',
-    selectionBackground: 'rgba(14,159,110,.18)',
+    selectionBackground: '#0059a559',
     black: '#000000', red: '#c82829', green: '#718c00', yellow: '#eab700', blue: '#4271ae',
     magenta: '#8959a8', cyan: '#3e999f', white: '#ffffff',
     brightBlack: '#000000', brightRed: '#c82829', brightGreen: '#718c00', brightYellow: '#eab700',
@@ -161,7 +161,8 @@
       const term = new Terminal({
         fontFamily: this.fontStack(),
         fontSize: T.s.fontSize,
-        theme: THEMES[T.s.theme].term,
+        theme: window.Appearance ? Appearance.terminalTheme(THEMES[T.s.theme].term) : THEMES[T.s.theme].term,
+        allowTransparency: true,
         scrollback: 10000,
         allowProposedApi: true,
         macOptionIsMeta: false,
@@ -378,6 +379,7 @@
         for (const x of peers) x.wrap.style.display = x === shown ? 'block' : 'none';
       }
       requestAnimationFrame(() => {
+        if (t._closing || this.tabs[id] !== t || this.active !== id) return;
         // 分屏和换轴后，两侧终端都需要按各自窗格重新计算行列。
         for (const x of Object.values(this.tabs)) {
           if (x.wrap.style.display !== 'none') { try { x.fit.fit(); } catch (e) {} }
@@ -397,6 +399,10 @@
     async startLog(tab) {
       try {
         tab.logPath = await T.invoke('session_log_start', { id: tab.id });
+        if (tab._closing || this.tabs[tab.id] !== tab) {
+          await T.invoke('session_log_stop', { id: tab.id });
+          return;
+        }
         tab.logging = true;
         tab.logBuf = '';
         UI.log('会话日志已开启：' + tab.logPath);
@@ -405,16 +411,21 @@
 
     async close(id) {
       const t = this.tabs[id];
-      if (!t) return;
+      if (!t || t._closing) return;
+      t._closing = true;
       if (t.logging) {
         T.flushLogs(t);
         T.invoke('session_log_stop', { id }).catch(() => {});
         t.logging = false;
       }
-      try { await T.invoke('kill', { id }); } catch (e) {}
+      // Close the view immediately. Native cleanup must not keep a disposed
+      // terminal accepting output, nor leave the UI waiting on a child process.
+      clearTimeout(t._outputTimer);
+      t._outputParts = [];
+      this.clearHighlights(t);
+      delete this.tabs[id];
       t.term.dispose();
       t.wrap.remove();
-      delete this.tabs[id];
       this.order = this.order.filter((x) => x !== id);
       if (this.active === id) {
         const inGroup = this.order.filter((x) => this.tabs[x].group === t.group);
@@ -426,6 +437,51 @@
       if (this.active) this.activate(this.active);
       else if (window.Home) Home.show();
       UI.status();
+      if (window.SftpPanel) SftpPanel.onSessionChange();
+      try { await T.invoke('kill', { id }); }
+      catch (e) { UI.log('会话清理失败：' + String(e)); }
+    },
+
+    // One xterm write at a time, coalescing short IPC bursts. Preserve order and
+    // all output; callbacks from a closed tab can never re-enter its renderer.
+    receiveOutput(tab, data) {
+      if (tab._closing || this.tabs[tab.id] !== tab || !data) return;
+      (tab._outputParts ||= []).push(data);
+      if (!tab._outputWriting && !tab._outputTimer)
+        tab._outputTimer = setTimeout(() => this.flushOutput(tab), 16);
+    },
+    flushOutput(tab) {
+      tab._outputTimer = null;
+      if (tab._closing || this.tabs[tab.id] !== tab || tab._outputWriting) return;
+      const parts = tab._outputParts || [];
+      let index = tab._outputIndex || 0, length = 0;
+      const batch = [];
+      while (index < parts.length && length < 65536) {
+        const part = parts[index], room = 65536 - length;
+        if (part.length <= room) { index++; batch.push(part); length += part.length; }
+        else {
+          let take = room;
+          // A UTF-16 emoji must not be cut between its surrogate code units.
+          const lead = part.charCodeAt(take - 1), trail = part.charCodeAt(take);
+          if (lead >= 0xd800 && lead <= 0xdbff && trail >= 0xdc00 && trail <= 0xdfff) take--;
+          if (take) { batch.push(part.slice(0, take)); parts[index] = part.slice(take); length += take; }
+          break;
+        }
+      }
+      if (index === parts.length) { tab._outputParts = []; tab._outputIndex = 0; }
+      else if (index > 256) { tab._outputParts = parts.slice(index); tab._outputIndex = 0; }
+      else tab._outputIndex = index;
+      if (!batch.length) return;
+      const data = batch.join('');
+      tab._outputWriting = true;
+      tab.term.write(data, () => {
+        tab._outputWriting = false;
+        if (tab._closing || this.tabs[tab.id] !== tab) return;
+        this.runHighlights(tab);
+        if ((tab._outputParts || []).length > (tab._outputIndex || 0))
+          tab._outputTimer = setTimeout(() => this.flushOutput(tab), 0);
+      });
+      this.runTriggers(tab, data);
     },
 
     renderTabbar() {
@@ -598,6 +654,7 @@
         t.term.options.theme = THEMES[name].term;
         try { t.fit.fit(); } catch (e) {}
       }
+      if (window.Appearance) Appearance.apply();
       T.persistSettings();
       UI.status();
       if (window.Settings && Settings.isOpen()) Settings.render();
@@ -618,8 +675,9 @@
 
     /* ---- triggers engine — 后端语义引擎（re/triggers.rs）优先，v0 本地回退 ---- */
     runTriggers(tab, data) {
-      if (!T.s.triggers.length) return;
+      if (tab._closing || !T.s.triggers.length) return;
       T.invoke('triggers_feed', { data }).then((acts) => {
+        if (tab._closing) return;
         for (const a of acts || []) {
           if (a.action === 'send') {
             T.invoke('write', { id: tab.id, data: a.text }).catch(() => {});
@@ -640,18 +698,20 @@
     },
 
     highlightHit(tab) {
+      if (tab._closing) return;
       try {
         const m = tab.term.registerMarker(0);
+        if (!m) return;
         const d = tab.term.registerDecoration({ marker: m, x: 1, width: Math.max(1, tab.term.cols - 2) });
+        if (!d) { m.dispose(); return; }
         d.onRender((el) => el.classList.add('wt-hit'));
-        setTimeout(() => { try { d.dispose(); } catch (e) {} }, 4000);
+        const entry = { d, m };
+        (tab._hitHighlights ||= new Set()).add(entry);
+        entry.timer = setTimeout(() => { d.dispose(); m.dispose(); tab._hitHighlights.delete(entry); }, 4000);
       } catch (e) {}
     },
 
-    /* ---- 内置高亮：关键字/地址着色（持久行装饰） ----
-     * 输出高亮设计：error/warn/ok/地址 四类默认规则，
-     * 命中即在所在行加持久着色装饰（不随滚动消失），可在设置页整体关闭。
-     */
+    /* Highlight parsed terminal cells, not estimated raw output lines. */
     HIGHLIGHT_RULES: [
       { kind: 'err', re: /\b(error|errors|failed|failure|fatal|panic|denied|refused|rejected)\b/i, cls: 'wt-hl-err' },
       { kind: 'warn', re: /\b(warn|warning|caution|timeout|timed out|deprecat)\b/i, cls: 'wt-hl-warn' },
@@ -659,55 +719,101 @@
       { kind: 'addr', re: /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|https?:\/\/[^\s'"]+/i, cls: 'wt-hl-addr' },
     ],
 
-    highlightLine(tab, cls, offset) {
+    highlightLine(tab, cls, offset, x, width) {
       try {
-        const m = tab.term.registerMarker(offset || 0);
-        const d = tab.term.registerDecoration({ marker: m, x: 1, width: Math.max(1, tab.term.cols - 2) });
+        const m = tab.term.registerMarker(offset);
+        if (!m) return null;
+        const d = tab.term.registerDecoration({ marker: m, x, width });
+        if (!d) { m.dispose(); return null; }
         d.onRender((el) => el.classList.add(cls));
-        tab._hls = tab._hls || [];
-        tab._hls.push(d);
         return d;
       } catch (e) { return null; }
     },
-
-    // 必须在 term.write 的回调里调用：xterm 解析是异步的，回调时光标才落在正确行。
-    // 超宽行会换行成多个视觉行：按 ceil(len/cols) 逐行盖满，否则只盖一行会像一条游离色带。
-    // 内置高亮为「闪烁提示」语义：6 秒后自动消退，避免滚屏时残留。
-    runHighlights(tab, data) {
-      if (T.s.builtinHighlight === false || !data) return;
-      const cols = Math.max(1, tab.term.cols);
-      const lines = data.split('\n');
-      if (lines.length && lines[lines.length - 1] === '') lines.pop();
-      if (!lines.length) return;
-      const made = [];
-      let cursorOffset = 0;                       // 0 = 光标所在行（write 回调时位于末行之后）
-      for (let j = lines.length - 1; j >= 0; j--) {
-        const line = lines[j];
-        const rows = Math.min(40, Math.max(1, Math.ceil(line.length / cols)));
-        const firstOff = cursorOffset - rows;
-        cursorOffset = firstOff;
-        const hit = this.HIGHLIGHT_RULES.find((r) => r.re.test(line));
-        if (!hit) continue;
-        for (let r = 0; r < rows; r++) {
-          const d = this.highlightLine(tab, hit.cls, firstOff + r);
-          if (d) made.push(d);
+    disposeHighlight(entry) {
+      for (const d of entry.decorations) { d.dispose(); d.marker.dispose(); }
+      entry.anchor.dispose();
+    },
+    clearHighlights(tab) {
+      clearTimeout(tab._highlightTimer);
+      for (const entry of tab._highlightEntries || []) this.disposeHighlight(entry);
+      for (const entry of tab._hitHighlights || []) { clearTimeout(entry.timer); entry.d.dispose(); entry.m.dispose(); }
+      tab._hitHighlights?.clear();
+      tab._highlightEntries = []; tab._hls = []; tab._highlightTimer = null;
+    },
+    expireHighlights(tab) {
+      clearTimeout(tab._highlightTimer);
+      const now = Date.now();
+      tab._highlightEntries = (tab._highlightEntries || []).filter((entry) => {
+        if (entry.anchor.isDisposed) { this.disposeHighlight(entry); return false; }
+        if (entry.expires <= now && entry.decorations.length) {
+          for (const d of entry.decorations) { d.dispose(); d.marker.dispose(); }
+          entry.decorations = [];
         }
-      }
-      if (made.length) {
-        tab._hls = tab._hls || [];
-        setTimeout(() => {
-          for (const d of made) {
-            const i = tab._hls.indexOf(d);
-            if (i >= 0) tab._hls.splice(i, 1);
-            try { d.dispose(); } catch (e) {}
+        return true; // retain visible row identity so faded text cannot relight
+      });
+      tab._hls = tab._highlightEntries.flatMap(e => e.decorations);
+      const pending = tab._highlightEntries.filter(e => e.decorations.length);
+      tab._highlightTimer = pending.length && !tab._closing
+        ? setTimeout(() => this.expireHighlights(tab), Math.max(1, Math.min(...pending.map(e => e.expires)) - now)) : null;
+    },
+    runHighlights(tab) {
+      if (tab._closing || T.s.builtinHighlight === false) { this.clearHighlights(tab); return; }
+      const term = tab.term, buffer = term.buffer.active;
+      if (buffer.type === 'alternate') { this.clearHighlights(tab); return; }
+      if (!buffer.getLine) return;
+      this.expireHighlights(tab);
+      const cursor = buffer.baseY + buffer.cursorY;
+      // Bound work to the bottom viewport; use isWrapped and actual cell widths
+      // for ANSI, CJK, emoji and words split over multiple visual rows.
+      const last = Math.min(buffer.length - 1, buffer.baseY + (term.rows || 24) - 1);
+      let first = Math.max(buffer.baseY, last - 119);
+      while (first > 0 && last - first < 119 && buffer.getLine(first)?.isWrapped) first--;
+      tab._highlightEntries = tab._highlightEntries.filter(entry => {
+        if (entry.anchor.line >= first && entry.anchor.line <= last) return true;
+        this.disposeHighlight(entry); return false;
+      });
+      for (let row = first; row <= last;) {
+        const start = row, lines = []; let text = '';
+        do {
+          const line = buffer.getLine(row); if (!line) break;
+          const wrappedNext = row < last && buffer.getLine(row + 1)?.isWrapped;
+          const value = line.translateToString(!wrappedNext, 0, term.cols);
+          lines.push({ row, line, value }); text += value; row++;
+        } while (row <= last && buffer.getLine(row)?.isWrapped);
+        if (row === start) break;
+        const old = tab._highlightEntries.find(e => e.anchor.line === start);
+        if (old?.text === text) continue;
+        if (old) { this.disposeHighlight(old); tab._highlightEntries.splice(tab._highlightEntries.indexOf(old), 1); }
+        const rule = this.HIGHLIGHT_RULES.find(r => r.re.test(text));
+        if (!rule) continue;
+        const match = rule.re.exec(text), anchor = term.registerMarker(start - cursor);
+        if (!anchor) continue;
+        const decorations = []; let offset = 0;
+        for (const item of lines) {
+          const left = Math.max(0, match.index - offset), right = Math.min(item.value.length, match.index + match[0].length - offset);
+          offset += item.value.length;
+          if (right <= left) continue;
+          let chars = 0, x = -1, end = 0;
+          const reuse = buffer.getNullCell?.();
+          for (let col = 0; col < term.cols; col++) {
+            const cell = item.line.getCell(col, reuse); if (!cell) break;
+            const width = cell.getWidth(); if (!width) continue;
+            const next = chars + (cell.getChars() || ' ').length;
+            if (next > left && chars < right) { if (x < 0) x = col; end = col + width; }
+            chars = next; if (chars >= right) break;
           }
-        }, 6000);
-        // 上限保护：超出丢弃最旧的装饰，避免长会话内存增长
-        while (tab._hls.length > 240) { const old = tab._hls.shift(); try { old.dispose(); } catch (e) {} }
+          if (x >= 0) { const d = this.highlightLine(tab, rule.cls, item.row - cursor, x, end - x); if (d) decorations.push(d); }
+        }
+        if (decorations.length) tab._highlightEntries.push({ anchor, text, decorations, expires: Date.now() + 6000 });
+        else anchor.dispose();
       }
+      while (tab._highlightEntries.reduce((n, e) => n + e.decorations.length, 0) > 240)
+        this.disposeHighlight(tab._highlightEntries.shift());
+      this.expireHighlights(tab);
     },
 
     runTriggersV0(tab, data) {
+      if (tab._closing || this.tabs[tab.id] !== tab) return;
       const rules = T.s.triggers.filter((r) => r.enabled !== false);
       if (!rules.length) return;
       for (const r of rules) {

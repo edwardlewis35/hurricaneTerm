@@ -60,7 +60,7 @@ Object.defineProperty(document, 'readyState', { value: 'loading', configurable: 
 window.addEventListener('error', (e) => errors.push('window: ' + e.message));
 
 // ---- 按 index.html 顺序加载真实脚本 ----
-for (const f of ['core.js', 'icons.js', 'titlebar.js', 'tabbar.js', 'actbar.js', 'profiles.js', 'home.js', 'settings.js', 'term.js', 'sftp.js', 'ui.js']) {
+for (const f of ['core.js', 'icons.js', 'appearance.js', 'common-controls.js', 'titlebar.js', 'tabbar.js', 'actbar.js', 'profiles.js', 'home.js', 'settings.js', 'term.js', 'sftp.js', 'ui.js']) {
   try { window.eval(readFileSync(SRC + '/' + f, 'utf8')); }
   catch (e) { errors.push(`load ${f}: ${e.message}`); }
 }
@@ -300,7 +300,7 @@ const before = T.s.theme;
 TM.applyTheme('tabby-light');
 await flush();
 ok('J5 可切到 Tabby 浅色主题', T.s.theme === 'tabby-light' && before === 'tabby-dark');
-ok('J6 主题写入 CSS 变量', document.documentElement.style.getPropertyValue('--accent') === '#0e9f6e');
+ok('J6 主题写入 Tabby 默认 CSS 变量', document.documentElement.style.getPropertyValue('--accent') === '#4fadff');
 ok('J7 --term-bg 驱动标签/主区连体', document.documentElement.style.getPropertyValue('--term-bg') === '#ffffff');
 TM.applyTheme('tabby-dark');
 await flush();
@@ -327,13 +327,23 @@ await flush();
 tabH.term._onData('kubectl get pods\r');
 await flush();
 ok('L6 大纲记录真实命令文本', tabH.outline.length === 1 && tabH.outline[0].text === 'kubectl get pods');
-TM.runHighlights(tabH, 'default  worker-batch-9x2  0/1  Error  7  41m');
-ok('L7 高亮命中生成行装饰', (tabH._hls || []).length >= 1);
-TM.runHighlights(tabH, '192.168.1.1:22 open');
-ok('L8 地址类规则命中', (tabH._hls || []).length >= 2);
+// Use xterm's actual parser and buffer for row positions; FakeTerm cannot
+// establish ANSI / wide-cell / wrapped-line correctness.
+// Parser-only validation needs no canvas painting or font measurement.
+window.HTMLCanvasElement.prototype.getContext = () => null;
+window.eval(readFileSync(SRC + '/../node_modules/@xterm/xterm/lib/xterm.js', 'utf8'));
+const ParserTerminal = window.Terminal; window.Terminal = FakeTerm;
+tabH.term = new ParserTerminal({ cols: 80, rows: 24, allowProposedApi: true });
+await new Promise(r => tabH.term.write('default  worker-batch-9x2  0/1  Error  7  41m\r\n', r));
+TM.runHighlights(tabH);
+ok('L7 实际buffer中的关键词只生成词元装饰', (tabH._hls || []).length === 1);
+await new Promise(r => tabH.term.write('192.168.1.1:22 open\r\n', r));
+TM.runHighlights(tabH);
+ok('L8 实际buffer地址命中且已有行不重复装饰', (tabH._hls || []).length === 2);
 const before9 = (tabH._hls || []).length;
-TM.runHighlights(tabH, 'E'.repeat(200) + ' Error ' + 'x'.repeat(200));
-ok('L9 超宽换行行盖满全部视觉行（cols=80 → 6 行）', (tabH._hls || []).length - before9 === 6);
+await new Promise(r => tabH.term.write('E'.repeat(200) + ' Error ' + 'x'.repeat(200) + '\r\n', r));
+TM.runHighlights(tabH);
+ok('L9 超宽输出仅高亮Error所在字符，避免整行蓝色条纹', (tabH._hls || []).length - before9 === 1);
 await TM.close(tabH.id);
 await flush();
 
@@ -342,7 +352,7 @@ const exIco = $('#actbar .ab-btn[data-pane="explorer"]').innerHTML;
 const pfIco = $('#actbar .ab-btn.ab-profiles').innerHTML;
 ok('M1 会话与机器管理图标不再重复', exIco !== pfIco && exIco.includes('svg') && pfIco.includes('svg'));
 ok('M2 新建按钮紧跟标签末尾', $('.ht-tabbar').firstElementChild.classList.contains('ht-tabs') && $('.ht-tabbar').lastElementChild.classList.contains('ht-actions') && !!$('.ht-actions .ht-plus'));
-ok('M3 强调色为玉绿（非蓝）', document.documentElement.style.getPropertyValue('--accent') === '#3ecf8e');
+ok('M3 强调色与 Tabby 默认蓝色一致', document.documentElement.style.getPropertyValue('--accent') === '#4fadff');
 ok('M4 PuTTY 习惯默认开：选中复制 + 右键粘贴', T.s.copyOnSelect !== false && T.s.rightClickPaste !== false);
 const tabM = await TM.create(sess);
 await flush();
@@ -539,6 +549,42 @@ ok('R4 Esc 关闭机器管理后恢复活动终端键盘焦点', !window.Profile
 $('.tb-sidebar').focus();
 window.Profiles.close();
 ok('R5 重复关闭已隐藏管理器不会抢走当前控件焦点', document.activeElement === $('.tb-sidebar'));
+
+/* ============ S. 背景透明度与现代下拉框的真实业务联动 ============ */
+window.Settings.open('appearance');
+await flush();
+const opacitySlider = $('#settings [data-opacity]');
+ok('S1 背景不透明度默认100%，设置提供20–100范围slider', opacitySlider.value === '100' && opacitySlider.min === '20' && opacitySlider.max === '100');
+opacitySlider.value = '55';
+const savesBeforeDrag = window.__invokes.filter(([c, a]) => c === 'ui_state_save' && a?.name === 'settings').length;
+opacitySlider.dispatchEvent(new window.Event('input', { bubbles: true }));
+ok('S2 拖动即时调整背景alpha，终端文字颜色保持原值', T.s.backgroundOpacity === 55 && document.documentElement.style.getPropertyValue('--window-bg').endsWith(',0.55)')
+  && TM.activeTab().term.options.theme.background.endsWith(',0.55)') && TM.activeTab().term.options.theme.foreground === TM.THEMES[T.s.theme].term.foreground);
+ok('S3 slider拖动不产生每一帧保存，显示百分比立即同步', window.__invokes.filter(([c, a]) => c === 'ui_state_save' && a?.name === 'settings').length === savesBeforeDrag
+  && $('#settings [data-opacity-value]').textContent === '55%');
+opacitySlider.dispatchEvent(new window.Event('change', { bubbles: true }));
+ok('S4 拖动完成持久化backgroundOpacity', window.__invokes.some(([c, a]) => c === 'ui_state_save' && a?.name === 'settings' && JSON.parse(a.value).backgroundOpacity === 55));
+ok('S5 浏览器透明预览使用明确棋盘背景而非伪装桌面透视', document.documentElement.classList.contains('transparency-preview') && $('#settings').textContent.includes('棋盘背景'));
+TM.applyTheme('tabby-light');
+ok('S6 切换主题保留透明度且重新派生浅色背景', T.s.backgroundOpacity === 55 && document.documentElement.style.getPropertyValue('--window-bg').endsWith(',0.55)')
+  && TM.activeTab().term.options.theme.background === 'rgba(255,255,255,0.55)');
+window.Appearance.setOpacity(0);
+ok('S7 非法低值钳制到20%，未降低body整体opacity', T.s.backgroundOpacity === 20 && !document.body.style.opacity);
+window.Appearance.setOpacity(100);
+ok('S8 恢复100%使用主题原始实色并关闭棋盘', TM.activeTab().term.options.theme.background === TM.THEMES[T.s.theme].term.background && !document.documentElement.classList.contains('transparency-preview'));
+window.Settings.open('terminal');
+await flush();
+const modeSelect = $('#settings select[data-sel="mode"]'), modeControl = modeSelect.parentElement.querySelector('.wt-select-trigger');
+ok('S9 设置中的原生select升级为主题化combobox', !!modeControl && modeControl.getAttribute('role') === 'combobox');
+modeControl.click();
+modeControl.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+modeControl.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+ok('S10 keyboard选择通过原change业务链保存模式', modeSelect.value === 'Local' && T.s.mode === 'Local');
+modeControl.click();
+modeControl.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+ok('S11 Esc仅关闭下拉，不关闭外层设置页', !window.CommonControls.isOpen && window.Settings.isOpen());
+window.Settings.close();
+TM.applyTheme('tabby-dark');
 
 // 报告
 console.log(results.map(([s, n]) => `${s} ${n}`).join('\n'));
