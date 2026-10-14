@@ -1,5 +1,5 @@
-// hurricaneTerm — jump.rs：跳板机（JumpServers）真实接线
-// 原创代码 (Apache-2.0)。语义对应 WindTerm 代理类型表里的 JumpServers（re/tunnel.rs PROXY_*）。
+// hurricaneTerm — jump.rs：跳板机（jump host）真实接线
+// 原创代码 (Apache-2.0)。作为 ssh_relay 的一种代理类型（Proxy::Jump）接入。
 //
 // 设计要点：
 // - ssh_relay::dial_any 是**同步** std-io 契约，且 ssh_live 在 spawn_blocking 线程里调用它，
@@ -19,7 +19,7 @@ use russh::ChannelMsg;
 use crate::ssh_live;
 use crate::ssh_relay;
 
-/// 跳板端点。user/password/key 复用主会话凭据（WindTerm JumpServers 属性表同语义简化版）。
+/// 跳板端点。user/password/key 复用主会话凭据。
 #[derive(Clone, Debug)]
 pub struct JumpSpec {
     pub host: String,
@@ -128,7 +128,7 @@ async fn pump(
         },
         log: Vec::new(),
     };
-    let session = russh::client::connect(cfg, (spec.host.as_str(), spec.port), handler)
+    let mut session = russh::client::connect(cfg, (spec.host.as_str(), spec.port), handler)
         .await
         .map_err(ioe)?;
 

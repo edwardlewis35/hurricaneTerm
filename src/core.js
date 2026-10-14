@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.7';
+  const VERSION = '0.7.8';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -34,7 +34,7 @@ window.WT = (function () {
       tooltips: true,
       homeOnStart: true,
       activityDot: true,
-      builtinHighlight: true,      // WindTerm 风格内置输出高亮
+      builtinHighlight: true,      // 内置输出高亮
       copyOnSelect: true,          // 选中自动复制
       rightClickPaste: true,       // PuTTY 习惯：右键粘贴
       sessionLog: false,           // PuTTY 习惯：会话输出落盘
