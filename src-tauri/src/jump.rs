@@ -174,15 +174,14 @@ async fn pump(
         .channel_open_direct_tcpip(&target.host, target.port as u32, "127.0.0.1", 0u32)
         .await
         .map_err(ioe)?;
-    let ch_in = ch.clone();
+    let (mut rd, wr) = ch.split();
 
     // 远端 → up_w（阻塞写放进 blocking 池，避免卡住 current_thread runtime）
     let up = Arc::new(Mutex::new(up_w));
     let dn = Arc::new(Mutex::new(dn_r));
     let out = tokio::spawn(async move {
-        let mut chr = ch_in;
         loop {
-            match chr.wait().await {
+            match rd.wait().await {
                 Some(ChannelMsg::Data { data }) => {
                     let chunk = data.to_vec();
                     let up2 = Arc::clone(&up);
@@ -191,7 +190,7 @@ async fn pump(
                         g.write_all(&chunk).and_then(|_| g.flush()).is_ok()
                     })
                     .await;
-                    if ok != Ok(true) {
+                    if !matches!(ok, Ok(true)) {
                         break;
                     }
                 }
@@ -222,11 +221,11 @@ async fn pump(
                 Ok(Some(c)) => c,
                 _ => break,
             };
-            if ch.data_bytes(bytes::Bytes::from(chunk)).await.is_err() {
+            if wr.data_bytes(bytes::Bytes::from(chunk)).await.is_err() {
                 break;
             }
         }
-        let _ = ch.close().await;
+        let _ = wr.close().await;
     });
 
     let _ = tokio::join!(out, inn);
