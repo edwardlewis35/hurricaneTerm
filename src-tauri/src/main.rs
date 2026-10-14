@@ -5,6 +5,7 @@
 
 mod re;
 mod jump;
+mod files;
 mod ssh_live;
 mod ssh_relay;
 #[cfg(unix)]
@@ -33,6 +34,9 @@ struct Entry {
 
 #[derive(Default)]
 struct PtyState(Mutex<HashMap<String, Entry>>);
+
+#[derive(Default)]
+struct TransferState(Mutex<HashMap<String, Arc<ssh_live::TransferControl>>>);
 
 #[derive(Clone, Serialize)]
 struct OutPayload {
@@ -110,6 +114,7 @@ pub struct FsEntry {
     pub size: u64,
     pub modified: u64,
     pub is_link: bool,
+    pub permissions: Option<u32>,
 }
 
 fn default_shell() -> String {
@@ -624,6 +629,99 @@ async fn sftp_upload(
     sftp_call(&state, id, |reply| ssh_live::SftpReq::Upload { local, remote, reply }).await
 }
 
+#[tauri::command]
+async fn sftp_realpath(state: State<'_, PtyState>, id: String, path: String) -> Result<String, String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Realpath { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_stat(state: State<'_, PtyState>, id: String, path: String) -> Result<Option<ssh_live::SftpEntry>, String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Stat { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_mkdir(state: State<'_, PtyState>, id: String, path: String) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Mkdir { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_create_file(state: State<'_, PtyState>, id: String, path: String) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::CreateFile { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_rename(state: State<'_, PtyState>, id: String, from: String, to: String) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Rename { from, to, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_copy(state: State<'_, PtyState>, id: String, from: String, to: String, move_item: bool) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Copy { from, to, move_item, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_remove(state: State<'_, PtyState>, id: String, path: String, recursive: bool) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Remove { path, recursive, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_read_file(state: State<'_, PtyState>, id: String, path: String) -> Result<files::FilePreview, String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::ReadFile { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_write_file(
+    state: State<'_, PtyState>, id: String, path: String, content: String,
+    expected_modified: Option<u64>, expected_revision: Option<String>, force: bool,
+) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::WriteFile {
+        path, content, expected_modified, expected_revision, force, reply,
+    }).await
+}
+
+#[tauri::command]
+async fn sftp_chmod(state: State<'_, PtyState>, id: String, path: String, mode: u32) -> Result<(), String> {
+    if mode > 0o7777 { return Err("权限必须是 0000–7777 范围内的八进制模式".into()); }
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Chmod { path, mode, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_transfer_start(
+    state: State<'_, PtyState>, transfers: State<'_, TransferState>,
+    id: String, transfer_id: String, local: String, remote: String, upload: bool, policy: String,
+) -> Result<(), String> {
+    if transfer_id.trim().is_empty() { return Err("传输 ID 不能为空".into()); }
+    if !matches!(policy.as_str(), "overwrite" | "skip" | "rename") {
+        return Err("未知的文件冲突处理策略".into());
+    }
+    let control = Arc::new(ssh_live::TransferControl::new());
+    {
+        let mut registry = transfers.0.lock().map_err(|e| e.to_string())?;
+        if registry.contains_key(&transfer_id) { return Err("该传输已经在运行".into()); }
+        registry.insert(transfer_id.clone(), Arc::clone(&control));
+    }
+    let result = sftp_call(&state, id, |reply| ssh_live::SftpReq::Transfer {
+        transfer_id: transfer_id.clone(), local, remote, upload, policy, control, reply,
+    }).await;
+    if let Ok(mut registry) = transfers.0.lock() { registry.remove(&transfer_id); }
+    result
+}
+
+#[tauri::command]
+fn sftp_transfer_control(transfers: State<'_, TransferState>, transfer_id: String, action: String) -> Result<(), String> {
+    let control = {
+        transfers.0.lock().map_err(|e| e.to_string())?.get(&transfer_id).cloned()
+            .ok_or_else(|| "传输已结束或不存在".to_string())?
+    };
+    match action.as_str() {
+        "pause" => control.pause(),
+        "resume" => control.resume(),
+        "cancel" => control.cancel(),
+        _ => return Err("未知的传输控制操作".into()),
+    }
+    Ok(())
+}
+
 // ================= P2 命令补全 =================
 
 #[derive(Clone, serde::Serialize)]
@@ -779,40 +877,42 @@ fn ui_state_load(app: AppHandle, name: String) -> Option<String> {
 }
 
 #[tauri::command]
-fn fs_list(path: Option<String>) -> Result<Vec<FsEntry>, String> {
-    let dir = match path.filter(|p| !p.trim().is_empty()) {
-        Some(p) => std::path::PathBuf::from(p),
-        None => std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
-    };
-    let mut out = Vec::new();
-    for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let e = e.map_err(|e| e.to_string())?;
-        let md = match e.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let name = e.file_name().to_string_lossy().to_string();
-        if name == "." || name == ".." {
-            continue;
-        }
-        let modified = md
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        out.push(FsEntry {
-            path: e.path().to_string_lossy().to_string(),
-            is_dir: md.is_dir(),
-            size: if md.is_file() { md.len() } else { 0 },
-            modified,
-            is_link: e.path().is_symlink(),
-            name,
-        });
-    }
-    out.sort_by(|a, b| (b.is_dir, a.name.to_lowercase()).cmp(&(a.is_dir, b.name.to_lowercase())));
-    Ok(out)
+async fn fs_list(path: Option<String>) -> Result<Vec<FsEntry>, String> {
+    fs_call(move || files::list(path.as_deref())).await
 }
+
+async fn fs_call<T: Send + 'static>(action: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(action).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn fs_realpath(path: Option<String>) -> Result<String, String> { fs_call(move || files::realpath(path.as_deref())).await }
+
+#[tauri::command]
+async fn fs_stat(path: String) -> Result<Option<FsEntry>, String> { fs_call(move || files::stat(&path)).await }
+
+#[tauri::command]
+async fn fs_mkdir(path: String) -> Result<(), String> { fs_call(move || files::mkdir(&path)).await }
+
+#[tauri::command]
+async fn fs_create_file(path: String) -> Result<(), String> { fs_call(move || files::create_file(&path)).await }
+
+#[tauri::command]
+async fn fs_rename(from: String, to: String) -> Result<(), String> { fs_call(move || files::rename(&from, &to)).await }
+
+#[tauri::command]
+async fn fs_remove(path: String, recursive: bool) -> Result<(), String> { fs_call(move || files::remove(&path, recursive)).await }
+
+#[tauri::command]
+async fn fs_read_file(path: String) -> Result<files::FilePreview, String> { fs_call(move || files::read_file(&path)).await }
+
+#[tauri::command]
+async fn fs_write_file(path: String, content: String, expected_modified: Option<u64>, expected_revision: Option<String>, force: bool) -> Result<(), String> {
+    fs_call(move || files::write_file(&path, &content, expected_modified, expected_revision.as_deref(), force)).await
+}
+
+#[tauri::command]
+async fn fs_copy(from: String, to: String, move_item: bool) -> Result<(), String> { fs_call(move || files::copy(&from, &to, move_item)).await }
 
 fn sanitize(s: &str) -> String {
     s.chars()
@@ -970,6 +1070,7 @@ fn triggers_feed(state: tauri::State<TriggersState>, data: String) -> Vec<serde_
 pub fn run() {
     tauri::Builder::default()
         .manage(PtyState::default())
+        .manage(TransferState::default())
         .manage(TriggersState::default())
         .manage(LogState::default())
         .invoke_handler(tauri::generate_handler![
@@ -984,12 +1085,33 @@ pub fn run() {
             sftp_list,
             sftp_download,
             sftp_upload,
+            sftp_realpath,
+            sftp_stat,
+            sftp_mkdir,
+            sftp_create_file,
+            sftp_rename,
+            sftp_copy,
+            sftp_remove,
+            sftp_read_file,
+            sftp_write_file,
+            sftp_chmod,
+            sftp_transfer_start,
+            sftp_transfer_control,
             sessions_load,
             sessions_save,
             ui_state_save,
             ui_state_load,
             complete_input,
             fs_list,
+            fs_realpath,
+            fs_stat,
+            fs_mkdir,
+            fs_create_file,
+            fs_rename,
+            fs_remove,
+            fs_read_file,
+            fs_write_file,
+            fs_copy,
             triggers_reload,
             triggers_feed,
             session_log_start,

@@ -129,6 +129,7 @@
 
     /* 点按开合：同 Tabby，再点当前窗格则收起整条侧栏 */
     toggle(paneId) {
+      if (paneId === 'filer' && window.SftpPanel) { SftpPanel.toggle(); return; }
       const ui = T.ui;
       if (!ui) return;
       if (T.s.dockVisible && T.s.dockPane === paneId) ui.toggleDock();

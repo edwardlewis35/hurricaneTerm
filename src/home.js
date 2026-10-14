@@ -315,6 +315,7 @@
 
     show() {
       if (!this.el) return;
+      if (window.SftpPanel?.isOpen() && !SftpPanel.hide()) return;
       if (window.Profiles && Profiles.isOpen()) Profiles.close();
       const S = window.Settings;
       if (S && typeof S.isOpen === 'function' && S.isOpen() && typeof S.close === 'function') S.close();

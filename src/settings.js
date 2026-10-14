@@ -375,6 +375,7 @@
 
     open(sec) {
       if (!mounted) return;
+      if (window.SftpPanel?.isOpen() && !SftpPanel.hide()) return;
       if (window.Profiles && Profiles.isOpen()) Profiles.close();
       if (sec) section = sec;
       open = true;

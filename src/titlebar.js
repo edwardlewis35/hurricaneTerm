@@ -106,6 +106,7 @@
         this.refresh();
       }, 'tb-btn tb-sidebar');
       btn(host, 'search', '查找 (Ctrl+F)', () => ui() && ui().openSearch());
+      btn(host, 'folder', 'SFTP 文件管理 (Ctrl+2)', () => window.SftpPanel && SftpPanel.toggle(), 'tb-btn tb-sftp');
       btn(host, 'terminal', '命令面板 (Ctrl+Shift+P)', () => ui() && ui().openPalette());
       this.settingsBtn = btn(host, 'gear', '设置', (b) => {
         const S = window.Settings;

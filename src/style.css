@@ -149,7 +149,7 @@ body.is-mac.no-native-lights #mac-lights { display: flex; }
 #mac-lights:hover .ml::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: rgba(0, 0, 0, .18); }
 
 /* ---------- 工作区 ---------- */
-#workspace { display: flex; min-height: 0; min-width: 0; }
+#workspace { display: flex; min-height: 0; min-width: 0; position: relative; }
 /* 同步输入开启时所有窗格加描边，提示键盘会广播 */
 body.sync-on #groups .group { outline: 1px solid rgba(240, 173, 78, .45); outline-offset: -1px; }
 

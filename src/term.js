@@ -226,6 +226,17 @@
         color: (session && session.color) || null, pinned: false, notify: false, activity: false,
       };
       this.tabs[id] = tab;
+      if (term.parser && term.parser.registerOscHandler) term.parser.registerOscHandler(7, data => {
+        try {
+          const url = new URL(data);
+          const path = decodeURIComponent(url.pathname);
+          if (url.protocol === 'file:' && path.startsWith('/') && !/[\0\r\n]/.test(path)) {
+            tab.cwd = path;
+            if (window.SftpPanel) SftpPanel.syncCwd(id, path);
+          }
+        } catch (_) {}
+        return false;
+      });
       this.order.push(id);
       // 最近使用：回写 profile 并持久化（Home/＋下拉消费 lastUsed）
       if (session) { session.lastUsed = Date.now(); T.persistSessions(); }
@@ -359,6 +370,7 @@
       if (window.Settings && Settings.isOpen()) Settings.close();
       this.renderTabbar();
       this.markFocused();
+      if (window.SftpPanel) SftpPanel.onSessionChange();
       // 每个窗格保留自己的活动终端；切换焦点不能清空另一个窗格。
       for (const g of [0, 1]) {
         const peers = this.order.map((x) => this.tabs[x]).filter((x) => x && x.group === g);

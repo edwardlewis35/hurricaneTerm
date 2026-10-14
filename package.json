@@ -1,12 +1,13 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.7.9",
+  "version": "0.7.10",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
     "build-deb": "npm run prepare-dist && tauri build --bundles deb",
-    "test:ui": "node scripts/ui-integration-test.mjs"
+    "test:ui": "node scripts/ui-integration-test.mjs",
+    "test:sftp": "node scripts/sftp-ui-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

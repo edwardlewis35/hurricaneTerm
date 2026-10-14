@@ -29,13 +29,30 @@
 | 命令面板（Ctrl+Shift+P，分组 + 图标）+ 浮动搜索卡 | ✅ |
 | 触发器引擎（后端 `re/triggers.rs`；前端映射高亮 / 响铃 / 发送文本） | ✅ |
 | 会话管理（JSON 持久化，folder/command/args/host/port/user/proxy/jumpHost） | ✅ |
-| SFTP 双栏文件浏览器 + 传输进度 | ✅ |
+| SFTP 独立双栏文件管理、文件编辑与可控传输队列 | ✅ |
 | 发送窗格 + 同步输入广播 | ✅ |
 | 查找（Ctrl+F）、缩放（Ctrl±）、全屏（F11） | ✅ |
 | SSH（russh 实连，支持跳板机 direct-tcpip）/ Telnet（协商引擎）/ 串口（termios 直驱）/ TCP（直连·Socks5·HTTP CONNECT·ProxyCommand） | ✅ |
 | 本地会话落盘日志、选中自动复制 + 右键/中键粘贴、输出内置高亮 | ✅ |
 | X/Y/Zmodem、端口转发隧道、传输队列（引擎已完成，待接线到命令层） | ⏳ |
 | 语法高亮方案、命令库补全、vim 键位层、i18n | ⏳ |
+
+## SFTP 文件管理
+
+点击标题栏文件夹按钮或按 `Ctrl+2` 打开文件管理。界面参考 [Tabby-SFTP-Plus](https://github.com/10D24D/Tabby-SFTP-Plus)，由本项目独立实现，使用现有 SSH 会话的 SFTP 子系统。
+
+- 本地 / 远程双栏，支持左右、上下、自适应和远程单栏布局；窗口可拖动、缩放、最大化，分栏比例可调。
+- 每栏独立的路径、前进 / 后退、上级 / 主目录、刷新、筛选、隐藏文件和列排序；支持多选、范围选择及键盘操作。
+- 全局与连接专属书签、按连接记忆路径、跟随终端 OSC 7 工作目录。服务器或 shell 未发送 OSC 7 时可手动导航。
+- 右键新建文件 / 文件夹、重命名、复制 / 剪切 / 粘贴、删除；文本查看编辑、图片预览、远程权限修改。编辑保存检查文件版本，检测到外部修改时需明确选择强制覆盖。
+- 跨栏拖放与系统文件拖入、递归上传 / 下载，独立任务 ID、并发限制、真实字节进度、速度、暂停 / 继续 / 取消 / 失败重试；同名目标提供覆盖、跳过和保留两份。
+- 传输记录筛选及 JSON 导出；表格、菜单、弹窗、下拉框全部跟随主主题。
+
+传输通过临时文件完成后再替换目标。取消或失败的 `.part` 文件会保留，便于检查；重试会重新传输，不承诺跨进程断点续传。目录递归拒绝符号链接和特殊文件，避免穿越链接或循环。文本编辑上限 2 MiB、图片预览上限 15 MiB；二进制文件不能通过文本编辑器覆盖。
+
+本版覆盖常用工作流，尚未实现参考插件的 tar 加速、列宽持久化、自定义图标包或全部语言支持。
+
+前端验证：`npm run test:sftp` 和 `npm run test:ui`。后端安全测试：`cargo test sftp_safety_tests`、`cargo test files::tests`（需要构建依赖）。
 
 ## 构建
 
@@ -138,9 +155,11 @@ src/            前端（无构建器，原生脚本；prepare-dist 全量拷贝
   home.js       主页快速连接 + 分组机器列表
   term.js       终端管理：多标签、分屏、主题、搜索、触发器、缩放、广播
   ui.js         侧栏六窗格 / 状态栏 / 命令面板 / 浮动搜索 / Toast
+  sftp.js / sftp.css   双栏文件管理、书签、编辑器、传输队列及主题样式
 src-tauri/      Rust 后端
   src/main.rs   Tauri command 层：PTY（spawn/write/resize/kill）+ SSH/Telnet/串口/TCP + SFTP + 触发器接线
   src/ssh_live.rs   russh 实连会话（认证、pty、数据泵、SFTP 子系统）
+  src/files.rs     本地文件服务、预览、安全保存与不覆盖目标的移动
   src/ssh_relay.rs  中继/代理拨号层（直连·Socks5·HTTP CONNECT·ProxyCommand·跳板）
   src/jump.rs       跳板机（direct-tcpip 二级会话 → std Read/Write 适配）
   src/serial_live.rs / src/tcp_live.rs   串口、裸 TCP 实连
@@ -154,7 +173,7 @@ src-tauri/      Rust 后端
 
 ## 路线图
 
-- **P1**：SSH（russh）+ SFTP 浏览器 + 传输队列 + Telnet；Filer 远端化
+- **P1**：SFTP 大目录优化、可持久化续传与列宽配置
 - **P2**：语法高亮方案（开放 grammar）+ 命令库补全管线 + 触发器增强
 - **P3**：vim 键位层、同步输入增强、i18n、主题包
 

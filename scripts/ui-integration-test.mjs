@@ -26,6 +26,8 @@ window.__TAURI__ = {
     ] :
     (c === 'spawn' || c.startsWith('connect_')) ? 'pty-' + (++ptyN) :
     c === 'complete_input' ? { items: [], start: 0 } :
+    c === 'fs_realpath' ? (a?.path || '/home/local') :
+    c === 'sftp_realpath' ? (a?.path === '.' || !a?.path ? '/home/root' : a.path) :
     c === 'fs_list' ? [
       { name: 'src', is_dir: true, path: './src', size: 0 },
       { name: 'README.md', is_dir: false, path: './README.md', size: 4213 },
@@ -58,7 +60,7 @@ Object.defineProperty(document, 'readyState', { value: 'loading', configurable: 
 window.addEventListener('error', (e) => errors.push('window: ' + e.message));
 
 // ---- 按 index.html 顺序加载真实脚本 ----
-for (const f of ['core.js', 'icons.js', 'titlebar.js', 'tabbar.js', 'actbar.js', 'profiles.js', 'home.js', 'settings.js', 'term.js', 'ui.js']) {
+for (const f of ['core.js', 'icons.js', 'titlebar.js', 'tabbar.js', 'actbar.js', 'profiles.js', 'home.js', 'settings.js', 'term.js', 'sftp.js', 'ui.js']) {
   try { window.eval(readFileSync(SRC + '/' + f, 'utf8')); }
   catch (e) { errors.push(`load ${f}: ${e.message}`); }
 }
@@ -344,8 +346,14 @@ ok('M3 强调色为玉绿（非蓝）', document.documentElement.style.getProper
 ok('M4 PuTTY 习惯默认开：选中复制 + 右键粘贴', T.s.copyOnSelect !== false && T.s.rightClickPaste !== false);
 const tabM = await TM.create(sess);
 await flush();
-ok('M5 SSH 连接后文件窗格自动双栏+远端家目录', T.s.dockPane === 'filer' && T.s.remotePath === '.' && !$('#dock').hidden);
-ok('M6 远端列以 ~ 表示家目录且列出远端条目', $('#dock-body').textContent.includes('~') && $('#dock-body').textContent.includes('app.log'));
+ok('M5 SSH 连接后侧栏提供独立文件管理入口', T.s.dockPane === 'filer' && !$('#dock').hidden && !!$('#open-sftp-panel'));
+$('#open-sftp-panel').click();
+await flush();
+ok('M6 独立 SFTP 面板挂载双栏且列出远端家目录', window.SftpPanel.isOpen()
+  && $$('#sftp-panel .sftp-pane').length === 2
+  && $('#sftp-panel [data-side="remote"] .sftp-path').value === '/home/root'
+  && $('#sftp-panel [data-side="remote"]').textContent.includes('app.log'));
+window.SftpPanel.close();
 // Tab 无候选时交还 shell
 window.__invokes.length = 0;
 const ckeh = tabM.term._ckeh;

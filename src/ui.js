@@ -263,100 +263,12 @@
       const body = $('#dock-body');
       if (!body) return;
       const tab = T.term.activeTab();
-      const isSsh = tab && tab.session && tab.session.protocol === 'ssh' && !tab.exited;
-      const mode = T.s.filerMode || (isSsh ? 'both' : 'local');
-      const lpath = T.s.filerPath || null;
-      const rpath = T.s.remotePath || '.';   // '.' = SFTP 家目录（服务端 cwd）
-      body.innerHTML = `<div class="pane-head"><span>文件浏览器</span><span>
-        ${isSsh ? `<button data-m="local" class="${mode === 'local' ? 'on' : ''}">本地</button>
-        <button data-m="remote" class="${mode === 'remote' ? 'on' : ''}">远端</button>
-        <button data-m="both" class="${mode === 'both' ? 'on' : ''}">双栏</button>` : ''}
-      </span></div>
-      <div class="filer-cols">
-        ${mode !== 'remote' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(lpath || '~')}</span>
-          <span><button id="f-up" title="上级目录">↑</button><button id="f-home" title="主目录">⌂</button><button id="f-upl" title="上传选中项">上传 →</button></span></div>
-          <div id="f-list" class="list"></div></div>` : ''}
-        ${isSsh && mode !== 'local' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(rpath === '.' ? '~' : rpath)}</span>
-          <span><button id="r-up" title="上级目录">↑</button><button id="r-dwl" title="下载选中项">← 下载</button></span></div>
-          <div id="r-list" class="list"><div class="empty">加载中…</div></div></div>` : ''}
-      </div>`;
-      body.querySelectorAll('.pane-head button[data-m]').forEach((b) => { b.onclick = () => { T.s.filerMode = b.dataset.m; this.renderFiler(); }; });
-
-      const rowOf = (e) => {
-        const row = document.createElement('div');
-        row.className = 'row';
-        row.innerHTML = `<span class="ico">${svg(e.is_dir ? 'folder' : 'output')}</span>
-          <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)}</i></span>`;
-        return row;
-      };
-
-      // —— 本地列 ——
-      const flist = body.querySelector('#f-list');
-      if (flist) {
-        let entries = [];
-        try { entries = await T.invoke('fs_list', { path: lpath }).then((v) => (Array.isArray(v) ? v : [])); }
-        catch (e) { flist.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`; }
-        for (const e of entries) {
-          const row = rowOf(e);
-          row.ondblclick = () => { if (e.is_dir) { T.s.filerPath = e.path; this.renderFiler(); } };
-          row.onclick = () => {
-            this._filerSel = e.path; this._filerSelName = e.name;
-            flist.querySelectorAll('.row').forEach((r) => r.classList.remove('sel'));
-            row.classList.add('sel');
-          };
-          flist.appendChild(row);
-        }
-        if (!entries.length && !flist.children.length) flist.innerHTML = '<div class="empty">空目录</div>';
-        body.querySelector('#f-up').onclick = () => { if (lpath) { T.s.filerPath = lpath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); } };
-        body.querySelector('#f-home').onclick = () => { T.s.filerPath = null; this.renderFiler(); };
-        body.querySelector('#f-upl').onclick = () => {
-          if (!isSsh) { this.toast('需要 SSH 会话', 2400, 'err'); return; }
-          if (!this._filerSel) { this.toast('先选中本地文件', 2400, 'err'); return; }
-          const remote = (rpath === '/' ? '' : rpath) + '/' + this._filerSelName;
-          this.toast('上传中：' + this._filerSelName);
-          T.invoke('sftp_upload', { id: tab.id, local: this._filerSel, remote }).catch((e) => this.toast('上传失败：' + e, 3200, 'err'));
-        };
-      }
-
-      // —— 远端列 ——
-      const rlist = body.querySelector('#r-list');
-      if (rlist && isSsh) {
-        try {
-          const ents = await T.invoke('sftp_list', { id: tab.id, path: rpath }).then((v) => (Array.isArray(v) ? v : []));
-          rlist.innerHTML = '';
-          for (const e of ents) {
-            const row = rowOf(e);
-            row.ondblclick = () => {
-              if (e.is_dir) { T.s.remotePath = e.path; this.renderFiler(); }
-              else {
-                const local = (T.s.filerPath || '') + '/' + e.name;
-                this.toast('下载中：' + e.name);
-                T.invoke('sftp_download', { id: tab.id, remote: e.path, local })
-                  .catch((err) => this.toast('下载失败：' + err, 3200, 'err'));
-              }
-            };
-            row.onclick = () => {
-              this._remoteSel = e;
-              rlist.querySelectorAll('.row').forEach((r) => r.classList.remove('sel'));
-              row.classList.add('sel');
-            };
-            rlist.appendChild(row);
-          }
-          if (!ents.length) rlist.innerHTML = '<div class="empty">空目录</div>';
-        } catch (err) { rlist.innerHTML = `<div class="empty">SFTP 失败：${escapeHtml(String(err))}</div>`; }
-        body.querySelector('#r-up').onclick = () => {
-          if (rpath === '.') { this.toast('已在家目录'); return; }
-          T.s.remotePath = rpath.replace(/\/+[^/]+\/?$/, '') || '.';
-          this.renderFiler();
-        };
-        body.querySelector('#r-dwl').onclick = () => {
-          if (!this._remoteSel) { this.toast('先选中远端文件', 2400, 'err'); return; }
-          const local = (T.s.filerPath || '') + '/' + this._remoteSel.name;
-          this.toast('下载中：' + this._remoteSel.name);
-          T.invoke('sftp_download', { id: tab.id, remote: this._remoteSel.path, local })
-            .catch((e2) => this.toast('下载失败：' + e2, 3200, 'err'));
-        };
-      }
+      const connected = tab && tab.session && tab.session.protocol === 'ssh' && !tab.exited;
+      body.innerHTML = `<div class="pane-head"><span>文件管理</span></div>
+        <div class="sender"><b>${escapeHtml(connected ? tab.title : '本地文件')}</b>
+        <p class="dim">独立双栏文件管理，支持书签、筛选、文件编辑与传输队列。</p>
+        <button class="primary" id="open-sftp-panel">打开文件管理 (Ctrl+2)</button></div>`;
+      body.querySelector('#open-sftp-panel').onclick = () => window.SftpPanel && SftpPanel.open();
     },
 
     /* ---------- 窗格：发送 ---------- */
@@ -700,6 +612,7 @@
     // Ctrl+1..6 → 侧栏窗格
     if (mod && !e.shiftKey && k >= '1' && k <= '6') {
       e.preventDefault();
+      if (k === '2' && window.SftpPanel) { SftpPanel.toggle(); return; }
       const p = PANES[+k - 1];
       if (p) UI.setDockPane(p[0]);
       return;

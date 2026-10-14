@@ -91,6 +91,9 @@ jobs:
       - name: 前端 UI 回归测试
         run: npm run test:ui
 
+      - name: SFTP 文件管理回归测试
+        run: npm run test:sftp
+
       # 注意：APPLE_* 只能「整组注入」或「整组不注入」。
       # 空字符串会被 tauri-bundler 视为「需要签名」而去 security import 一张空证书，
       # 直接报 `failed to import keychain certificate`（v0.7.0 的 macOS 失败即此）。
