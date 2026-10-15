@@ -1,6 +1,6 @@
 [package]
 name = "hurricane-term"
-version = "0.7.14"
+version = "0.7.15"
 description = "hurricaneTerm — cross-platform Tauri 2 terminal (SSH/Telnet/serial/TCP + SFTP)"
 edition = "2021"
 
