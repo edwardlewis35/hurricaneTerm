@@ -1,13 +1,12 @@
 // hurricaneTerm — 串口实连层（POSIX termios 直驱）
-// 语义遵循 re/serial.rs（WindTerm SerialBridge/SerialSession 反编译实证：
-// setConfig 1003b2f30 / __attach 1003b2d30 / __detach 1003b2db0 / SerialSession::open 1003b39d0）。
+// 选项语义（默认值/归一/校验）见 re/serial.rs；
 // 本文件只做真实端口 IO 接线；选项校验/默认值/归一全部走 re::serial 语义路径。
 //
 // 为什么不用 serialport crate：其 Parity 无 Mark/Space、StopBits 无 1.5；
-// 而 Qt 在 Linux 经 CMSPAR 支持 Mark/Space（macOS 不支持），且 Qt 明确
-// "OneAndHalfStop 在 POSIX 不支持"。termios 直驱与 WindTerm(Qt) 平台行为对齐。
+// 而 Linux 经 CMSPAR 支持 Mark/Space（macOS 不支持），且 1.5 位停止位
+// 在 POSIX 上本就无对应设置 → 直驱 termios 才能覆盖这些取值。
 //
-// 实证约束落地：
+// 行为约束落地：
 // - setOption 空函数体 → 不提供运行期改参，必须重开会话。
 // - attach：setPortName → 先 detach → open(ReadWrite=3)；仅成功才 attached+state=3；失败静默。
 // - detach：isOpen 才 detaching→close→detached；state 一律 0。
@@ -26,7 +25,7 @@ use tokio::sync::mpsc;
 /// VTIME=2（0.1s 单位）→ 空读节拍 200ms，pump 借此轮询 stop
 pub const READ_POLL: Duration = Duration::from_millis(200);
 
-// ———— 纯映射（可单测；flag 语义对齐 Qt qserialportinfo/posix 实现） ————
+// ———— 纯映射（可单测；flag 语义按 posix/CMSPAR 能力） ————
 
 /// dataBits(5..=8，re 已归一) → c_cflag 数据位编码
 pub fn data_bits_flag(n: u8) -> libc::tcflag_t {
@@ -38,8 +37,8 @@ pub fn data_bits_flag(n: u8) -> libc::tcflag_t {
     }
 }
 
-/// parity → (置位, 清除) 位组。Linux 经 CMSPAR 支持 Mark/Space（Qt 同）；
-/// 其余平台（macOS/Windows）Mark/Space → None → open 报不支持（Qt macOS 同行为）。
+/// parity → (置位, 清除) 位组。Linux 经 CMSPAR 支持 Mark/Space；
+/// 其余平台（macOS/Windows）Mark/Space → None → open 报不支持。
 pub fn parity_flags(p: Parity) -> Option<(libc::tcflag_t, libc::tcflag_t)> {
     #[cfg(target_os = "linux")]
     let cmspar = libc::CMSPAR as libc::tcflag_t;
@@ -60,14 +59,14 @@ pub fn parity_flags(p: Parity) -> Option<(libc::tcflag_t, libc::tcflag_t)> {
     Some((set, clear))
 }
 
-/// stopBits(1..=3，re 已归一)：1→无 CSTOPB；2→CSTOPB；3(1.5)→POSIX 不支持（Qt 同）
+/// stopBits(1..=3，re 已归一)：1→无 CSTOPB；2→CSTOPB；3(1.5)→POSIX 不支持
 pub fn stop_bits_flag(n: u8) -> io::Result<libc::tcflag_t> {
     match n {
         1 => Ok(0),
         2 => Ok(termios::CSTOPB),
         _ => Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("停止位 {n}（1.5）在 POSIX 不支持（Qt 同）"),
+            format!("停止位 {n}（1.5）在 POSIX 不支持"),
         )),
     }
 }
@@ -86,7 +85,7 @@ pub fn flow_iflag(f: FlowControl) -> libc::tcflag_t {
     }
 }
 
-/// 波特率 → termios 速度码。Qt 语义：不在支持表内 → 打开失败（UnsupportedBaudRateError）。
+/// 波特率 → termios 速度码：不在支持表内 → 打开失败。
 pub fn baud_speed(rate: i32) -> Option<termios::speed_t> {
     if rate <= 0 {
         return None;
@@ -163,13 +162,13 @@ impl RawPort {
     }
 }
 
-/// 配置 termios（open 后一次性；运行期不可改 = setOption 空函数体实证）
+/// 配置 termios（open 后一次性；运行期不可改）
 #[cfg(unix)]
 pub fn configure(fd: std::os::unix::io::RawFd, s: &SerialSettings) -> io::Result<()> {
     let speed = baud_speed(s.baud_rate)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("不支持的波特率 {}", s.baud_rate)))?;
     let (pset, pclear) = parity_flags(s.parity).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Unsupported, format!("{:?} 校验位本平台不支持（Qt 同）", s.parity))
+        io::Error::new(io::ErrorKind::Unsupported, format!("{:?} 校验位本平台不支持", s.parity))
     })?;
     let stop = stop_bits_flag(s.stop_bits)?;
 
@@ -238,7 +237,7 @@ pub fn spawn_session(
     let port = match open_port(port_name, &settings) {
         Ok(p) => p,
         Err(e) => {
-            bridge.attach(port_name, false); // 失败静默：state=0、无 attached 信号（实证）
+            bridge.attach(port_name, false); // 失败静默：state=0、无 attached 信号
             return Err(e);
         }
     };
@@ -257,7 +256,7 @@ pub fn spawn_session(
     let port2 = port_name.to_string();
     std::thread::spawn(move || {
         pump(reader, &sink, &id2, &mut stop_rx);
-        // __detach 实证序列：isOpen 才 detaching→close→detached
+        // detach 序列：isOpen 才 detaching→close→detached
         sink.emit("re-log", id2.clone(), format!("detaching {port2}"));
         sink.emit("re-log", id2.clone(), "detached".into());
         let _ = app.emit("pty-exit", OutPayload { id: id2, data: String::new() });
@@ -270,12 +269,13 @@ pub fn spawn_session(
 /// 泛型化以便用 UnixStream 单测（生产传 RawPort）。
 pub fn pump<R: Read>(mut reader: R, sink: &Sink, id: &str, stop: &mut mpsc::UnboundedReceiver<()>) {
     let mut buf = [0u8; 4096];
+    let mut decoder = crate::terminal_io::Utf8Decoder::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => {} // 空读节拍
             Ok(n) => {
-                let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                sink.emit("pty-output", id.to_string(), data);
+                let data = decoder.push(&buf[..n]);
+                if !data.is_empty() { sink.emit("pty-output", id.to_string(), data); }
             }
             Err(e)
                 if e.kind() == io::ErrorKind::TimedOut
@@ -287,6 +287,8 @@ pub fn pump<R: Read>(mut reader: R, sink: &Sink, id: &str, stop: &mut mpsc::Unbo
             break;
         }
     }
+    let tail = decoder.finish();
+    if !tail.is_empty() { sink.emit("pty-output", id.to_string(), tail); }
 }
 
 #[cfg(test)]
@@ -331,7 +333,7 @@ mod tests {
     fn stop_bits_posix_semantics() {
         assert_eq!(stop_bits_flag(1).unwrap(), 0);
         assert_eq!(stop_bits_flag(2).unwrap(), termios::CSTOPB);
-        // Qt：OneAndHalfStop 在 POSIX 不支持 → 报错（实证域 1..=3 中的 3）
+        // 1.5 位停止位在 POSIX 不支持 → 报错（取值域 1..=3 中的 3）
         assert!(stop_bits_flag(3).is_err());
     }
 
@@ -347,7 +349,7 @@ mod tests {
     fn baud_table_matches_qt_supported() {
         assert_eq!(baud_speed(9600).unwrap() as u32, termios::B9600 as u32);
         assert_eq!(baud_speed(115200).unwrap() as u32, libc::B115200 as u32);
-        assert_eq!(baud_speed(123456), None); // Qt 支持表外 → 打开失败
+        assert_eq!(baud_speed(123456), None); // 支持表外 → 打开失败
         assert_eq!(baud_speed(0), None);
         assert_eq!(baud_speed(-1), None);
     }
@@ -478,7 +480,7 @@ mod tests {
             .collect();
         let s = settings_from_options(Some(&m));
         assert_eq!(s.baud_rate, 57600);
-        assert_eq!(data_bits_flag(s.data_bits), termios::CS8); // 越界归一 8（re 实证）
+        assert_eq!(data_bits_flag(s.data_bits), termios::CS8); // 越界归一 8
         assert_eq!(stop_bits_flag(s.stop_bits).unwrap(), 0); // 越界归一 1
     }
 }

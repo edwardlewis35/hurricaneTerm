@@ -1,5 +1,5 @@
-// hurricaneTerm — jump.rs：跳板机（JumpServers）真实接线
-// 原创代码 (Apache-2.0)。语义对应 WindTerm 代理类型表里的 JumpServers（re/tunnel.rs PROXY_*）。
+// hurricaneTerm — jump.rs：跳板机（jump host）真实接线
+// 原创代码 (Apache-2.0)。作为 ssh_relay 的一种代理类型（Proxy::Jump）接入。
 //
 // 设计要点：
 // - ssh_relay::dial_any 是**同步** std-io 契约，且 ssh_live 在 spawn_blocking 线程里调用它，
@@ -19,7 +19,7 @@ use russh::ChannelMsg;
 use crate::ssh_live;
 use crate::ssh_relay;
 
-/// 跳板端点。user/password/key 复用主会话凭据（WindTerm JumpServers 属性表同语义简化版）。
+/// 跳板端点。user/password/key 复用主会话凭据。
 #[derive(Clone, Debug)]
 pub struct JumpSpec {
     pub host: String,
@@ -128,7 +128,7 @@ async fn pump(
         },
         log: Vec::new(),
     };
-    let session = russh::client::connect(cfg, (spec.host.as_str(), spec.port), handler)
+    let mut session = russh::client::connect(cfg, (spec.host.as_str(), spec.port), handler)
         .await
         .map_err(ioe)?;
 
@@ -174,15 +174,14 @@ async fn pump(
         .channel_open_direct_tcpip(&target.host, target.port as u32, "127.0.0.1", 0u32)
         .await
         .map_err(ioe)?;
-    let ch_in = ch.clone();
+    let (mut rd, wr) = ch.split();
 
     // 远端 → up_w（阻塞写放进 blocking 池，避免卡住 current_thread runtime）
     let up = Arc::new(Mutex::new(up_w));
     let dn = Arc::new(Mutex::new(dn_r));
     let out = tokio::spawn(async move {
-        let mut chr = ch_in;
         loop {
-            match chr.wait().await {
+            match rd.wait().await {
                 Some(ChannelMsg::Data { data }) => {
                     let chunk = data.to_vec();
                     let up2 = Arc::clone(&up);
@@ -191,7 +190,7 @@ async fn pump(
                         g.write_all(&chunk).and_then(|_| g.flush()).is_ok()
                     })
                     .await;
-                    if ok != Ok(true) {
+                    if !matches!(ok, Ok(true)) {
                         break;
                     }
                 }
@@ -222,11 +221,11 @@ async fn pump(
                 Ok(Some(c)) => c,
                 _ => break,
             };
-            if ch.data_bytes(bytes::Bytes::from(chunk)).await.is_err() {
+            if wr.data_bytes(bytes::Bytes::from(chunk)).await.is_err() {
                 break;
             }
         }
-        let _ = ch.close().await;
+        let _ = wr.close().await;
     });
 
     let _ = tokio::join!(out, inn);

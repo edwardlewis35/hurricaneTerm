@@ -19,6 +19,7 @@
     { id: 'appearance', icon: 'palette', label: '外观' },
     { id: 'terminal', icon: 'terminal', label: '终端' },
     { id: 'profiles', icon: 'server', label: '机器与连接' },
+    { id: 'gist', icon: 'refresh', label: 'Gist 同步' },
     { id: 'triggers', icon: 'bell', label: '触发器' },
     { id: 'hotkeys', icon: 'keyboard', label: '快捷键' },
     { id: 'about', icon: 'info', label: '关于' },
@@ -81,11 +82,19 @@
 
     let h = `<h2 class="st-h">外观</h2><p class="st-sub">主题、字号与窗口元素显隐。</p>`;
     h += card('主题', grid);
+    const opacity = window.Appearance ? Appearance.percentage() : 100;
+    const terminalOpacity = window.Appearance ? Appearance.terminalPercentage() : 100;
+    h += card('背景透明度', row('界面背景不透明度', '标题栏、主页与设置等界面背景；文字和图标保持清晰。',
+      `<div class="st-opacity-control"><input type="range" min="20" max="100" step="1" value="${opacity}" data-opacity aria-label="界面背景不透明度"><output data-opacity-value>${opacity}%</output></div>`)
+      + `<div class="st-opacity-preview"><div class="st-opacity-sample">hurricaneTerm · 界面预览</div></div>`
+      + row('终端背景不透明度', '单独调整全部终端的背景。100% 为实色，不影响文字和光标。',
+        `<div class="st-opacity-control"><input type="range" min="20" max="100" step="1" value="${terminalOpacity}" data-terminal-opacity aria-label="终端背景不透明度"><output data-terminal-opacity-value>${terminalOpacity}%</output></div>`)
+      + `<div class="st-opacity-preview"><div class="st-opacity-sample st-terminal-opacity-sample">$ echo Huricano<br>Huricano · 终端预览</div></div><p class="st-opacity-note">${window.Appearance?.isNative() ? '降低不透明度会透出窗口背后的内容。' : '浏览器使用棋盘背景预览透明度；桌面版会透出窗口背后的内容。'}</p>`);
     h += card('字号与状态栏',
       row('终端字号', '也可用 Ctrl+= / Ctrl+- 调整，范围 8–28',
         `<input type="number" min="8" max="28" step="1" data-num="fontSize" value="${esc(T.s.fontSize)}" style="width:78px">`)
-      + row('底部状态栏', 'Tabby 原版没有状态栏；关闭后信息只在活动栏提示里出现', toggle('statusBar', T.s.statusBar !== false))
-      + row('左侧活动栏提示', '鼠标悬停图标时显示名称与快捷键', toggle('tooltips', T.s.tooltips !== false))
+      + row('底部状态栏', '显示终端尺寸、编码、输入模式与主题', toggle('statusBar', T.s.statusBar !== false))
+      + row('工具栏提示', '鼠标悬停图标时显示名称与快捷键', toggle('tooltips', T.s.tooltips !== false))
     );
     return h;
   }
@@ -99,7 +108,7 @@
         `<select data-sel="fontFamily">${fams}</select>`)
     );
     h += card('输入',
-      row('模式', 'WindTerm 的 Local / Remote Mode；仅 Remote 下同步输入生效',
+      row('模式', 'Local / Remote 模式；仅 Remote 下同步输入生效',
         `<select data-sel="mode"><option value="Remote"${T.s.mode === 'Remote' ? ' selected' : ''}>远程模式</option>
           <option value="Local"${T.s.mode === 'Local' ? ' selected' : ''}>本地模式</option></select>`)
       + row('同步输入', '打开后键盘输入广播到所有会话（群控）', toggle('sync', !!T.s.sync))
@@ -111,8 +120,8 @@
       + row('后台标签活动提示', '有输出且开了「活动时通知」的标签显示圆点', toggle('activityDot', T.s.activityDot !== false))
       + row('会话输出落盘（PuTTY Logging）', '新会话的终端输出写入 配置目录/logs/session-*.log；仅对新开会话生效', toggle('sessionLog', !!T.s.sessionLog))
     );
-    h += card('输出高亮（借鉴 WindTerm）',
-      row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中行持久着色', toggle('builtinHighlight', T.s.builtinHighlight !== false))
+    h += card('输出高亮',
+      row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中关键词短暂着色，6秒后消退', toggle('builtinHighlight', T.s.builtinHighlight !== false))
       + `<div class="st-row"><div class="st-l"><i>
           <span class="wt-hl-err" style="padding:0 6px;border-radius:3px">error / failed / fatal</span>
           <span class="wt-hl-warn" style="padding:0 6px;border-radius:3px">warn / timeout</span>
@@ -143,7 +152,7 @@
     if (!ss.length) list = '<div class="empty">还没有机器。点下面「打开机器管理」新建第一台。</div>';
 
     let h = `<h2 class="st-h">机器与连接</h2><p class="st-sub">共 ${ss.length} 台。SSH / Telnet / 串口 / TCP / 本地。</p>`;
-    h += card('', `<div class="st-row"><div class="st-l"><b>机器管理</b><i>Tabby 的 Profiles &amp; connections：左列表右表单，支持分组、颜色、代理、跳板机</i></div>
+    h += card('', `<div class="st-row"><div class="st-l"><b>机器管理</b><i>管理本地与远程连接，支持分组、颜色、代理与跳板机</i></div>
       <div class="st-c"><button class="primary" data-open-manager>打开机器管理</button></div></div>`);
     h += card('已保存的机器', list);
     return h;
@@ -164,10 +173,10 @@
         <span class="act">${esc(labelOfAction(r.action))}${r.arg ? ' → ' + esc(r.arg) : ''}</span>
         <button class="icon danger" data-trdel="${i}" title="删除">${window.Icons ? window.Icons.svg('trash') : '×'}</button></div>`;
     });
-    if (!list.length) rows = '<div class="empty">还没有触发器。正则匹配终端输出 → 执行动作（WindTerm TriggerCenter 的同构实现）。</div>';
+    if (!list.length) rows = '<div class="empty">还没有触发器。正则匹配终端输出 → 执行动作。</div>';
 
     const acts = TRIGGER_ACTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-    let h = `<h2 class="st-h">触发器</h2><p class="st-sub">后端引擎 re/triggers.rs（WindTerm TriggerCenter 语义重写）；前端 v0 映射支持高亮 / 响铃 / 发送文本。</p>`;
+    let h = `<h2 class="st-h">触发器</h2><p class="st-sub">匹配终端输出，自动高亮、响铃或发送文本。</p>`;
     h += card('已配置', rows);
     h += card('新增', `<div class="tr-form">
       <input data-tr="name" placeholder="名称" />
@@ -208,10 +217,10 @@
         <i>${ui && ui.latest ? 'v' + esc(ui.latest) + (newer ? ' · 有新版本' : ' · 已是最新') : '尚未检查'}</i></div>
         <div class="st-c">${newer ? `<button class="primary" data-open-tag>打开 v${esc(ui.latest)} 标签页</button>` : ''}</div></div>`);
     h += card('', `
-      <div class="st-row"><div class="st-l"><b>来历</b><i>WindTerm 2.6.0 逆向分析 → Tauri 2 洁净室重写</i></div></div>
+      <div class="st-row"><div class="st-l"><b>来历</b><i>独立项目 · Tauri 2 + Rust + xterm.js</i></div></div>
       <div class="st-row"><div class="st-l"><b>架构</b><i>Tauri 2 + Rust（russh / portable-pty / russh-sftp）后端 + xterm.js 前端</i></div></div>
       <div class="st-row"><div class="st-l"><b>界面</b><i>形态参考 Tabby（无边框标题栏 / 图标活动栏 / 全页设置）；配色令牌取自 Tabby 上游 theme.vars.scss</i></div></div>
-      <div class="st-row"><div class="st-l"><b>许可</b><i>原创代码 Apache-2.0，不含任何 WindTerm 专有文件或数据</i></div></div>
+      <div class="st-row"><div class="st-l"><b>许可</b><i>Apache-2.0，代码全部原创</i></div></div>
       <div class="st-row"><div class="st-l"><b>仓库</b><i>github.com/edwardlewis35/hurricaneTerm</i></div></div>`);
     return h;
   }
@@ -226,6 +235,7 @@
   const RENDERERS = {
     appearance: renderAppearance, terminal: renderTerminal, profiles: renderProfiles,
     triggers: renderTriggers, hotkeys: renderHotkeys, about: renderAbout,
+    gist: () => window.GistSync ? `<div class="gs-root">${GistSync.view()}</div>` : '<p>同步模块未加载</p>',
   };
 
   /* ---------- 事件绑定（每次 render 后重挂） ---------- */
@@ -246,6 +256,16 @@
       };
     });
     // 数字
+    const opacity = bodyEl.querySelector('[data-opacity]');
+    if (opacity && window.Appearance) {
+      opacity.addEventListener('input', () => Appearance.setOpacity(opacity.value, { persist: false }));
+      opacity.addEventListener('change', () => Appearance.setOpacity(opacity.value));
+    }
+    const terminalOpacity = bodyEl.querySelector('[data-terminal-opacity]');
+    if (terminalOpacity && window.Appearance) {
+      terminalOpacity.addEventListener('input', () => Appearance.setTerminalOpacity(terminalOpacity.value, { persist: false }));
+      terminalOpacity.addEventListener('change', () => Appearance.setTerminalOpacity(terminalOpacity.value));
+    }
     bodyEl.querySelectorAll('[data-num]').forEach((i) => {
       i.onchange = () => {
         const v = Math.max(8, Math.min(28, parseInt(i.value, 10) || 13));
@@ -346,6 +366,7 @@
     const fn = RENDERERS[section] || renderAppearance;
     bodyEl.innerHTML = fn();
     bind();
+    if (section === 'gist' && window.GistSync) GistSync.bind(bodyEl.querySelector('.gs-root'));
     bodyEl.scrollTop = 0;
   }
 
@@ -355,15 +376,16 @@
       el = container;
       if (!el || mounted) { if (mounted) doRender(); return; }
       mounted = true;
-      el.innerHTML = `<div class="st-wrap"><nav class="st-nav"></nav><div class="st-body"></div></div>`;
+      el.innerHTML = `<div class="st-wrap"><nav class="st-nav" aria-label="设置分区"></nav><div class="st-body"></div></div>`;
       navEl = el.querySelector('.st-nav');
       bodyEl = el.querySelector('.st-body');
 
-      navEl.innerHTML = `<div class="st-nav-h">设置</div>` + SECTIONS.map((s) =>
-        `<div class="st-nav-i" data-sec="${s.id}">${window.Icons ? window.Icons.svg(s.icon) : ''}<span>${esc(s.label)}</span></div>`).join('');
+      navEl.innerHTML = `<div class="st-nav-h"><span>设置</span><button class="icon st-close" title="关闭设置 (Esc)" aria-label="关闭设置">${window.Icons ? window.Icons.svg('x') : '×'}</button></div>` + SECTIONS.map((s) =>
+        `<button type="button" class="st-nav-i" data-sec="${s.id}">${window.Icons ? window.Icons.svg(s.icon) : ''}<span>${esc(s.label)}</span></button>`).join('');
       navEl.querySelectorAll('[data-sec]').forEach((n) => {
         n.onclick = () => { section = n.dataset.sec; doRender(); };
       });
+      navEl.querySelector('.st-close').onclick = () => this.close();
 
       // Esc 关闭（焦点在输入框里也生效）
       el.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); this.close(); } });
@@ -374,6 +396,9 @@
 
     open(sec) {
       if (!mounted) return;
+      if (window.SftpPanel?.isOpen() && !SftpPanel.hide()) return;
+      if (window.UI?.closeDock) UI.closeDock();
+      if (window.Profiles && Profiles.isOpen()) Profiles.close();
       if (sec) section = sec;
       open = true;
       el.hidden = false;
@@ -399,6 +424,7 @@
 
     // 标题栏齿轮 / 活动栏齿轮的按钮态同步
     syncChrome() {
+      if (window.TitleBar) TitleBar.syncSettings();
       if (window.ActBar && window.ActBar.syncSettings) ActBar.syncSettings();
     },
 

@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.6';
+  const VERSION = '0.7.16';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -19,22 +19,24 @@ window.WT = (function () {
     listen: (e, cb) => ev.listen(e, cb),
 
     s: {
-      theme: 'tabby-dark',
+      theme: 'dige-black',
       fontSize: 13,
       fontFamily: '',
+      backgroundOpacity: 100,
+      terminalOpacity: 100,
       triggers: [],
       sessions: [],
       sync: false,
       mode: 'Remote',
       dockPane: 'explorer',
-      dockVisible: false,          // Tabby 默认收起侧栏
+      dockVisible: false,          // 工具浮窗默认收起
       filerMode: '', remotePath: null,
       filerPath: null,
-      statusBar: true,             // 底部状态栏（Tabby 原版无，可关）
+      statusBar: false,            // 默认让终端铺满窗口，可在外观设置中开启状态栏
       tooltips: true,
       homeOnStart: true,
       activityDot: true,
-      builtinHighlight: true,      // WindTerm 风格内置输出高亮
+      builtinHighlight: true,      // 内置输出高亮
       copyOnSelect: true,          // 选中自动复制
       rightClickPaste: true,       // PuTTY 习惯：右键粘贴
       sessionLog: false,           // PuTTY 习惯：会话输出落盘
@@ -45,7 +47,13 @@ window.WT = (function () {
     async init() {
       try {
         const raw = await WT.invoke('ui_state_load', { name: 'settings' });
-        if (raw) Object.assign(WT.s, JSON.parse(raw));
+        if (raw) {
+          const saved = JSON.parse(raw);
+          Object.assign(WT.s, saved);
+          // The previous single slider controlled both backgrounds. Keep its
+          // saved value for existing installations when adding the separate setting.
+          if (!Object.prototype.hasOwnProperty.call(saved, 'terminalOpacity')) WT.s.terminalOpacity = WT.s.backgroundOpacity;
+        }
       } catch (e) {}
       try {
         const ss = await WT.invoke('sessions_load');
@@ -54,9 +62,9 @@ window.WT = (function () {
     },
 
     persistSettings() {
-      const keys = ['theme', 'fontSize', 'fontFamily', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
+      const keys = ['theme', 'fontSize', 'fontFamily', 'backgroundOpacity', 'terminalOpacity', 'triggers', 'sync', 'mode', 'dockPane', 'dockVisible',
         'statusBar', 'tooltips', 'homeOnStart', 'activityDot', 'builtinHighlight',
-        'copyOnSelect', 'rightClickPaste', 'sessionLog', 'lastUpdateCheck', 'updateInfo'];
+        'copyOnSelect', 'rightClickPaste', 'sessionLog', 'lastUpdateCheck', 'updateInfo', 'sftp'];
       const o = {};
       for (const k of keys) o[k] = WT.s[k];
       WT.invoke('ui_state_save', { name: 'settings', value: JSON.stringify(o) }).catch(() => {});
@@ -179,6 +187,7 @@ window.WT = (function () {
     if (window.ActBar) ActBar.mount($('#actbar'));
     if (window.Settings) Settings.mount($('#settings'));
     if (window.Home) Home.mount($('#home'));
+    if (window.SftpPanel) SftpPanel.mount($('#sftp-panel'));
     if (!WT.term.order.length && WT.s.homeOnStart !== false && window.Home) Home.show();
 
     wireChrome();
@@ -189,16 +198,15 @@ window.WT = (function () {
     await WT.listen('pty-output', (e) => {
       const { id, data } = e.payload;
       const tab = WT.term.findByPty(id);
-      if (!tab) return;
-      // 高亮要在 write 回调里跑（xterm 异步解析），触发器不依赖光标位置可先跑
-      tab.term.write(data, () => WT.term.runHighlights(tab, data));
+      if (!tab) { WT.term.queuePendingEvent('output', id, data); return; }
+      if (tab._closing || tab.exited) return;
+      WT.term.receiveOutput(tab, data);
       if (tab.logging) tab.logBuf = (tab.logBuf || '') + data;
       // 活动通知：后台标签有输出且开了 notify → 圆点
       if (tab.notify && WT.s.activityDot !== false && WT.term.active !== tab.id && !tab.activity) {
         tab.activity = true;
         WT.term.renderTabbar();
       }
-      WT.term.runTriggers(tab, data);
     });
     await WT.listen('re-log', (e) => { try { WT.ui.log(e.payload.data); } catch (_) {} });
     await WT.listen('transfer-progress', (e) => {
@@ -207,14 +215,14 @@ window.WT = (function () {
         WT.ui.transferProgress(name, +done, +total, dir, last === '1');
       } catch (_) {}
     });
+    await WT.listen('sftp-transfer-progress', (e) => {
+      if (window.SftpPanel) SftpPanel.progress(e.payload.data);
+    });
     await WT.listen('pty-exit', (e) => {
       const tab = WT.term.findByPty(e.payload.id);
-      if (!tab || tab.exited) return;
-      WT.flushLogs(tab);
-      tab.exited = true;
-      tab.term.write('\r\n\x1b[2m[进程已退出]\x1b[0m\r\n');
-      WT.term.renderTabbar();
-      WT.ui.log('会话退出 ' + e.payload.id.slice(0, 8));
+      if (!tab) { WT.term.queuePendingEvent('exit', e.payload.id); return; }
+      if (!WT.term.handleExit(tab, e.payload.id)) return;
+      WT.ui.log('会话退出或断开 ' + e.payload.id.slice(0, 8));
     });
 
     window.addEventListener('resize', () => {

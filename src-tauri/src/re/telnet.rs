@@ -1,17 +1,15 @@
-//! Telnet 协商引擎 — 语义重写自 WindTerm 2.6.0 `TelnetCommander` / `TelnetProtocol`
-//! 证据（re-work/decompiled/，入口地址见各文件头）：
-//! - commandAck:    (x!=0) ? DO(0xFD)  : WILL(0xFB)
-//! - commandNoAck:  (x!=0) ? DONT(0xFE): WONT(0xFC)
-//! - commandReq:    (x==0) ? DO(0xFD)  : WILL(0xFB)
-//! - commandNoReq:  (x==0) ? DONT(0xFE): WONT(0xFC)
-//!   （x = TelnetSide：0=远端数据类选项，非0=本地类；ack/noAck 应答对端，req/noReq 我方发起）
-//! - initOptions:   遍历选项表（stride=3），state & 0x10 置位者，
-//!                  有名称 -> WILL，无名称 -> DO，经 writeClientOption 发出 [IAC,cmd,opt]
-//! - initOptionStates: 状态向量补齐为 11 项（0xb），初值复制自选项表
-//! - isLocalEdit:   第 8 个状态（偏移 0x1c）bit0 == 0 时为本地编辑（ECHO 关闭语义）
-//! - writeClientOption: 发送 [IAC, cmd, option] 并 logOption(side=1)
-//! - 解析规则与 extracted/terminal/protocols/telnet.protocol 的命名组一致：
-//!   NegotiateOption / NegotiateSubOption / IgnoreWrongIAC
+//! Telnet 协商引擎 —— 协商命令映射与选项状态机。
+//! - command_ack:   (x!=0) ? DO(0xFD)  : WILL(0xFB)
+//! - command_no_ack:(x!=0) ? DONT(0xFE): WONT(0xFC)
+//! - command_req:   (x==0) ? DO(0xFD)  : WILL(0xFB)
+//! - command_no_req:(x==0) ? DONT(0xFE): WONT(0xFC)
+//!   （x = 协商方向：0=远端数据类选项，非0=本地类；ack/noAck 应答对端，req/noReq 我方发起）
+//! - 初始请求：遍历选项表（每项 3 字段），state & 0x10 置位者，
+//!   有名称 -> WILL，无名称 -> DO，发出 [IAC,cmd,opt]
+//! - 状态向量补齐为 11 项，初值复制自选项表
+//! - is_local_edit：第 8 个状态项 bit0 == 0 时为本地编辑（ECHO 关闭语义）
+//! - 选项写入：发送 [IAC, cmd, option] 并记录 side=1 日志
+//! - 解析规则分三类匹配组：NegotiateOption / NegotiateSubOption / IgnoreWrongIAC
 
 pub const IAC: u8 = 0xFF;
 pub const DONT: u8 = 0xFE;
@@ -34,7 +32,7 @@ pub mod opt {
     pub const NEW_ENV: u8 = 39;
 }
 
-/// 协商方向：对应 WindTerm TelnetSide 参数（0/非0）
+/// 协商方向：远端数据类选项 / 本地类选项（取值 0/非0）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     /// 远端数据类选项（x == 0）
@@ -43,7 +41,7 @@ pub enum Side {
     Local,
 }
 
-/// 四映射函数 —— 与反编译表达式逐一对应
+/// 四映射函数 —— 协商方向到命令字的确切映射
 pub fn command_ack(side: Side) -> u8 {
     match side {
         Side::Local => DO,   // (x!=0)*2+0xfb
@@ -69,7 +67,7 @@ pub fn command_no_req(side: Side) -> u8 {
     }
 }
 
-/// initOptions 的发出命令选择：有名称 -> WILL，无名称 -> DO
+/// 初始请求的发出命令选择：有名称 -> WILL，无名称 -> DO
 pub fn init_command(has_name: bool) -> u8 {
     if has_name {
         WILL
@@ -78,11 +76,11 @@ pub fn init_command(has_name: bool) -> u8 {
     }
 }
 
-/// 状态位：initOptions 检查 0x10（“初始请求发送”位）；bit0 = 已启用
+/// 状态位：初始请求检查 0x10（“初始请求发送”位）；bit0 = 已启用
 pub const STATE_INIT_REQUEST: u8 = 0x10;
 pub const STATE_ENABLED: u8 = 0x1;
 
-/// 单个选项（对应 GetOptionVector 的 stride-3 表项：option / name / init-state）
+/// 单个选项（每项三字段：option / name / init-state）
 #[derive(Clone, Debug)]
 pub struct TelnetOption {
     pub byte: u8,
@@ -91,9 +89,8 @@ pub struct TelnetOption {
     pub side: Side,
 }
 
-/// 客户端默认选项表 —— 布局来自 initOptions/initOptionStates；
-/// 具体条目顺序为 Ghidra __call_once 初始化器（未逐条反编译），按 RFC 客户端惯例填充。
-/// 状态向量长度 11 与 initOptionStates 的 0xb 对齐。
+/// 客户端默认选项表 —— 供初始请求流程遍历；
+/// 条目按 RFC 客户端惯例填充，状态向量长度为 11。
 pub fn client_option_table() -> Vec<TelnetOption> {
     use Side::{Local, Remote};
     let mut t = vec![
@@ -138,7 +135,7 @@ impl Negotiator {
         }
     }
 
-    /// initOptions 等价：对 state & 0x10 的选项发出 [IAC, init_command(has_name), byte]
+    /// 初始请求等价：对 state & 0x10 的选项发出 [IAC, init_command(has_name), byte]
     pub fn initial_requests(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for o in &self.options {
@@ -149,7 +146,7 @@ impl Negotiator {
         out
     }
 
-    /// isLocalEdit：ECHO 状态 bit0 == 0（偏移 0x1c 即第 8 项，此处按 ECHO 语义定位）
+    /// is_local_edit：ECHO 状态 bit0 == 0（第 8 个状态项，此处按 ECHO 语义定位）
     pub fn is_local_edit(&self) -> bool {
         self.options
             .iter()
@@ -166,7 +163,7 @@ impl Negotiator {
         out.extend_from_slice(&[IAC, cmd, opt_byte]);
         log.push(format!("-> {:02X} {}", cmd, name_of(opt_byte)));
     }
-    /// 处理下行字节流（对应 telnet.protocol 的三类匹配组）
+    /// 处理下行字节流（协商/子选项/忽略三类匹配）
     pub fn on_data(&mut self, input: &[u8]) -> Outcome {
         let mut data = Vec::new();
         let mut responses = Vec::new();
@@ -206,7 +203,7 @@ impl Negotiator {
                         }
                     }
                     _ => {
-                        // 其它命令（Go/AO/EC/EL/BM/SBRP…）：WindTerm 走 IgnoreWrongIAC
+                        // 其它命令（Go/AO/EC/EL/BM/SBRP…）：按 IgnoreWrongIAC 语义忽略
                         log.push(format!("<- unhandled IAC {:02X}", b));
                     }
                 }
@@ -272,7 +269,7 @@ impl Negotiator {
     }
 }
 
-/// 选项号 -> 名称（GetOptionName 的表驱动简化版：标准选项 + 未知回退 0xNN）
+/// 选项号 -> 名称（表驱动：标准选项 + 未知回退 0xNN）
 pub fn name_of(byte: u8) -> String {
     client_option_table()
         .into_iter()
@@ -286,7 +283,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn negotiation_table_matches_decompiled_expressions() {
+    fn negotiation_table_values() {
         // commandAck: (x!=0)*2+0xfb
         assert_eq!(command_ack(Side::Local), DO);
         assert_eq!(command_ack(Side::Remote), WILL);

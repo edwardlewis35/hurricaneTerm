@@ -1,60 +1,44 @@
-//! expect 自动登录引擎 —— 语义重写自 WindTerm 2.6.0 `ExpectTask`（QObject, per-Document）
+//! expect 自动登录引擎
 //!
-//! 证据（re-work/decompiled/session/ExpectTask__*.pseudo.txt，sha256 d26c6406…5edd1）：
-//! - ExpectTask::ExpectTask            1004f4530  字段：rules@+0x10, pendingLF@+0x18,
-//!   pendingLP@+0x1c, lastPromptPos@+0x20(= -1), document@+0x28, timer@+0x30(= null)
-//! - addExpectRule(QMap)               1004f4590  去重(uuid+captureGroups) → 按 condition 分派
-//! - executeExpectRule(QMap)           1004f5000  type 7/11 仅通知；否则 TriggerCenter 三段校验后执行
-//! - onTimeout                         1004f57d0  按 timer interval 消耗 delay，未到期者减钟重排
-//! - checkLineFeedCondition            1004f5cf0  pendingLF>0 → checkCondition(1)
-//! - checkLinePromptCondition          1004f5d10  pendingLP>0 且 endScoped==length → checkCondition(2)
-//! - checkCondition(int)               1004f5d50  最旧→最新找首个满足条件者：摘除→计数-1→降级 cond=0 重入列
-//! - removeExpectRules(QStringList)    1004f6350  按 trigger uuid 删除并校正 pending 计数
-//! - replaceText(long long, long long) 1004f6780  文本替换(start, delta) 时重映射 position/提示位
-//! - prop 键名实读自二进制字符串表（re-work/prop-names.tsv）：
-//!   uuid / ruleId / type / condition / delay / position / captureGroups / terminalWidget
-//!
-//! 语义要点（均有反编译行级证据）：
-//! 1. 规则入列一律 **prepend**（index0=最新），但 checkCondition/onTimeout/remove 均从**最旧**（表尾）扫起。
-//! 2. condition 值域 {0,1,2}；其它值 add 时直接丢弃（1004f4b91 后 `if (iVar7 != 0) return;`）。
-//! 3. pending 计数上限：先判 `count > 8` 再自增 → 最大 9（1004f4b91/1004f4c22）。
+//! 语义要点：
+//! 1. 规则入列一律 **prepend**（index0=最新），但条件检查/超时/删除均从**最旧**（表尾）扫起。
+//! 2. condition 值域 {0,1,2}；其它值入列时直接丢弃。
+//! 3. pending 计数上限：先判 `count > 8` 再自增 → 最大 9。
 //! 4. delay==0 的即时规则**不入列**，直接执行；delay<0 丢弃；delay>0 入列并共享单例定时器，
-//!    仅当 `delay < remaining || remaining < 1` 时以 delay 重启（1004f4d51）。
-//! 5. onTimeout 用 QTimer interval 字段（+0x14）作“已流逝基准”：`rem = delay - interval`，
+//!    仅当 `delay < remaining || remaining < 1` 时以 delay 重启。
+//! 5. 超时回调用定时器 interval 字段作“已流逝基准”：`rem = delay - interval`，
 //!    `rem==0 || delay<interval` → 到期执行并摘除；否则 delay:=rem，收尾以 min(rem) 重启，空则停表。
-//! 6. checkCondition 每调用只处理**一条**（摘除后 re-add 即 return，1004f6075→LAB_1004f615b）。
-//! 7. LinePrompt 条件：`promptPos != LLONG_MAX && rule.position < promptPos && promptPos != lastPromptPos`，
-//!    命中时更新 lastPromptPos —— 同一提示位只放行一条规则（1004f6075 else-if 链）。
-//! 8. executeExpectRule 三段校验：triggerFromUuid 非空 → hasSession(document.session) →
-//!    triggerRule(ruleId).uuid == rule.uuid；任一失败静默丢弃（1004f5214/1004f534e）。
-//! 9. replaceText：无 pending 规则时重置 lastPromptPos=-1；cond∈{1,2} 且 start<position 时
-//!    position += delta（delta<0 时钳到 start）；delta>0 且 pendingLF>0 触发 checkCondition(1)；
-//!    start<lastPromptPos 时 lastPromptPos += delta（1004f6780 尾段）。
+//! 6. 条件检查每调用只处理**一条**（摘除后重入列即返回）。
+//! 7. LinePrompt 条件：`promptPos 有效 && rule.position < promptPos && promptPos != lastPromptPos`，
+//!    命中时更新 lastPromptPos —— 同一提示位只放行一条规则。
+//! 8. 执行前三段校验：trigger 存在 → 会话匹配 → ruleId 归属规则 uuid 一致；任一失败静默丢弃。
+//! 9. 文本替换：无 pending 规则时重置 lastPromptPos=-1；cond∈{1,2} 且 start<position 时
+//!    position += delta（delta<0 时钳到 start）；delta>0 且 pendingLF>0 触发换行条件检查；
+//!    start<lastPromptPos 时 lastPromptPos += delta。
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// PROP_CONDITION 值域（addExpectRule 分派证据 1004f4b91..1004f4c68）
+/// condition 值域
 pub const COND_IMMEDIATE: i64 = 0;
 pub const COND_LINE_FEED: i64 = 1;
 pub const COND_LINE_PROMPT: i64 = 2;
 
-/// executeExpectRule 中仅触发 Document::notifyExpectTriggered、不执行动作的 type 值
-/// （证据 1004f5112: `if (iVar4 == 7) goto notify`；1004f53aa: `if (iVar4 == 0xb)`）
+/// 仅触发文档通知、不执行动作的 type 值
 pub const TYPE_NOTIFY_ONLY: i64 = 7;
 pub const TYPE_NOTIFY_ONLY_11: i64 = 11;
 
-/// pending 计数上限守卫：`if (8 < count) return;`（先判后增 → 最大 9）
+/// pending 计数上限守卫：先判后增 → 最大 9
 pub const PENDING_CAP: i32 = 8;
 
-/// 一条 expect 规则 = WindTerm QMap<QString,QVariant>；键名以二进制字符串表实读为准。
+/// 一条 expect 规则 = 键值对集合；键名与序列化格式一致。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rule {
     /// "uuid" —— 所属 trigger 的 UUID（去重键之一；执行期三段校验依据）
     #[serde(rename = "uuid", default)]
     pub uuid: String,
-    /// "ruleId" —— trigger 内规则序号（TriggerCenter::triggerRule(i) 的入参）
+    /// "ruleId" —— trigger 内规则序号（按全局下标取规则的入参）
     #[serde(rename = "ruleId", default)]
     pub rule_id: i64,
     /// "type" —— trigger 动作类型；7/11 为仅通知
@@ -72,52 +56,51 @@ pub struct Rule {
     /// "captureGroups" —— 正则捕获组（去重键之二；执行时传给 executeTriggerRule）
     #[serde(rename = "captureGroups", default)]
     pub capture_groups: BTreeMap<String, String>,
-    /// "terminalWidget" —— QPointer<TerminalWidget>，重写为不透明句柄
+    /// "terminalWidget" —— 终端控件不透明句柄
     #[serde(rename = "terminalWidget", default)]
     pub terminal_widget: Option<String>,
 }
 
 impl Rule {
-    /// 等价于 QVariant::cmp 的去重比较：uuid 与 captureGroups 全等（1004f46de/1004f479c 双查）
+    /// 去重比较：uuid 与 captureGroups 全等
     fn same_identity(&self, other: &Rule) -> bool {
         self.uuid == other.uuid && self.capture_groups == other.capture_groups
     }
 }
 
-/// Document 侧查询面（反编译中 Document::Length/getEndScoped/LinesTotal/LineFromPosition/
-/// lastScreenPromptSignPosition 与 document+0x2b8 的会话 uuid）
+/// 文档侧查询面（文档长度、作用域末尾、行数/行号、屏幕提示位与会话 uuid）
 pub trait Doc {
     fn length(&self) -> i64;
     fn end_scoped(&self) -> i64;
     fn lines_total(&self) -> i64;
     fn line_from_position(&self, pos: i64) -> i64;
-    /// None 对应 LLONG_MAX（无屏幕提示符标记，1004f6075 的 `!= 0x7fffffffffffffff` 判定）
+    /// None 对应无效值（无屏幕提示符标记）
     fn last_screen_prompt_sign_position(&self) -> Option<i64>;
     fn session_uuid(&self) -> &str;
 }
 
-/// TriggerCenter / Document 通知面（executeExpectRule 的全部外部效应）
+/// 通知/校验面（expect 规则执行的全部外部效应）
 pub trait Sink {
-    /// Document::notifyExpectTriggered —— type 7/11 唯一动作
+    /// expect 触发通知 —— type 7/11 唯一动作
     fn notify_expect_triggered(&mut self, rule: &Rule);
-    /// TriggerCenter::triggerFromUuid(uuid) 是否命中
+    /// uuid 是否存在对应 trigger
     fn trigger_exists(&self, uuid: &str) -> bool;
-    /// Trigger::hasSession(document+0x2b8, true)
+    /// trigger 对该会话是否匹配
     fn trigger_has_session(&self, uuid: &str, session: &str) -> bool;
-    /// TriggerCenter::triggerRule(ruleId) 的 owner uuid；规则不存在 → None
+    /// ruleId 对应规则的 owner uuid；规则不存在 → None
     fn trigger_rule_uuid(&self, rule_id: i64) -> Option<String>;
-    /// TriggerCenter::executeTriggerRule(rule, captureGroups, terminalWidget)
+    /// 执行 trigger 规则（rule_id + 捕获组 + widget 句柄）
     fn execute_trigger_rule(&mut self, rule_id: i64, rule: &Rule);
 }
 
-/// QTimer 抽象（证据：addExpectRule 读 remainingTime()，onTimeout 读 interval 字段 +0x14）。
+/// 定时器抽象（入列读剩余时间，超时回调读 interval 字段）。
 /// 宿主负责真实计时并回调 on_timeout()。
 #[derive(Clone, Debug, Default)]
 pub struct Timer {
     pub running: bool,
-    /// QTimer::start(msecs) 设定值（非 repeating 语义依赖：到期后由 onTimeout 重排/停表）
+    /// start(msecs) 设定值（到期后由 on_timeout 重排/停表）
     pub interval: i64,
-    /// remainingTime()：未运行恒为 0
+    /// 剩余时间：未运行恒为 0
     pub remaining: i64,
 }
 
@@ -141,19 +124,19 @@ impl Timer {
     }
 }
 
-/// ExpectTask 重写：泛型注入 Document 与 TriggerCenter 语义面，纯同步可测。
+/// expect 引擎：泛型注入文档与触发器中心语义面，纯同步可测。
 pub struct ExpectEngine<D: Doc, S: Sink> {
     pub doc: D,
     pub sink: S,
-    /// QList<QMap> 语义：index 0 = 最新（prepend）；扫描序 = 表尾→表头（最旧→最新）
+    /// index 0 = 最新（prepend）；扫描序 = 表尾→表头（最旧→最新）
     pub rules: Vec<Rule>,
-    /// +0x18
+    /// 等待换行条件的计数
     pub pending_line_feed: i32,
-    /// +0x1c
+    /// 等待提示符条件的计数
     pub pending_line_prompt: i32,
-    /// +0x20，ctor 置 -1
+    /// 最近提示位，构造置 -1
     pub last_prompt_pos: i64,
-    /// +0x30，懒创建（首条 delay>0 规则）
+    /// 定时器，懒创建（首条 delay>0 规则）
     pub timer: Option<Timer>,
 }
 
@@ -170,10 +153,10 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
         }
     }
 
-    /// ExpectTask::addExpectRule (1004f4590)
+    /// 入列一条 expect 规则。
     /// 返回 false = 规则被拒绝（去重命中 / 超上限 / 非法 condition / 负 delay）。
     pub fn add_expect_rule(&mut self, rule: Rule) -> bool {
-        // 去重：uuid 与 captureGroups 全等则丢弃（1004f46de..1004f4a77 双 QVariant::cmp）
+        // 去重：uuid 与 captureGroups 全等则丢弃
         if self.rules.iter().any(|r| r.same_identity(&rule)) {
             return false;
         }
@@ -187,7 +170,7 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
                 if self.pending_line_prompt < 1 {
                     return true;
                 }
-                // 证据：仅 LinePrompt 分支要求 endScoped == length（1004f4b91 cond==2 段）
+                // 仅 LinePrompt 分支要求 end_scoped == length
                 if self.doc.end_scoped() != self.doc.length() {
                     return true;
                 }
@@ -206,14 +189,14 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
             }
             COND_IMMEDIATE => {
                 if rule.delay == 0 {
-                    // 即时执行，不入列（1004f4d51: executeExpectRule 后 return）
+                    // 即时执行，不入列
                     self.execute_expect_rule(&rule);
                     return true;
                 }
                 if rule.delay < 1 {
-                    return false; // 负 delay：丢弃（1004f4d51 `if (iVar7 < 1) return;`）
+                    return false; // 负 delay：丢弃
                 }
-                // 共享定时器懒创建 + 最短 delay 重启（1004f4d51..1004f4e0f）
+                // 共享定时器懒创建 + 最短 delay 重启
                 let t = self.timer.get_or_insert_with(Timer::default);
                 let remaining = t.remaining_time();
                 if rule.delay < remaining || remaining < 1 {
@@ -226,8 +209,8 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
         true
     }
 
-    /// ExpectTask::checkCondition(class) (1004f5d50)
-    /// 最旧→最新扫描，仅处理首个满足条件者：摘除 → 计数-1 → cond 置 0 重新 add。
+    /// 条件检查 (class)：
+    /// 最旧→最新扫描，仅处理首个满足条件者：摘除 → 计数-1 → cond 置 0 重新入列。
     pub fn check_condition(&mut self, class: i64) {
         if self.rules.is_empty() {
             return;
@@ -240,12 +223,12 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
                 if r.condition != class {
                     false
                 } else if class == COND_LINE_FEED {
-                    // 证据：LineFromPosition(position) < LinesTotal - 1（1004f5fd1）
+                    // 判定：line_from_position(position) < lines_total - 1
                     let line = self.doc.line_from_position(r.position);
                     let total = self.doc.lines_total();
                     line < total - 1
                 } else if class == COND_LINE_PROMPT {
-                    // 证据：p != LLONG_MAX && position < p && p != lastPromptPos（1004f6075）
+                    // 判定：p 有效 && position < p && p != last_prompt_pos
                     match self.doc.last_screen_prompt_sign_position() {
                         Some(p) => p != i64::MAX && r.position < p && p != self.last_prompt_pos,
                         None => false,
@@ -257,7 +240,7 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
             if satisfied {
                 if class == COND_LINE_PROMPT {
                     if let Some(p) = self.doc.last_screen_prompt_sign_position() {
-                        self.last_prompt_pos = p; // 1004f6075: *(this+0x20) = lVar12
+                        self.last_prompt_pos = p; // 命中时记录提示位
                     }
                 }
                 let mut r = self.rules.remove(k);
@@ -265,34 +248,34 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
                     COND_LINE_FEED => self.pending_line_feed -= 1,
                     _ => self.pending_line_prompt -= 1,
                 }
-                r.condition = COND_IMMEDIATE; // insert(PROP_CONDITION, QVariant(0)) 1004f60fa
+                r.condition = COND_IMMEDIATE; // 降级为立即条件
                 self.add_expect_rule(r);
                 return; // 每次调用只推进一条
             }
         }
     }
 
-    /// ExpectTask::checkLineFeedCondition (1004f5cf0)
+    /// 换行条件检查入口
     pub fn check_line_feed_condition(&mut self) {
         if self.pending_line_feed > 0 {
             self.check_condition(COND_LINE_FEED);
         }
     }
 
-    /// ExpectTask::checkLinePromptCondition (1004f5d10)
+    /// 提示符条件检查入口
     pub fn check_line_prompt_condition(&mut self) {
         if self.pending_line_prompt > 0 && self.doc.end_scoped() == self.doc.length() {
             self.check_condition(COND_LINE_PROMPT);
         }
     }
 
-    /// ExpectTask::executeExpectRule (1004f5000)
+    /// 执行单条 expect 规则
     pub fn execute_expect_rule(&mut self, rule: &Rule) {
         if rule.r#type == TYPE_NOTIFY_ONLY {
             self.sink.notify_expect_triggered(rule);
             return;
         }
-        // 三段校验（triggerFromUuid / hasSession / triggerRule(id).uuid == uuid）
+        // 三段校验（trigger 存在 / 会话匹配 / 规则归属一致）
         if !self.sink.trigger_exists(&rule.uuid) {
             return;
         }
@@ -310,12 +293,12 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
         self.sink.execute_trigger_rule(rule.rule_id, rule);
     }
 
-    /// ExpectTask::onTimeout (1004f57d0) —— 宿主定时器到期回调。
+    /// 定时器到期回调（宿主触发）。
     /// 以 timer.interval 为“已消耗时长”基准：到期规则执行并摘除；未到期 delay 减钟，
     /// 收尾以最小剩余重启定时器，全部清空则停表。
     pub fn on_timeout(&mut self) {
         let interval = self.timer.as_ref().map(|t| t.interval).unwrap_or(0);
-        let mut best: i64 = -1; // local_4c
+        let mut best: i64 = -1;
         let mut k = self.rules.len();
         while k > 0 {
             k -= 1;
@@ -330,7 +313,7 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
                     self.rules[k].delay = 0;
                     let snapshot = self.rules[k].clone();
                     self.execute_expect_rule(&snapshot);
-                    // 证据 1004f5bd6：界检 (k+1 <= fresh_len) 后按 fresh begin + k 寻址删除
+                    // 界检后按当前列表寻址删除
                     if k < self.rules.len() {
                         self.rules.remove(k);
                     }
@@ -342,14 +325,14 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
         }
         if let Some(t) = self.timer.as_mut() {
             if best != -1 {
-                t.start(best); // 1004f5c2c: QTimer::start(best)
+                t.start(best); // 以最小剩余重启定时器
             } else {
-                t.stop(); // 1004f5c43: stop + interval 归零
+                t.stop(); // 停表 + interval 归零
             }
         }
     }
 
-    /// ExpectTask::removeExpectRules (1004f6350) —— 按 trigger uuid 批量删除并校正计数。
+    /// 按 trigger uuid 批量删除并校正计数。
     pub fn remove_expect_rules(&mut self, uuids: &[String]) {
         let mut k = self.rules.len();
         while k > 0 {
@@ -366,10 +349,10 @@ impl<D: Doc, S: Sink> ExpectEngine<D, S> {
         }
     }
 
-    /// ExpectTask::replaceText(start, delta) (1004f6780) —— 文档文本替换后维护等待位点。
+    /// 文档文本替换 (start, delta) 后维护等待位点。
     pub fn replace_text(&mut self, start: i64, delta: i64) {
         if self.pending_line_feed < 1 && self.pending_line_prompt < 1 {
-            self.last_prompt_pos = -1; // 1004f6780 头部：无 pending 即复位提示位标记
+            self.last_prompt_pos = -1; // 无 pending 即复位提示位标记
             return;
         }
         for r in self.rules.iter_mut() {
@@ -425,7 +408,7 @@ mod tests {
         fn session_uuid(&self) -> &str { &self.session }
     }
 
-    /// 可控 TriggerCenter 桩
+    /// 可控 TriggerManager 桩
     #[derive(Default)]
     struct MockSink {
         triggers: Vec<String>,
@@ -480,7 +463,7 @@ mod tests {
     fn dedup_by_uuid_and_capture_groups() {
         let mut e = engine();
         assert!(e.add_expect_rule(rule(COND_IMMEDIATE, 100, 0)));
-        // 同 uuid 同 captureGroups → 拒绝（1004f46de 双 cmp 均等 return）
+        // 同 uuid 同 captureGroups → 拒绝
         assert!(!e.add_expect_rule(rule(COND_IMMEDIATE, 200, 0)));
         e.rules[0].capture_groups.insert("g1".into(), "v".into());
         assert!(e.add_expect_rule(rule(COND_IMMEDIATE, 200, 0))); // captureGroups 不同 → 可加
@@ -499,7 +482,7 @@ mod tests {
     #[test]
     fn negative_delay_dropped_and_bad_condition_dropped() {
         let mut e = engine();
-        assert!(!e.add_expect_rule(rule(COND_IMMEDIATE, -5, 0))); // 1004f4d51 iVar<1 return
+        assert!(!e.add_expect_rule(rule(COND_IMMEDIATE, -5, 0))); // 负 delay 丢弃
         assert!(!e.add_expect_rule(rule(9, 0, 0))); // 未知 condition
         assert!(e.rules.is_empty());
     }
@@ -509,7 +492,7 @@ mod tests {
         let mut e = engine();
         assert!(e.add_expect_rule(rule(COND_IMMEDIATE, 100, 0)));
         assert_eq!(e.timer.as_ref().unwrap().interval, 100);
-        // 更长 delay 且定时器在跑 → 不重启（1004f4d51 条件）
+        // 更长 delay 且定时器在跑 → 不重启
         e.timer.as_mut().unwrap().remaining = 50;
         assert!(e.add_expect_rule(with_uuid(300, "trig-2")));
         assert_eq!(e.timer.as_ref().unwrap().interval, 100);
@@ -573,7 +556,7 @@ mod tests {
         assert_eq!(e.pending_line_prompt, 1);
         assert_eq!(e.sink.events.len(), 1);
         assert_eq!(e.last_prompt_pos, 100);
-        // 同一提示位不再放行第二条（p != lastPromptPos 证据 1004f6075）
+        // 同一提示位不再放行第二条（p != last_prompt_pos）
         e.check_line_prompt_condition();
         assert_eq!(e.sink.events.len(), 1);
         // 新提示位 → 放行
@@ -605,11 +588,11 @@ mod tests {
         r.uuid = "ghost".into();
         e.add_expect_rule(r);
         assert!(e.sink.events.is_empty());
-        // hasSession false
+        // 会话不匹配
         e.sink.has_sess = false;
         e.add_expect_rule(rule(COND_IMMEDIATE, 0, 0));
         assert!(e.sink.events.is_empty());
-        // ruleId 归属校验失败（triggerRule(42).uuid != rule.uuid）
+        // ruleId 归属校验失败（规则 owner != rule.uuid）
         e.sink.has_sess = true;
         e.sink.rule_owner.clear();
         e.sink.rule_owner.push((42, "other".into()));
@@ -650,7 +633,7 @@ mod tests {
         let mut e = engine();
         e.last_prompt_pos = 77;
         e.replace_text(1, 5);
-        assert_eq!(e.last_prompt_pos, -1); // 无 pending → 复位（1004f6780 头部分支）
+        assert_eq!(e.last_prompt_pos, -1); // 无 pending → 复位
     }
 
     #[test]

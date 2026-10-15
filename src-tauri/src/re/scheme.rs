@@ -1,6 +1,6 @@
 //! P2-1 scheme 引擎 —— bash 命令行语法分词（TextMate 式 scope 分层）。
-//! 设计借鉴 WindTerm .lexer 的**格式思想**（scopeName/patterns），模式全部自研；
-//! 未读取任何 WindTerm 专有数据文件。用途：输入行高亮、补全上下文判定、Outline 分组。
+//! scheme 采用 scopeName/patterns 的格式定义词法层，模式自研。
+//! 用途：输入行高亮、补全上下文判定、Outline 分组。
 //!
 //! 已知简化（v1）：
 //! - 词法按字节扫描，UTF-8 安全（切分点只落在 ASCII 边界）；

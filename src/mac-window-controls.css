@@ -1,0 +1,25 @@
+/* macOS 自绘窗口按钮：圆点保持系统尺寸，组内 hover/键盘 focus 显示三个符号。 */
+#mac-lights .ml {
+  width: 12px; height: 12px; min-width: 12px; min-height: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 12px; padding: 0; border: 0; border-radius: 50%;
+  appearance: none; -webkit-appearance: none; -webkit-app-region: no-drag;
+  box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .12);
+  cursor: default; transition: none;
+}
+#mac-lights .ml-close { background: #ff5f57; color: #4c0000; }
+#mac-lights .ml-min { background: #febc2e; color: #785400; }
+#mac-lights .ml-max { background: #28c840; color: #006500; }
+#mac-lights:hover .ml::after { content: none; }
+#mac-lights .ml-glyph {
+  width: 12px; height: 12px; display: block; flex: none;
+  fill: none; stroke: currentColor; stroke-width: 1.1;
+  stroke-linecap: square; opacity: 0; pointer-events: none;
+}
+#mac-lights .ml-expand { fill: currentColor; stroke: none; }
+#mac-lights:hover .ml-glyph,
+#mac-lights:focus-within .ml-glyph { opacity: 1; }
+#mac-lights .ml:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+  box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .12);
+}

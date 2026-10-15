@@ -1,12 +1,24 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.7.6",
+  "version": "0.7.16",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
     "build-deb": "npm run prepare-dist && tauri build --bundles deb",
-    "test:ui": "node scripts/ui-integration-test.mjs"
+    "test:ui": "node scripts/ui-integration-test.mjs",
+    "test:sftp": "node scripts/sftp-ui-test.mjs",
+    "test:controls": "node scripts/common-controls-test.mjs",
+    "test:terminal": "node scripts/terminal-regression-test.mjs",
+    "test:appearance": "node scripts/terminal-appearance-test.mjs",
+    "test:layout": "node scripts/layout-regression-test.mjs",
+    "test:mac-controls": "node scripts/mac-controls-test.mjs",
+    "test:icons": "node scripts/icon-assets-test.mjs",
+    "test:quick-connect": "node scripts/quick-connect-test.mjs",
+    "test:header": "node scripts/header-continuity-test.mjs",
+    "test:workspace": "node scripts/workspace-regression-test.mjs",
+    "test:gist": "node scripts/gist-sync-test.mjs",
+    "test:reconnect": "node scripts/reconnect-regression-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

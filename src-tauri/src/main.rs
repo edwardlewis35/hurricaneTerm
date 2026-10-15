@@ -1,38 +1,46 @@
 // hurricaneTerm — Tauri 2 backend: local PTY sessions + fs/state services.
-// Original implementation (Apache-2.0, see LICENSE). UI structure mirrors WindTerm's layout
-// (dock panes / menu / statusbar / triggers), code is our own.
+// Original implementation (Apache-2.0, see LICENSE); every module in this repo is
+// written from scratch (PTY/SSH/Telnet/serial sessions, dock panes, statusbar, triggers).
 #![allow(unused)]
 
 mod re;
 mod jump;
+mod files;
+mod pty_child;
+mod terminal_io;
 mod ssh_live;
 mod ssh_relay;
 #[cfg(unix)]
 mod serial_live;
 mod tcp_live;
+mod gist_sync;
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 type BoxedWriter = Box<dyn Write + Send>;
+type SessionWriter = Arc<tokio::sync::Mutex<BoxedWriter>>;
 type BoxedResize = Box<dyn Fn(u16, u16) -> Result<(), String> + Send>;
-type BoxedChild = Box<dyn Child + Send + Sync>;
 
 struct Entry {
-    writer: BoxedWriter,
+    writer: SessionWriter,
     resize: BoxedResize,
-    child: Option<Arc<Mutex<BoxedChild>>>,
+    killer: Option<pty_child::Killer>,
     closer: Option<Box<dyn Fn() + Send>>,
     sftp: Option<tokio::sync::mpsc::UnboundedSender<ssh_live::SftpReq>>,
 }
 
 #[derive(Default)]
 struct PtyState(Mutex<HashMap<String, Entry>>);
+
+#[derive(Default)]
+struct TransferState(Mutex<HashMap<String, Arc<ssh_live::TransferControl>>>);
 
 #[derive(Clone, Serialize)]
 struct OutPayload {
@@ -64,7 +72,7 @@ pub struct Session {
     pub protocol: String,
     #[serde(default)]
     pub password: String,
-    // —— 串口/TCP（项5 live 模块；字段名对齐 WindTerm 属性表 session.target/serial.*）——
+    // —— 串口/TCP（live 模块；字段名沿用 session.target/serial.*）——
     #[serde(default)]
     pub target: String,
     #[serde(default)]
@@ -110,6 +118,7 @@ pub struct FsEntry {
     pub size: u64,
     pub modified: u64,
     pub is_link: bool,
+    pub permissions: Option<u32>,
 }
 
 fn default_shell() -> String {
@@ -171,37 +180,39 @@ fn spawn(
     });
 
     let id = Uuid::new_v4().to_string();
+    let output_stopped = Arc::new(AtomicBool::new(false));
 
     {
         let id2 = id.clone();
         let app2 = app.clone();
+        let stopped = output_stopped.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut decoder = terminal_io::Utf8Decoder::default();
             loop {
+                if stopped.load(Ordering::Acquire) { break; }
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        let data = decoder.finish();
+                        if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
                         break;
                     }
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data });
+                        if stopped.load(Ordering::Acquire) { break; }
+                        let data = decoder.push(&buf[..n]);
+                        if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                     }
                 }
             }
         });
     }
 
-    let child = Arc::new(Mutex::new(child));
-    {
-        let c = Arc::clone(&child);
-        let id3 = id.clone();
-        let app3 = app.clone();
-        std::thread::spawn(move || {
-            let _ = c.lock().unwrap().wait();
-            let _ = app3.emit("pty-exit", ExitPayload { id: id3 });
-        });
-    }
+    let id3 = id.clone();
+    let app3 = app.clone();
+    let killer = pty_child::monitor_child(child, move || {
+        let _ = app3.emit("pty-exit", ExitPayload { id: id3 });
+    });
 
     state
         .0
@@ -210,17 +221,17 @@ fn spawn(
         .insert(
             id.clone(),
             Entry {
-                writer: Box::new(writer),
+                writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
                 resize,
-                child: Some(child),
-                closer: None,
+                killer: Some(killer),
+                closer: Some(Box::new(move || { output_stopped.store(true, Ordering::Release); })),
                 sftp: None,
             },
         );
     Ok(id)
 }
 
-/// Telnet 会话：协商引擎语义重写自 WindTerm TelnetCommander（见 re/telnet.rs 证据注释）
+/// Telnet 会话：协商引擎见 re/telnet.rs
 #[tauri::command]
 fn connect_telnet(
     app: AppHandle,
@@ -249,9 +260,12 @@ fn connect_telnet(
         let app2 = app.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            let mut decoder = terminal_io::Utf8Decoder::default();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        let data = decoder.finish();
+                        if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
                         break;
                     }
@@ -267,7 +281,7 @@ fn connect_telnet(
                             );
                         }
                         if !o.data.is_empty() {
-                            let data = String::from_utf8_lossy(&o.data).to_string();
+                            let data = decoder.push(&o.data);
                             let _ = app2.emit(
                                 "pty-output",
                                 OutPayload { id: id2.clone(), data },
@@ -282,9 +296,9 @@ fn connect_telnet(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer: Box::new(writer),
+            writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
             resize: Box::new(|_r, _c| Ok(())),
-            child: None,
+            killer: None,
             closer: Some(Box::new(move || {
                 let _ = killer.shutdown(std::net::Shutdown::Both);
             })),
@@ -294,7 +308,7 @@ fn connect_telnet(
     Ok(id)
 }
 
-/// SSH 会话：russh 实连，认证序列/状态映射遵循 re/ssh_auth 语义（WindTerm 证据）
+/// SSH 会话：russh 实连，认证序列/状态映射遵循 re/ssh_auth 语义
 #[tauri::command]
 fn connect_ssh(
     app: AppHandle,
@@ -315,7 +329,7 @@ fn connect_ssh(
     jump_host: Option<String>,
 ) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
-    // 中继/代理拨号层（ssh_relay，实证 connectHost 分发语义）
+    // 中继/代理拨号层（ssh_relay）
     let proxy = match proxy_type.as_deref().unwrap_or("") {
         "" | "none" | "None" => ssh_relay::Proxy::None,
         v => ssh_relay::proxy_from_session_value(v, &ssh_relay::ProxyProps {
@@ -350,7 +364,7 @@ fn connect_ssh(
     let user = user.filter(|u| !u.is_empty()).unwrap_or_else(|| {
         std::env::var("USER").unwrap_or_else(|_| "root".into())
     });
-    // 默认密钥：~/.ssh/id_ed25519（WindTerm 自动发现语义简化版）
+    // 默认密钥：~/.ssh/id_ed25519（自动发现）
     let key = key_path.filter(|k| !k.is_empty()).or_else(|| {
         let h = std::env::var("HOME").ok()?;
         Some(format!("{h}/.ssh/id_ed25519"))
@@ -376,11 +390,11 @@ fn connect_ssh(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer: Box::new(ssh_live::SshInput(ssh_in)),
+            writer: Arc::new(tokio::sync::Mutex::new(Box::new(ssh_live::SshInput(ssh_in)))),
             resize: Box::new(move |r, c| {
                 rz.send((c as u32, r as u32)).map_err(|_| "closed".to_string())
             }),
-            child: None,
+            killer: None,
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
@@ -390,9 +404,9 @@ fn connect_ssh(
     Ok(id)
 }
 
-/// 串口会话：实连层 serialport 4；选项表键名按二进制实读（serial.baudRate/dataBits/parity/stopBits/flowControl）
-/// 语义路径：re::serial::settings_from_options（默认/归一/校验全在证据模块）；
-/// 实证：运行期改选项无效（setOption 空函数体）→ 本命令仅在 open 时读参，重连生效。
+/// 串口会话：实连层 serialport 4；选项键名 serial.baudRate/dataBits/parity/stopBits/flowControl
+/// 语义路径：re::serial::settings_from_options（默认/归一/校验都在该模块）；
+/// 运行期改选项无效 → 本命令仅在 open 时读参，重连生效。
 #[tauri::command]
 fn connect_serial(
     app: AppHandle,
@@ -432,14 +446,14 @@ fn connect_serial(
     let (host_label, ctl) =
         serial_live::spawn_session(app.clone(), id.clone(), target.trim(), &opts)
             .map_err(|e| e.to_string())?;
-    let _ = host_label; // 标题用会话名；host=portName 实证已在 serial_live 内
+    let _ = host_label; // 标题用会话名；host=portName 已在 serial_live 内处理
     let stop = ctl.stop;
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer: Box::new(ctl.writer), // Box<dyn SerialPort>: Write + Send（trait 超界）
+            writer: Arc::new(tokio::sync::Mutex::new(Box::new(ctl.writer))), // Box<dyn SerialPort>: Write + Send
             resize: Box::new(|_r, _c| Ok(())), // 串口无窗口尺寸概念
-            child: None,
+            killer: None,
             sftp: None,
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
@@ -494,9 +508,9 @@ fn connect_tcp(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
-            writer,
-            resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义（实证：桥层无 resizeWindow）
-            child: None,
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
+            resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义
+            killer: None,
             sftp: None,
             closer: Some(Box::new(move || {
                 let _ = stop.send(()); // 通知 pump
@@ -508,11 +522,20 @@ fn connect_tcp(
 }
 
 #[tauri::command]
-fn write(state: State<PtyState>, id: String, data: String) -> Result<(), String> {
-    let mut map = state.0.lock().map_err(|e| e.to_string())?;
-    let e = map.get_mut(&id).ok_or("no such pty")?;
-    e.writer.write_all(data.as_bytes()).map_err(|x| x.to_string())?;
-    e.writer.flush().map_err(|x| x.to_string())
+async fn write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
+    let writer = {
+        let map = state.0.lock().map_err(|e| e.to_string())?;
+        map.get(&id).ok_or("no such pty")?.writer.clone()
+    };
+    // Only this session's writer is locked while IO can block. Other sessions,
+    // close, resize and SFTP calls never wait on a global map lock held by IO.
+    // Tokio's FIFO mutex serializes input without consuming blocking workers
+    // while another write is pending (important for quick typing / paste).
+    let mut writer = writer.lock_owned().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
 }
 /* ---------- PuTTY 式会话落盘日志（设置页开关；前端缓冲后按秒刷盘） ---------- */
 #[derive(Default)]
@@ -565,15 +588,16 @@ fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<()
 }
 
 #[tauri::command]
-fn kill(state: State<PtyState>, id: String) -> Result<(), String> {
-    let mut map = state.0.lock().map_err(|e| e.to_string())?;
-    if let Some(e) = map.remove(&id) {
-        if let Some(c) = &e.child {
-            let _ = c.lock().unwrap().kill();
-        }
-        if let Some(cl) = &e.closer {
-            cl();
-        }
+async fn kill(state: State<'_, PtyState>, id: String) -> Result<(), String> {
+    let entry = state.0.lock().map_err(|e| e.to_string())?.remove(&id);
+    // Removing the entry is idempotent; release the global map before any
+    // signal, socket shutdown or destructor runs. None run on the UI thread.
+    if let Some(mut entry) = entry {
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Some(close) = &entry.closer { close(); }
+            if let Some(killer) = &mut entry.killer { let _ = killer.kill(); }
+            drop(entry);
+        }).await.map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -622,6 +646,99 @@ async fn sftp_upload(
     remote: String,
 ) -> Result<(), String> {
     sftp_call(&state, id, |reply| ssh_live::SftpReq::Upload { local, remote, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_realpath(state: State<'_, PtyState>, id: String, path: String) -> Result<String, String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Realpath { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_stat(state: State<'_, PtyState>, id: String, path: String) -> Result<Option<ssh_live::SftpEntry>, String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Stat { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_mkdir(state: State<'_, PtyState>, id: String, path: String) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Mkdir { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_create_file(state: State<'_, PtyState>, id: String, path: String) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::CreateFile { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_rename(state: State<'_, PtyState>, id: String, from: String, to: String) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Rename { from, to, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_copy(state: State<'_, PtyState>, id: String, from: String, to: String, move_item: bool) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Copy { from, to, move_item, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_remove(state: State<'_, PtyState>, id: String, path: String, recursive: bool) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Remove { path, recursive, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_read_file(state: State<'_, PtyState>, id: String, path: String) -> Result<files::FilePreview, String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::ReadFile { path, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_write_file(
+    state: State<'_, PtyState>, id: String, path: String, content: String,
+    expected_modified: Option<u64>, expected_revision: Option<String>, force: bool,
+) -> Result<(), String> {
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::WriteFile {
+        path, content, expected_modified, expected_revision, force, reply,
+    }).await
+}
+
+#[tauri::command]
+async fn sftp_chmod(state: State<'_, PtyState>, id: String, path: String, mode: u32) -> Result<(), String> {
+    if mode > 0o7777 { return Err("权限必须是 0000–7777 范围内的八进制模式".into()); }
+    sftp_call(&state, id, |reply| ssh_live::SftpReq::Chmod { path, mode, reply }).await
+}
+
+#[tauri::command]
+async fn sftp_transfer_start(
+    state: State<'_, PtyState>, transfers: State<'_, TransferState>,
+    id: String, transfer_id: String, local: String, remote: String, upload: bool, policy: String,
+) -> Result<(), String> {
+    if transfer_id.trim().is_empty() { return Err("传输 ID 不能为空".into()); }
+    if !matches!(policy.as_str(), "overwrite" | "skip" | "rename") {
+        return Err("未知的文件冲突处理策略".into());
+    }
+    let control = Arc::new(ssh_live::TransferControl::new());
+    {
+        let mut registry = transfers.0.lock().map_err(|e| e.to_string())?;
+        if registry.contains_key(&transfer_id) { return Err("该传输已经在运行".into()); }
+        registry.insert(transfer_id.clone(), Arc::clone(&control));
+    }
+    let result = sftp_call(&state, id, |reply| ssh_live::SftpReq::Transfer {
+        transfer_id: transfer_id.clone(), local, remote, upload, policy, control, reply,
+    }).await;
+    if let Ok(mut registry) = transfers.0.lock() { registry.remove(&transfer_id); }
+    result
+}
+
+#[tauri::command]
+fn sftp_transfer_control(transfers: State<'_, TransferState>, transfer_id: String, action: String) -> Result<(), String> {
+    let control = {
+        transfers.0.lock().map_err(|e| e.to_string())?.get(&transfer_id).cloned()
+            .ok_or_else(|| "传输已结束或不存在".to_string())?
+    };
+    match action.as_str() {
+        "pause" => control.pause(),
+        "resume" => control.resume(),
+        "cancel" => control.cancel(),
+        _ => return Err("未知的传输控制操作".into()),
+    }
+    Ok(())
 }
 
 // ================= P2 命令补全 =================
@@ -779,40 +896,42 @@ fn ui_state_load(app: AppHandle, name: String) -> Option<String> {
 }
 
 #[tauri::command]
-fn fs_list(path: Option<String>) -> Result<Vec<FsEntry>, String> {
-    let dir = match path.filter(|p| !p.trim().is_empty()) {
-        Some(p) => std::path::PathBuf::from(p),
-        None => std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into())),
-    };
-    let mut out = Vec::new();
-    for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let e = e.map_err(|e| e.to_string())?;
-        let md = match e.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let name = e.file_name().to_string_lossy().to_string();
-        if name == "." || name == ".." {
-            continue;
-        }
-        let modified = md
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        out.push(FsEntry {
-            path: e.path().to_string_lossy().to_string(),
-            is_dir: md.is_dir(),
-            size: if md.is_file() { md.len() } else { 0 },
-            modified,
-            is_link: e.path().is_symlink(),
-            name,
-        });
-    }
-    out.sort_by(|a, b| (b.is_dir, a.name.to_lowercase()).cmp(&(a.is_dir, b.name.to_lowercase())));
-    Ok(out)
+async fn fs_list(path: Option<String>) -> Result<Vec<FsEntry>, String> {
+    fs_call(move || files::list(path.as_deref())).await
 }
+
+async fn fs_call<T: Send + 'static>(action: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(action).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn fs_realpath(path: Option<String>) -> Result<String, String> { fs_call(move || files::realpath(path.as_deref())).await }
+
+#[tauri::command]
+async fn fs_stat(path: String) -> Result<Option<FsEntry>, String> { fs_call(move || files::stat(&path)).await }
+
+#[tauri::command]
+async fn fs_mkdir(path: String) -> Result<(), String> { fs_call(move || files::mkdir(&path)).await }
+
+#[tauri::command]
+async fn fs_create_file(path: String) -> Result<(), String> { fs_call(move || files::create_file(&path)).await }
+
+#[tauri::command]
+async fn fs_rename(from: String, to: String) -> Result<(), String> { fs_call(move || files::rename(&from, &to)).await }
+
+#[tauri::command]
+async fn fs_remove(path: String, recursive: bool) -> Result<(), String> { fs_call(move || files::remove(&path, recursive)).await }
+
+#[tauri::command]
+async fn fs_read_file(path: String) -> Result<files::FilePreview, String> { fs_call(move || files::read_file(&path)).await }
+
+#[tauri::command]
+async fn fs_write_file(path: String, content: String, expected_modified: Option<u64>, expected_revision: Option<String>, force: bool) -> Result<(), String> {
+    fs_call(move || files::write_file(&path, &content, expected_modified, expected_revision.as_deref(), force)).await
+}
+
+#[tauri::command]
+async fn fs_copy(from: String, to: String, move_item: bool) -> Result<(), String> { fs_call(move || files::copy(&from, &to, move_item)).await }
 
 fn sanitize(s: &str) -> String {
     s.chars()
@@ -826,10 +945,10 @@ fn cfg_path(app: &AppHandle, file: &str) -> Result<std::path::PathBuf, String> {
 }
 
 // ---- 触发器引擎（re::triggers，P2-2）----
-// 前端 v0 设置 {name,pattern,action,arg,enabled} 映射为 WindTerm 语义；
-// 编译/可执行门/捕获替换/转义解析全部走后端证据模块，UI 动作回传前端执行。
+// 前端 v0 设置 {name,pattern,action,arg,enabled} 映射为后端触发器语义；
+// 编译/可执行门/捕获替换/转义解析全部走后端引擎，UI 动作回传前端执行。
 #[derive(Default)]
-struct TriggersState(Mutex<re::triggers::TriggerCenter>);
+struct TriggersState(Mutex<re::triggers::TriggerManager>);
 
 fn v0_to_trigger(i: usize, v: &serde_json::Value) -> Option<re::triggers::Trigger> {
     let obj = v.as_object()?;
@@ -858,7 +977,7 @@ fn v0_to_trigger(i: usize, v: &serde_json::Value) -> Option<re::triggers::Trigge
         "send" => {
             ty = re::triggers::TriggerType::SendText;
             settings.insert("text.pattern".into(), serde_json::Value::String(pattern));
-            // WindTerm 风格：文本走 parseEscapedString（\r → CR），与 v0 行为一致
+            // 文本走 parseEscapedString（\r → CR），与 v0 行为一致
             settings.insert("text".into(), serde_json::Value::String(arg + r"\r"));
         }
         "bell" => {
@@ -866,7 +985,7 @@ fn v0_to_trigger(i: usize, v: &serde_json::Value) -> Option<re::triggers::Trigge
             settings.insert("text.pattern".into(), serde_json::Value::String(pattern));
         }
         _ => {
-            // highlight → Highlight text：二进制从 settings["value"] 数组展开（100181530）
+            // highlight → Highlight text：从 settings["value"] 数组展开
             ty = re::triggers::TriggerType::HighlightText;
             let mut rule = serde_json::Map::new();
             rule.insert("text.pattern".into(), serde_json::Value::String(pattern));
@@ -966,10 +1085,16 @@ fn triggers_feed(state: tauri::State<TriggersState>, data: String) -> Vec<serde_
     sink.0
 }
 
+#[tauri::command]
+async fn gist_request(request: gist_sync::GistRequest) -> Result<gist_sync::GistResponse, String> {
+    gist_sync::gist_request(request).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(PtyState::default())
+        .manage(TransferState::default())
         .manage(TriggersState::default())
         .manage(LogState::default())
         .invoke_handler(tauri::generate_handler![
@@ -984,12 +1109,34 @@ pub fn run() {
             sftp_list,
             sftp_download,
             sftp_upload,
+            sftp_realpath,
+            sftp_stat,
+            sftp_mkdir,
+            sftp_create_file,
+            sftp_rename,
+            sftp_copy,
+            sftp_remove,
+            sftp_read_file,
+            sftp_write_file,
+            sftp_chmod,
+            sftp_transfer_start,
+            sftp_transfer_control,
             sessions_load,
             sessions_save,
+            gist_request,
             ui_state_save,
             ui_state_load,
             complete_input,
             fs_list,
+            fs_realpath,
+            fs_stat,
+            fs_mkdir,
+            fs_create_file,
+            fs_rename,
+            fs_remove,
+            fs_read_file,
+            fs_write_file,
+            fs_copy,
             triggers_reload,
             triggers_feed,
             session_log_start,

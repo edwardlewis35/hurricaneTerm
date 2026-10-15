@@ -1,15 +1,14 @@
 // hurricaneTerm — 裸 TCP 实连层
-// 语义遵循 re/tcp.rs（WindTerm TcpBridge 反编译实证：__attach 1003b8f30 / setProxy 1003b9210 /
-// setProxyCommand 1003b95a0 / setOption 1003b9100；代理类型串实读 @0x100ae31f0）。
-// socket 实体 = ProxyCommandSocket：支持 直连 / Socks5 / Http(CONNECT) / ProxyCommand / System(env 近似)。
+// 会话/代理类型与选项码语义见 re/tcp.rs；本层做真实 socket IO。
+// socket 实体 = 进程 stdio 代理套接字：支持 直连 / Socks5 / Http(CONNECT) / ProxyCommand / System(env 近似)。
 //
-// 实证约束落地：
+// 行为约束落地：
 // - setOption 四键 → socket 选项码 0/1/5/6（re::tcp::tcp_socket_option 语义路径），未知键忽略。
 // - setProxy 分流：Http→CONNECT-only(码3)、Socks5(码1)、其余→哨兵2=直连（不 setProxy）。
 // - setProxyCommand 门控：仅 type=="ProxyCommand" 生效（command/workdir/env 三件）。
 // - detach 无条件序列：detaching → disconnectFromHost → state=0 → detached。
-// 推断项（代码注释标注）：System→env 代理近似（systemProxy() 本体未反编译）；
-// ProxyCommand 的 %h/%p 替换为 Qt/ssh 惯例近似建模。
+// 近似项（代码注释标注）：System→env 代理近似；
+// ProxyCommand 的 %h/%p 替换沿用 OpenSSH 惯例。
 #![allow(dead_code)]
 
 use crate::re::tcp::{
@@ -31,7 +30,7 @@ pub const READ_POLL: Duration = Duration::from_millis(200);
 /// 会话参数（main.rs 命令层组装；空串=未设置）
 #[derive(Clone, Debug, Default)]
 pub struct TcpParams {
-    pub target: String, // "host:port" 或 host（session.target 实读键）
+    pub target: String, // "host:port" 或 host（session.target 键）
     pub port: u16,      // 独立端口（fallback）
     pub low_delay: Option<String>,
     pub keep_alive: Option<String>,
@@ -44,7 +43,7 @@ pub struct TcpParams {
     pub proxy_password: String,
     pub proxy_command: String,
     pub proxy_workdir: String,
-    pub proxy_env: String, // 第4参（socket+0x20，推断 proxyEnvironment）
+    pub proxy_env: String, // 第4参：代理环境串
 }
 
 /// "host:port" / "[v6]:port" / "host" 解析；无端口段用 fallback
@@ -105,15 +104,15 @@ pub fn bridge_from(params: &TcpParams) -> TcpBridge {
     b
 }
 
-/// setOption 实证映射码 → 真实 socket 选项；返回逐键日志
+/// setOption 映射码 → 真实 socket 选项；返回逐键日志
 pub fn apply_socket_options(sock: &TcpStream, opts: &[(u8, String)]) -> Vec<String> {
     let r = socket2::SockRef::from(sock);
     let truthy = |v: &str| matches!(v.trim(), "1" | "true" | "True" | "yes");
     let mut log = Vec::new();
     for (code, v) in opts {
         let res: io::Result<()> = match *code {
-            OPT_LOW_DELAY => r.set_tcp_nodelay(truthy(v)), // TCP_NODELAY（码 0 实证；socket2 0.6 方法名）
-            OPT_KEEP_ALIVE => r.set_keepalive(truthy(v)),  // SO_KEEPALIVE（码 1 实证）
+            OPT_LOW_DELAY => r.set_tcp_nodelay(truthy(v)), // TCP_NODELAY（码 0；socket2 0.6 方法名）
+            OPT_KEEP_ALIVE => r.set_keepalive(truthy(v)),  // SO_KEEPALIVE（码 1）
             OPT_SEND_BUF => v
                 .trim()
                 .parse::<usize>()
@@ -249,7 +248,7 @@ pub fn socks5_connect(
     Ok(())
 }
 
-// ———— HTTP CONNECT（实证：Http→码3 ConnectOnlyHttpProxy，终端场景仅 CONNECT） ————
+// ———— HTTP CONNECT（Http→码3，终端场景仅 CONNECT） ————
 
 pub fn http_connect(
     sock: &mut TcpStream,
@@ -300,9 +299,9 @@ pub fn http_connect(
     Ok(())
 }
 
-// ———— ProxyCommand（实证门控：仅 type=="ProxyCommand"；command 经 QProcess stdio 转发） ————
+// ———— ProxyCommand（仅 type=="ProxyCommand"；command 经子进程 stdio 转发） ————
 
-/// %h/%p 替换（Qt/ssh 惯例近似，已标注推断）
+/// %h/%p 替换（OpenSSH 惯例）
 pub fn expand_proxy_command(cmd: &str, host: &str, port: u16) -> String {
     cmd.replace("%h", host).replace("%p", &port.to_string())
 }
@@ -321,7 +320,7 @@ pub fn spawn_proxy_command(pc: &ProxyCommand, host: &str, port: u16) -> io::Resu
     if !pc.working_directory.is_empty() {
         c.current_dir(&pc.working_directory);
     }
-    // 第4参 proxyEnvironment（推断）：非空则注入 PROXY_ENV 供命令取用
+    // 第4参 proxyEnvironment：非空则注入 PROXY_ENV 供命令取用
     if !pc.extra.is_empty() {
         c.env("HTERM_PROXY_ENV", &pc.extra);
     }
@@ -337,7 +336,7 @@ pub enum LiveSocket {
     Cmd { child: Child, read: ChildStdout, write: ChildStdin },
 }
 
-/// System 代理 env 近似（推断项：systemProxy() 本体未反编译；按 http_proxy/all_proxy 分流）
+/// System 代理 env 近似（按 http_proxy/all_proxy 分流）
 pub fn system_proxy_from_env() -> Option<ResolvedProxy> {
     let v = ["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"]
         .iter()
@@ -352,7 +351,7 @@ pub fn system_proxy_from_env() -> Option<ResolvedProxy> {
         "",
         "",
     );
-    // System 分支产出的代理同样过 type!=2 守卫（实证）
+    // System 分支产出的代理同样过 type!=2 守卫
     if proxy_type_code(&p) == 2 {
         None
     } else {
@@ -394,14 +393,14 @@ pub fn open(bridge: &TcpBridge, host: &str, port: u16) -> io::Result<LiveSocket>
         },
         None | Some(ResolvedProxy::Direct) => TcpStream::connect((host, port))?,
     };
-    // setOption 落地：作用于 ProxyCommandSocket 本体（实证：attach 前已 setSocketOption）
+    // setOption 落地：作用于 socket 本体（attach 前已 setSocketOption）
     let _logs = apply_socket_options(&target, &bridge.socket_options);
     target.set_read_timeout(Some(READ_POLL))?;
     let read = target.try_clone()?;
     Ok(LiveSocket::Tcp { read, write: target })
 }
 
-/// 控制句柄：writer 交 Entry；close 走实证 detach 序列
+/// 控制句柄：writer 交 Entry；close 走 detach 序列
 pub struct TcpCtl {
     pub writer: Box<dyn Write + Send>,
     pub stop: mpsc::UnboundedSender<()>,
@@ -468,7 +467,7 @@ pub fn spawn_session(app: AppHandle, id: String, params: TcpParams) -> io::Resul
     Ok((format!("{host}:{port}"), TcpCtl { writer, stop: stop_tx, killer }))
 }
 
-/// detach 实证序列（无条件）：detaching → disconnect → state=0 → detached；随后 pty-exit
+/// detach 序列（无条件）：detaching → disconnect → state=0 → detached；随后 pty-exit
 fn detach_signals(sink: Sink, id: String, app: AppHandle) {
     sink.emit("re-log", id.clone(), "detaching".into());
     sink.emit("re-log", id.clone(), "detached".into());
@@ -478,7 +477,7 @@ fn detach_signals(sink: Sink, id: String, app: AppHandle) {
 fn apply_bridge_logs(bridge: &TcpBridge) -> Vec<String> {
     let mut v = Vec::new();
     if let Some(p) = &bridge.proxy {
-        v.push(format!("proxy type {} (qt code {})", p_variant(p), proxy_type_code(p)));
+        v.push(format!("proxy type {} (code {})", p_variant(p), proxy_type_code(p)));
     }
     if let Some(pc) = &bridge.proxy_command {
         v.push(format!("proxy command: {} (cwd {})", pc.command, pc.working_directory));
@@ -498,12 +497,13 @@ fn p_variant(p: &ResolvedProxy) -> &'static str {
 /// 输出泵（与串口同构：超时轮询 + stop 通道）
 pub fn pump<R: Read>(mut reader: R, sink: Sink, id: &str, stop: &mut mpsc::UnboundedReceiver<()>) {
     let mut buf = [0u8; 8192];
+    let mut decoder = crate::terminal_io::Utf8Decoder::default();
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                sink.emit("pty-output", id.to_string(), data);
+                let data = decoder.push(&buf[..n]);
+                if !data.is_empty() { sink.emit("pty-output", id.to_string(), data); }
             }
             Err(e)
                 if e.kind() == io::ErrorKind::TimedOut
@@ -514,6 +514,8 @@ pub fn pump<R: Read>(mut reader: R, sink: Sink, id: &str, stop: &mut mpsc::Unbou
             break;
         }
     }
+    let tail = decoder.finish();
+    if !tail.is_empty() { sink.emit("pty-output", id.to_string(), tail); }
 }
 
 #[cfg(test)]

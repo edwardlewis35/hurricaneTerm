@@ -1,14 +1,14 @@
 // hurricaneTerm — SSH 中继/代理 dial 层（队列项3）
-// 架构证据：re-work/notes/ssh_connect.md（B2.2）——WindTerm 的 libssh **不直连**目标，
+// 架构：libssh **不直连**目标，
 // TCP 目标被 PROXY_HOST/PORT 覆盖到本地中继，outer 侧按会话代理配置走
 // 直连 / SOCKS5 / HTTP CONNECT / ProxyCommand 进程 / 跳板 四种通道之一。
 // 本模块把"经代理抵达目标"收敛成统一拨号函数 dial()，返回已建立隧道的字节双工流，
 // 供 russh `client::connect_stream` 直接接管（见文末接线说明与 to_tokio）。
-// SOCKS5 字节序遵循 re/tunnel.rs 的实证行为（含 WindTerm 无方法回 [05,05] 非 RFC FF
+// SOCKS5 字节序遵循 re/tunnel.rs 的行为（含无可用方法时回 [05,05] 而非 RFC FF
 // 的怪癖 → 客户端解析对选择字节 0x05 容忍为"拒绝"；域名请求应答被改写 atyp'=1+4×0
 // → 客户端按**应答**的 atyp 变长解析而非请求值）。
-// ProxyCommand 分词/状态表复用 re/tunnel.rs 的实证函数（split_proxy_command、
-// socket_error_from_process_error 表 [2,1,5,1] 实读 @0x100982b70）。
+// ProxyCommand 分词/状态表复用 re/tunnel.rs 的函数（split_proxy_command、
+// socket_error_from_process_error 表 [2,1,5,1]）。
 #![allow(dead_code)]
 
 use crate::re::tunnel::{socket_error_from_process_error, split_proxy_command};
@@ -18,6 +18,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 // ---------------------------------------------------------------- 双工抽象
@@ -51,8 +52,8 @@ pub struct Socks5Proxy {
     pub port: u16,
     pub user: Option<String>,
     pub password: Option<String>,
-    /// 证据：connectHost 读 PROXY_DNS；proxyDns==false 时 capabilities &= ~0x10
-    /// （Qt ResolveDnsCapability=0x10，位名为行为推断）——即**本地解析**后按 IP 发给代理，
+    /// 代理 DNS 能力位：proxyDns==false 时 capabilities &= ~0x10
+    /// （0x10 = 域名解析能力位）——即**本地解析**后按 IP 发给代理，
     /// true 时把域名原样交给代理解析（atyp=3）。
     pub proxy_dns: bool,
 }
@@ -68,20 +69,20 @@ pub struct HttpProxy {
 
 #[derive(Clone, Debug)]
 pub struct ProxyCommandSpec {
-    /// 完整命令行（首 token 为程序，实证 splitProxyCommand 0x100144100）
+    /// 完整命令行（首 token 为程序，其余为参数）
     pub cmd: String,
-    /// 证据：wd 空 → applicationDirPath；此处空 → 继承当前进程目录
+    /// 工作目录：空 → 继承当前进程目录
     pub working_directory: Option<String>,
-    /// 证据：PROP_…PROXYENVIRONMENT 串注入 QProcess env；按 "K=V;K2=V2" 解析（推断）
+    /// 注入子进程的环境变量串，按 "K=V;K2=V2" 解析
     pub environment: Vec<(String, String)>,
 }
 
-/// 会话代理五态 + 系统/全局两态（类型字符串符号表实读：
-/// None/System/Socks5/Http/ProxyCommand/Global/JumpServers，见 re/tunnel.rs PROXY_*）
+/// 会话代理五态 + 系统/全局两态（类型串：
+/// None/System/Socks5/Http/ProxyCommand/Global/Jump，见 re/tunnel.rs PROXY_*）
 pub enum Proxy {
-    /// 直连（哨兵语义：WindTerm 无代理时 PROXY_HOST 仍指向本地中继；本层等价于裸 TCP）
+    /// 直连（哨兵语义：无代理时 PROXY_HOST 仍指向本地中继；本层等价于裸 TCP）
     None,
-    /// 证据：system → SuperApplication::systemProxy；本实现按环境变量解析（推断）
+    /// 系统代理：按环境变量解析
     System,
     Socks5(Socks5Proxy),
     Http(HttpProxy),
@@ -90,8 +91,8 @@ pub enum Proxy {
     Jump(JumpOpener),
 }
 
-/// 证据：connectHost 属性值分发——"command"→进程模式；"system"/"http"/"socks5"→
-/// QNetworkProxy；**其他值→跳过**（不设代理 = 直连）。
+/// 属性值分发："command"→进程模式；"system"/"http"/"socks5"→
+/// 代理类型；**其他值→跳过**（不设代理 = 直连）。
 pub fn proxy_from_session_value(value: &str, props: &ProxyProps) -> Proxy {
     match value {
         "command" => Proxy::ProxyCommand(ProxyCommandSpec {
@@ -103,7 +104,7 @@ pub fn proxy_from_session_value(value: &str, props: &ProxyProps) -> Proxy {
             },
             environment: parse_environment(&props.environment),
         }),
-        "system" | "global" => Proxy::System, // Global：全局作用域在配置层收敛（推断）
+        "system" | "global" => Proxy::System, // Global：全局作用域在配置层收敛
         "socks5" => Proxy::Socks5(Socks5Proxy {
             addr: props.host.clone(),
             port: props.port,
@@ -118,7 +119,7 @@ pub fn proxy_from_session_value(value: &str, props: &ProxyProps) -> Proxy {
             password: non_empty(&props.password),
             proxy_dns: props.proxy_dns,
         }),
-        _ => Proxy::None, // 证据：未知值直接跳过
+        _ => Proxy::None, // 未知值直接跳过
     }
 }
 
@@ -130,7 +131,7 @@ fn non_empty(s: &str) -> Option<String> {
     }
 }
 
-/// session.proxy* 属性包（键名 PROXY_PROP_KEYS，字符串池实读）
+/// session.proxy* 属性包（键名 PROXY_PROP_KEYS）
 #[derive(Clone, Debug, Default)]
 pub struct ProxyProps {
     pub host: String,
@@ -143,8 +144,8 @@ pub struct ProxyProps {
     pub proxy_dns: bool, // 默认 true：域名交给代理解析
 }
 
-/// 证据：connectHost 建 QNetworkProxy 的类型码 http→3、socks5→1；
-/// 且**仅当 proxy.type()!=2 才 setProxy(outer)**（2=HttpProxy 哨兵，Qt 自带 HTTP
+/// 线上类型码 http→3、socks5→1；
+/// 且**仅当 type()!=2 才下发代理**（2=HTTP 哨兵，内置 HTTP
 /// 代理被绕开——本层的 dial 即"自己完成 CONNECT"的落地）。
 pub fn proxy_wire_type_code(value: &str) -> Option<i32> {
     match value {
@@ -154,13 +155,13 @@ pub fn proxy_wire_type_code(value: &str) -> Option<i32> {
     }
 }
 
-pub fn should_set_qt_proxy(code: i32) -> bool {
+pub fn should_set_proxy_on_session(code: i32) -> bool {
     code != 2
 }
 
-/// 证据：PROP_…PROXYCOMMAND → setProxyCommand(splitCommandLine)：首 token 弹出为
-/// 程序、其余为参数；%h/%p 替换为真实目标主机/端口（OpenSSH 惯例，WindTerm 沿用——推断，
-/// 语料示例 "ssh -W %h:%p gateway"）。
+/// 代理命令：splitCommandLine 语义——首 token 弹出为
+/// 程序、其余为参数；%h/%p 替换为真实目标主机/端口（OpenSSH 惯例，
+/// 典型用法 "ssh -W %h:%p gateway"）。
 pub fn substitute_h_p(cmd: &str, host: &str, port: u16) -> String {
     cmd.replace("%h", host).replace("%p", &port.to_string())
 }
@@ -173,7 +174,7 @@ pub fn parse_environment(s: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// System/Global 解析（推断）：all_proxy/ALL_PROXY，支持 socks5://host:port 与
+/// System/Global 解析：all_proxy/ALL_PROXY，支持 socks5://host:port 与
 /// http(s)://host:port；无/不可解析 → None（直连）。
 pub fn parse_proxy_url(url: &str) -> Option<Proxy> {
     let (scheme, rest) = url.split_once("://")?;
@@ -223,6 +224,22 @@ pub enum Dialed {
 }
 
 impl Dialed {
+    /// Process stdio readers need an explicit cancellation flag: merely
+    /// closing the Tokio duplex cannot wake a blocking read from an idle
+    /// ProxyCommand which ignores EOF on stdin.
+    pub fn split_with_cancel(self) -> (BoxedReader, BoxedWriter, Option<Arc<AtomicBool>>) {
+        match self {
+            Dialed::Process(mut process) => {
+                let cancel = process.cancel.clone();
+                let (reader, writer) = process.split_duplex();
+                (reader, writer, Some(cancel))
+            }
+            dialed => {
+                let (reader, writer) = dialed.split();
+                (reader, writer, None)
+            }
+        }
+    }
     pub fn into_boxed(self) -> BoxedDuplex {
         match self {
             Dialed::Tcp(s) => Box::new(s),
@@ -307,7 +324,7 @@ fn connect_timeout(host: &str, port: u16, timeout: Duration) -> io::Result<TcpSt
 
 // ---------------------------------------------------------------- SOCKS5 客户端
 
-/// 证据怪癖容忍：re/tunnel.rs 实证 WindTerm 自家 SOCKS5 **服务端**无可用方法时回
+/// 兼容性容忍：本仓库的 SOCKS5 **服务端**无可用方法时回
 /// [05,05]（非 RFC 的 FF），且域名请求的应答被改写为 atyp'=1 + 4×0。
 /// 因此本客户端：① 选择字节非 0x00/0x02 一律视为拒绝（0x05/0xFF 都给明确报错）；
 /// ② 应答按**应答头里的 atyp** 变长解析，不假设与请求一致。
@@ -329,7 +346,7 @@ pub fn dial_socks5(p: &Socks5Proxy, target: &Target, timeout: Duration) -> io::R
     match sel[1] {
         0x00 => {}
         0x02 => socks5_auth(&mut s, p)?,
-        // 0x05 = WindTerm 实证拒绝字节；0xFF = RFC 拒绝；其余=未提供方法
+        // 0x05 = 本实现拒绝字节；0xFF = RFC 拒绝；其余=未提供方法
         other => {
             return Err(sock_err(format!(
                 "SOCKS5 无可用认证方法（服务端选择 0x{other:02x}）"
@@ -344,7 +361,7 @@ pub fn dial_socks5(p: &Socks5Proxy, target: &Target, timeout: Duration) -> io::R
     req.extend_from_slice(&target.port.to_be_bytes());
     s.write_all(&req)?;
 
-    // 应答：ver, rep, rsv, atyp'（atyp' 可能与请求不同——实证改写）
+    // 应答：ver, rep, rsv, atyp'（atyp' 可能与请求不同）
     let mut head = [0u8; 4];
     s.read_exact(&mut head)?;
     if head[0] != 5 {
@@ -361,7 +378,7 @@ pub fn dial_socks5(p: &Socks5Proxy, target: &Target, timeout: Duration) -> io::R
     let mut bnd_port = [0u8; 2];
     s.read_exact(&mut bnd_port)?; // BND.PORT（忽略值，隧道已建立）
     // 握手完成：清掉超时——长会话空闲靠 keepalive（SshSession::keepAlive 语义），
-    // 中继读方向不设超时（WindTerm 无此超时；仅进程通道有 Timedout→5 映射）
+    // 中继读方向不设超时（仅进程通道有 Timedout→5 映射）
     s.set_read_timeout(None)?;
     s.set_write_timeout(None)?;
     Ok(s)
@@ -387,7 +404,7 @@ fn socks5_auth(s: &mut TcpStream, p: &Socks5Proxy) -> io::Result<()> {
     Ok(())
 }
 
-/// 返回 (atyp, 地址字节[不含端口])。proxy_dns=false 时域名先本地解析（实证能力位行为）。
+/// 返回 (atyp, 地址字节[不含端口])。proxy_dns=false 时域名先本地解析。
 fn socks5_addr(host: &str, port: u16, proxy_dns: bool) -> io::Result<(u8, Vec<u8>)> {
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         return Ok(match ip {
@@ -436,7 +453,7 @@ fn skip_socks5_addr(s: &mut TcpStream, atyp: u8) -> io::Result<()> {
 }
 
 fn socks5_reply_name(rep: u8) -> &'static str {
-    // 名称表对齐 re/tunnel.rs Socks5Reply（0/5/7/8 实证），其余按 RFC1928 补全（推断）
+    // 名称表对齐 re/tunnel.rs Socks5Reply（0/5/7/8），其余按 RFC1928 补全
     match rep {
         1 => "general failure",
         2 => "connection not allowed",
@@ -483,7 +500,7 @@ pub fn dial_http_connect(
     req.push_str("\r\n");
     s.write_all(req.as_bytes())?;
 
-    // 读到 \r\n\r\n；状态行非 200 即失败（407=需认证，语义对齐 WindTerm 代理失败上抛）
+    // 读到 \r\n\r\n；状态行非 200 即失败（407=需认证，代理失败一律上抛）
     let mut buf: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -551,10 +568,9 @@ fn base64(input: &[u8]) -> String {
 
 // ---------------------------------------------------------------- ProxyCommand
 
-/// 进程 stdio 桥：stdin=写侧；stdout+stderr 合流为读侧——证据：ProxyCommandSocket
-/// 把 stdout/stderr 都接 readyRead（两路都喂 socket 读方向）。
-/// 启动失败 → QProcess::FailedToStart(0) → socket 错误码 2(ConnectionRefused 域)，
-/// 表 [2,1,5,1] 经 re/tunnel.rs socket_error_from_process_error 实证。
+/// 进程 stdio 桥：stdin=写侧；stdout+stderr 合流为读侧（两路都喂 socket 读方向）。
+/// 启动失败 → FailedToStart → socket 错误码 2(ConnectionRefused 域)，
+/// 表 [2,1,5,1] 见 re/tunnel.rs socket_error_from_process_error。
 pub fn dial_proxy_command(p: &ProxyCommandSpec, target: &Target) -> io::Result<ProcessDuplex> {
     let expanded = substitute_h_p(&p.cmd, &target.host, target.port);
     let (program, args) = split_proxy_command(&expanded);
@@ -574,7 +590,7 @@ pub fn dial_proxy_command(p: &ProxyCommandSpec, target: &Target) -> io::Result<P
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(wd) = &p.working_directory {
-        cmd.current_dir(wd); // 证据：wd 空→applicationDirPath；此处 None→继承
+        cmd.current_dir(wd); // wd 空 → None → 继承当前进程目录
     }
     for (k, v) in &p.environment {
         cmd.env(k, v);
@@ -595,7 +611,9 @@ pub fn dial_proxy_command(p: &ProxyCommandSpec, target: &Target) -> io::Result<P
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    // Backpressure caps queued proxy output at 16 * 32 KiB instead of letting
+    // a fast stdout/stderr producer grow an unbounded allocation queue.
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(16);
     for stream in [Box::new(stdout) as Box<dyn Read + Send>, Box::new(stderr)] {
         let tx = tx.clone();
         std::thread::spawn(move || {
@@ -620,10 +638,11 @@ pub fn dial_proxy_command(p: &ProxyCommandSpec, target: &Target) -> io::Result<P
         stdin: Some(stdin),
         rx: Some(rx),
         pending: VecDeque::new(),
+        cancel: Arc::new(AtomicBool::new(false)),
     })
 }
 
-/// 进程 stdio 桥（对齐 ProxyCommandSocket：stdout/stderr 合流读、stdin 写）。
+/// 进程 stdio 桥（对齐 进程 stdio 代理套接字：stdout/stderr 合流读、stdin 写）。
 /// Drop 时终止子进程（std Child 无 kill_on_drop，手动实现，对齐 outer deleteLater）。
 /// 字段 Option 化：因为实现了 Drop 不可逐字段移出；split_duplex 用 take 取出。
 pub struct ProcessDuplex {
@@ -631,6 +650,7 @@ pub struct ProcessDuplex {
     stdin: Option<std::process::ChildStdin>,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
     pending: VecDeque<u8>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl ProcessDuplex {
@@ -640,7 +660,7 @@ impl ProcessDuplex {
         let stdin = self.stdin.take().expect("stdin held");
         let rx = self.rx.take().expect("rx held");
         (
-            Box::new(ProcReader { child, rx, pending: std::mem::take(&mut self.pending) }),
+            Box::new(ProcReader { child, rx, pending: std::mem::take(&mut self.pending), cancel: self.cancel.clone() }),
             Box::new(ProcWriter(stdin)),
         )
     }
@@ -650,14 +670,17 @@ struct ProcReader {
     child: std::process::Child,
     rx: mpsc::Receiver<Vec<u8>>,
     pending: VecDeque<u8>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Read for ProcReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pending.is_empty() {
-            match self.rx.recv() {
+        while self.pending.is_empty() {
+            if self.cancel.load(Ordering::Acquire) { return Ok(0); }
+            match self.rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(chunk) => self.pending.extend(chunk),
-                Err(_) => return Ok(0), // 两路读线程都结束 → EOF
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(0),
             }
         }
         let n = buf.len().min(self.pending.len());
@@ -751,17 +774,28 @@ impl Drop for ProcessDuplex {
 /// T 约束）。内部 tokio::io::duplex 双缓冲 + 两个泵任务；须在 tokio 运行时上下文调用。
 /// 纯 TCP 隧道优先走 Dialed::Tcp → tokio::net::TcpStream::from_std（零额外拷贝）。
 pub async fn to_tokio(
+    rd: BoxedReader,
+    wr: BoxedWriter,
+) -> io::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static> {
+    to_tokio_with_cancel(rd, wr, None).await
+}
+
+pub async fn to_tokio_with_cancel(
     mut rd: BoxedReader,
     mut wr: BoxedWriter,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> io::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let (mut push_tx, push_rx) = tokio::io::duplex(64 * 1024); // std→russh
     let (pull_tx, mut pull_rx) = tokio::io::duplex(64 * 1024); // russh→std
+    let cancel = cancel.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    let reader_cancel = cancel.clone();
 
     // std → push_tx：阻塞 read 放 spawn_blocking，避免占死工作线程；
     // 句柄随闭包往返（spawn_blocking 消耗捕获，故把 rd 传回来）
     tokio::spawn(async move {
         loop {
+            if reader_cancel.load(Ordering::Acquire) { break; }
             let (read, rd_back) = tokio::task::spawn_blocking(move || {
                 let mut b = vec![0u8; 32 * 1024];
                 let out = match rd.read(&mut b) {
@@ -813,12 +847,18 @@ pub async fn to_tokio(
     Ok(TokioBridge {
         rd: push_rx,
         wr: pull_tx,
+        cancel,
     })
 }
 
 struct TokioBridge {
     rd: tokio::io::DuplexStream,
     wr: tokio::io::DuplexStream,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for TokioBridge {
+    fn drop(&mut self) { self.cancel.store(true, Ordering::Release); }
 }
 
 impl tokio::io::AsyncRead for TokioBridge {
@@ -875,7 +915,7 @@ impl tokio::io::AsyncWrite for TokioBridge {
 //                           跳板建议改用 russh direct-tcpip 的 async 流避开）
 //
 //   3) Proxy 来源：会话 JSON 的 session.proxy* 键 → ProxyProps → proxy_from_session_value
-//      （键名表见 re/tunnel.rs PROXY_PROP_KEYS，字符串池实读）；
+//      （键名表见 re/tunnel.rs PROXY_PROP_KEYS）；
 //      Jump 的 JumpOpener 由父代理用已建立的 russh Handle 闭包实现：
 //        |t| handle.open_channel(russh::ChannelOpenDirectTcpIp::new(&t.host, t.port, "127.0.0.1", 0))
 //        → stream 包成 BoxedDuplex（需 Read/Write 适配，或直接在 connect_stream 层用 async 通道）。
@@ -915,12 +955,12 @@ mod tests {
     #[derive(Copy, Clone, PartialEq, Eq)]
     enum SocksMode {
         Ok,
-        NoAcceptable, // 实证怪癖：无方法回 [05,05]（非 FF）
+        NoAcceptable, // 无可用方法时回 [05,05]（非 FF）
         Refused,      // CONNECT 应答 rep=5
     }
 
-    /// 最小 SOCKS5 代理：记录 CONNECT 目标；应答恒用 atyp'=1（模拟 WindTerm
-    /// 域名应答改写）；随后桥接到 127.0.0.1:target_port。
+    /// 最小 SOCKS5 代理：记录 CONNECT 目标；应答恒用 atyp'=1（模拟域名
+    /// 应答改写）；随后桥接到 127.0.0.1:target_port。
     fn spawn_socks5(target_port: u16, mode: SocksMode) -> (u16, Arc<Mutex<Vec<String>>>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
@@ -937,7 +977,7 @@ mod tests {
             let sel: Vec<u8> = if methods.contains(&0) && mode != SocksMode::NoAcceptable {
                 vec![5, 0]
             } else {
-                vec![5, 5] // WindTerm 实证拒绝字节
+                vec![5, 5] // 本实现的拒绝字节
             };
             if c.write_all(&sel).is_err() || sel[1] == 5 {
                 return;
@@ -970,7 +1010,7 @@ mod tests {
                 let _ = c.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]);
                 return;
             }
-            // 应答恒 atyp'=1（实证改写：域名请求也回 4×0）
+            // 应答恒 atyp'=1（域名请求也回 4×0）
             let _ = c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
             if let Ok(mut t) = TcpStream::connect(("127.0.0.1", target_port)) {
                 let mut c2 = c.try_clone().unwrap();
@@ -1083,7 +1123,7 @@ mod tests {
 
     #[test]
     fn dial_socks5_no_acceptable_method_tolerates_0x05() {
-        // 实证怪癖：拒绝字节是 05 而非 RFC FF —— 必须报"无可用方法"且指出 0x05
+        // 拒绝字节是 05 而非 RFC FF —— 必须报"无可用方法"且指出 0x05
         let echo = spawn_echo();
         let (px, _) = spawn_socks5(echo, SocksMode::NoAcceptable);
         let e = dial(&socks(px), "any.host", 22, Duration::from_secs(2)).unwrap_err();
@@ -1169,7 +1209,7 @@ mod tests {
 
     #[test]
     fn dial_proxy_command_start_failure_maps_socket_error_2() {
-        // FailedToStart → 实证表 [2,1,5,1] 首项 = 2
+        // FailedToStart → 表 [2,1,5,1] 首项 = 2
         let p = Proxy::ProxyCommand(ProxyCommandSpec {
             cmd: "definitely-not-a-real-binary-xyz %h".into(),
             working_directory: None,
@@ -1212,7 +1252,7 @@ mod tests {
 
     #[test]
     fn proxy_value_dispatch_tables() {
-        // 证据：connectHost 值分发 + 类型码 + setProxy 哨兵
+        // 值分发 + 类型码 + setProxy 哨兵
         let props = ProxyProps {
             host: "1.2.3.4".into(),
             port: 1080,
@@ -1242,9 +1282,9 @@ mod tests {
         assert_eq!(proxy_wire_type_code("socks5"), Some(1));
         assert_eq!(proxy_wire_type_code("http"), Some(3));
         assert_eq!(proxy_wire_type_code("command"), None);
-        assert!(should_set_qt_proxy(1));
-        assert!(should_set_qt_proxy(3));
-        assert!(!should_set_qt_proxy(2)); // 哨兵：type==2 不设 Qt 代理
+        assert!(should_set_proxy_on_session(1));
+        assert!(should_set_proxy_on_session(3));
+        assert!(!should_set_proxy_on_session(2)); // 哨兵：type==2 不下发代理
     }
 
     #[test]
@@ -1306,6 +1346,39 @@ mod tests {
             line.push(b[0]);
         }
         assert_eq!(line, b"async-ping");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_idle_proxy_bridge_kills_and_reaps_its_process() {
+        let directory = std::env::temp_dir().join(format!("hurricane-proxy-close-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let pid_file = directory.join("proxy.pid");
+        std::fs::write(directory.join("fixture.sh"), "printf '%s' \"$$\" > proxy.pid\ntrap '' HUP\nexec /bin/sleep 600\n").unwrap();
+        // exec leaves exactly one fixture process. It ignores HUP and never
+        // reads stdin, so dropping the write half alone cannot make it exit.
+        let proxy = Proxy::ProxyCommand(ProxyCommandSpec {
+            cmd: "/bin/sh fixture.sh".into(),
+            working_directory: Some(directory.to_string_lossy().into()),
+            environment: Vec::new(),
+        });
+        let (reader, writer, cancel) = dial_any(&proxy, "fixture", 22, Duration::from_secs(2)).unwrap().split_with_cancel();
+        let stream = to_tokio_with_cancel(reader, writer, cancel).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let pid: libc::pid_t = loop {
+            if let Ok(pid) = std::fs::read_to_string(&pid_file).and_then(|text| text.parse().map_err(|_| io::Error::from(io::ErrorKind::InvalidData))) { break pid; }
+            assert!(tokio::time::Instant::now() < deadline, "fixture process started");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        // Ensure the reader pump has entered its wait for process output.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(stream);
+        let reaped = tokio::time::timeout(Duration::from_secs(2), async {
+            while unsafe { libc::kill(pid, 0) } == 0 { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await;
+        if reaped.is_err() { unsafe { libc::kill(pid, libc::SIGKILL); } }
+        std::fs::remove_dir_all(directory).unwrap();
+        reaped.expect("dropping an idle ProxyCommand bridge must kill and reap its owned process");
     }
 
     #[test]

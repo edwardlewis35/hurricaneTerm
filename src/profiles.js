@@ -52,19 +52,20 @@
 
   /* ---------- 样式（全部 .ht-pm 前缀） ---------- */
   const CSS = `
-.ht-pm-overlay { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
-.ht-pm { width: min(1060px, 94vw); height: min(660px, 90vh); display: flex; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 18px 60px rgba(0,0,0,.6); overflow: hidden; }
-.ht-pm-left { width: 290px; min-width: 230px; display: flex; flex-direction: column; background: var(--bg3); border-right: 1px solid var(--border); position: relative; }
-.ht-pm-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; font-size: 13px; color: var(--fg2); border-bottom: 1px solid var(--border); }
-.ht-pm-head .ht-pm-x { padding: 1px 8px; }
-.ht-pm-tools { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--border); }
+.ht-pm-overlay { position: absolute; inset: 0; z-index: 300; background: var(--bg); display: flex; }
+.ht-pm { width: 100%; height: 100%; display: flex; background: var(--bg); overflow: hidden; }
+.ht-pm-left { width: 280px; min-width: 220px; display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid var(--border); position: relative; }
+.ht-pm-head { display: flex; justify-content: space-between; align-items: center; padding: 27px 18px 18px; font-size: 20px; font-weight: 300; color: var(--fg3); }
+.ht-pm-head .ht-pm-x { width: 28px; height: 28px; padding: 0; }
+.ht-pm-tools { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
 .ht-pm-btns { display: flex; gap: 6px; }
-.ht-pm-btns button { flex: 1; padding: 4px 6px; font-size: 12px; white-space: nowrap; }
+.ht-pm-btns button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 6px; font-size: 12px; white-space: nowrap; }
+.ht-pm-btns svg { width: 13px; height: 13px; }
 .ht-pm-list { flex: 1; overflow: auto; min-height: 0; padding: 4px 0; }
 .ht-pm-grp { padding: 7px 12px 3px; font-size: 11px; color: var(--accent); }
-.ht-pm-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; }
-.ht-pm-row:hover { background: var(--bg2); }
-.ht-pm-row.sel { background: var(--bg2); outline: 1px solid var(--accent); }
+.ht-pm-row { display: flex; align-items: center; gap: 10px; padding: 9px 16px; cursor: pointer; }
+.ht-pm-row:hover { background: var(--surface-hover); }
+.ht-pm-row.sel { background: var(--accent-bg); box-shadow: inset 2px 0 var(--accent); }
 .ht-pm-ico { width: 17px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--fg2); }
 .ht-pm-ico svg { width: 14px; height: 14px; }
 .ht-pm-row:hover .ht-pm-ico, .ht-pm-row.sel .ht-pm-ico { color: var(--accent); }
@@ -73,17 +74,18 @@
 .ht-pm-col i { font-style: normal; font-size: 11px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ht-pm-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .ht-pm-empty { padding: 16px; color: var(--fg2); font-size: 12px; line-height: 1.7; }
-.ht-pm-bubble { position: absolute; left: 12px; right: 12px; top: 92px; background: var(--bg2); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 10px; display: flex; gap: 8px; align-items: center; justify-content: space-between; box-shadow: 0 6px 20px rgba(0,0,0,.5); z-index: 5; font-size: 12px; }
+.ht-pm-bubble { position: absolute; left: 12px; right: 12px; top: 92px; background: var(--bg2); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 10px; display: flex; gap: 8px; align-items: center; justify-content: space-between; box-shadow: var(--shadow); z-index: 5; font-size: 12px; }
 .ht-pm-bubble-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ht-pm-bubble-ok { background: var(--danger); border-color: var(--danger); color: #fff; padding: 2px 10px; font-size: 12px; }
+.ht-pm-bubble-ok { background: var(--danger); border-color: var(--danger); color: var(--on-danger); padding: 2px 10px; font-size: 12px; }
+.ht-pm-bubble-ok:hover { background: var(--danger); color: var(--on-danger); filter: brightness(1.1); }
 .ht-pm-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.ht-pm-formhead { padding: 10px 18px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--fg2); }
-.ht-pm-form { flex: 1; overflow: auto; min-height: 0; padding: 14px 20px; }
-.ht-pm-sect { font-size: 11px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 4px; margin: 16px 0 8px; }
+.ht-pm-formhead { padding: 28px 36px 12px; font-size: 28px; font-weight: 300; color: var(--fg3); }
+.ht-pm-form { flex: 1; overflow: auto; min-height: 0; padding: 12px 36px 24px; }
+.ht-pm-sect { font-size: 15px; font-weight: 500; color: var(--fg3); border-bottom: 1px solid var(--border); padding-bottom: 10px; margin: 24px 0 14px; }
 .ht-pm-sect:first-child { margin-top: 0; }
-.ht-pm-field { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: center; margin: 7px 0; }
+.ht-pm-field { display: grid; grid-template-columns: 110px minmax(0,1fr); gap: 16px; align-items: center; margin: 12px 0; max-width: 880px; }
 .ht-pm-field > span { font-size: 12px; color: var(--fg2); text-align: right; }
-.ht-pm-field input, .ht-pm-field select { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; color: var(--fg); padding: 5px 8px; font: inherit; width: 100%; min-width: 0; }
+.ht-pm-field input, .ht-pm-field select { background: var(--input-bg); border: 1px solid var(--border-solid); border-radius: 4px; color: var(--fg); padding: 5px 8px; font: inherit; width: 100%; min-width: 0; }
 .ht-pm-field input:focus, .ht-pm-field select:focus { outline: none; border-color: var(--accent); }
 .ht-pm-hint { font-size: 11px; color: var(--fg2); margin: -2px 0 6px 122px; }
 .ht-pm-swrow { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
@@ -93,11 +95,20 @@
 .ht-pm-swc { font-size: 11px; padding: 2px 8px; color: var(--fg2); }
 .ht-pm-actions { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 20px; border-top: 1px solid var(--border); }
 .ht-pm-guide { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; height: 100%; color: var(--fg2); text-align: center; line-height: 1.8; font-size: 13px; }
-.ht-pm-guide-ico { font-size: 34px; opacity: .5; }
+.ht-pm-guide-ico svg { width: 42px; height: 42px; opacity: .5; }
+@media (max-width: 900px) {
+  .ht-pm-left { width: 230px; }
+  .ht-pm-formhead { padding: 24px 20px 10px; }
+  .ht-pm-form { padding: 12px 20px; }
+  .ht-pm-field { grid-template-columns: minmax(0,1fr); gap: 4px; }
+  .ht-pm-field > span { text-align: left; }
+  .ht-pm-hint { margin-left: 0; }
+}
 `;
 
   /* ---------- 外壳（懒创建，一次性） ---------- */
   function ensureShell() {
+    if (window.UI?.closeDock) UI.closeDock();
     if (S.overlay) return;
     const st = document.createElement('style');
     st.id = 'ht-pm-style'; st.textContent = CSS;
@@ -108,30 +119,30 @@
     ov.hidden = true;
     ov.tabIndex = -1;
     ov.innerHTML = `
-      <div class="ht-pm" role="dialog" aria-label="机器管理">
+      <section class="ht-pm" aria-label="机器管理">
         <div class="ht-pm-left">
-          <div class="ht-pm-head"><span class="ht-pm-count">机器管理</span><button class="ht-pm-x" title="关闭（Esc）">✕</button></div>
+          <div class="ht-pm-head"><span class="ht-pm-count">机器管理</span><button class="ht-pm-x icon" title="关闭（Esc）" aria-label="关闭机器管理">${window.Icons.svg('x')}</button></div>
           <div class="ht-pm-tools">
-            <input class="ht-pm-q" type="text" placeholder="搜索机器…">
+            <input class="ht-pm-q" type="text" placeholder="搜索机器…" aria-label="搜索机器">
             <div class="ht-pm-btns">
-              <button data-act="add">＋ 添加机器</button>
-              <button data-act="dup" title="复制选中的机器">⧉ 复制</button>
-              <button data-act="del" title="删除选中的机器">🗑 删除</button>
+              <button data-act="add">${window.Icons.svg('plus')} 添加</button>
+              <button data-act="dup" title="复制选中的机器">${window.Icons.svg('copy')} 复制</button>
+              <button data-act="del" title="删除选中的机器">${window.Icons.svg('trash')} 删除</button>
             </div>
           </div>
           <div class="ht-pm-list"></div>
           <div class="ht-pm-bubble" hidden><span class="ht-pm-bubble-t"></span><button class="ht-pm-bubble-ok">确认删除</button></div>
         </div>
         <div class="ht-pm-right">
-          <div class="ht-pm-formhead"><span class="ht-pm-title">Profile</span></div>
+          <div class="ht-pm-formhead"><span class="ht-pm-title">连接配置</span></div>
           <div class="ht-pm-form"></div>
           <div class="ht-pm-actions" hidden>
             <button class="ht-pm-cancel">取消</button>
             <button class="ht-pm-save primary">保存</button>
           </div>
         </div>
-      </div>`;
-    document.body.appendChild(ov);
+      </section>`;
+    (document.getElementById('main-area') || document.body).appendChild(ov);
     S.overlay = ov;
     S.listEl = ov.querySelector('.ht-pm-list');
     S.formEl = ov.querySelector('.ht-pm-form');
@@ -155,11 +166,24 @@
   }
 
   function close() {
-    if (!S.overlay) return;
+    if (!S.overlay || S.overlay.hidden) return;
     hideBubble();
     S.overlay.hidden = true;
     S.draft = null; S.editing = null; S.selName = null;
-    // 关闭后不主动刷新父层面板（explorer 由父层自行处理）
+    // 返回原页面时同步保存、改名、复制和删除后的机器列表。
+    const H = window.Home;
+    const settings = window.Settings;
+    const T = wt();
+    if (H) H.render();
+    const homeOpen = !!(H && H.isOpen());
+    const settingsOpen = !!(settings && settings.isOpen());
+    if (settingsOpen) settings.render();
+    if (T && T.s.dockVisible && window.UI) window.UI.renderDock();
+    // 直接从终端进入管理器时，退出后恢复键盘输入。
+    if (!homeOpen && !settingsOpen && T && T.term) {
+      const tab = T.term.activeTab();
+      if (tab) { try { tab.fit.fit(); } catch (e) {} tab.term.focus(); }
+    }
   }
 
   /* ---------- 左列表 ---------- */
@@ -237,11 +261,11 @@
   const sect = (t) => `<div class="ht-pm-sect">${t}</div>`;
   const hint = (t) => `<div class="ht-pm-hint">${t}</div>`;
   function fld(label, key, val, ph, type) {
-    return `<div class="ht-pm-field"><span>${label}</span><input data-k="${key}" type="${type || 'text'}" value="${esc(val == null || val === 0 ? '' : val)}" placeholder="${esc(ph || '')}" autocomplete="off"></div>`;
+    return `<div class="ht-pm-field"><span>${label}</span><input aria-label="${esc(label)}" data-k="${key}" type="${type || 'text'}" value="${esc(val == null || val === 0 ? '' : val)}" placeholder="${esc(ph || '')}" autocomplete="off"></div>`;
   }
   function sel(label, key, opts, val) {
     const cur = String(val == null ? '' : val);
-    return `<div class="ht-pm-field"><span>${label}</span><select data-k="${key}">${opts.map((o) => {
+    return `<div class="ht-pm-field"><span>${label}</span><select aria-label="${esc(label)}" data-k="${key}">${opts.map((o) => {
       const [v, t] = Array.isArray(o) ? o : [o, o];
       return `<option value="${esc(v)}"${String(v) === cur ? ' selected' : ''}>${esc(t)}</option>`;
     }).join('')}</select></div>`;
@@ -260,10 +284,10 @@
     const actions = S.overlay.querySelector('.ht-pm-actions');
     const title = S.overlay.querySelector('.ht-pm-title');
     if (!d) {
-      title.textContent = 'Profile';
+      title.textContent = '连接配置';
       actions.hidden = true;
-      S.formEl.innerHTML = `<div class="ht-pm-guide"><div class="ht-pm-guide-ico">▦</div>
-        <p>从左侧选择一台机器即可编辑其 Profile；<br>或点击「＋ 添加机器」新建一台。</p>
+      S.formEl.innerHTML = `<div class="ht-pm-guide"><div class="ht-pm-guide-ico">${window.Icons.svg('server')}</div>
+        <p>选择一台机器，编辑连接配置；<br>也可以新建 SSH、串口或本地连接。</p>
         <button class="ht-pm-guide-add primary">＋ 添加机器</button></div>`;
       S.formEl.querySelector('.ht-pm-guide-add').onclick = () => edit(null);
       return;
@@ -420,7 +444,7 @@
     return s ? { ...s } : null; // 返回副本，避免调用方误改状态
   }
 
-  const api = { openManager, edit, byName };
+  const api = { openManager, edit, byName, close, isOpen: () => !!(S.overlay && !S.overlay.hidden) };
   window.Profiles = api;
   if (window.WT) window.WT.Profiles = api; // tabbar.js 亦按 T.Profiles 查找
 })();

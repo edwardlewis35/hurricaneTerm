@@ -1,26 +1,22 @@
-//! 隧道 / 端口转发 / 代理 —— 语义重写自 WindTerm 2.6.0
-//! `Tunnel` / `TunnelCenter` / `ForwardingCenter` / `ForwardingHandler` /
-//! `ProxyServer`(SOCKS5) / `ProxyCommandSocket` / `SshBridge::open*Forwarding`。
-//! 证据：re-work/decompiled/session/*.pseudo.txt（入口地址见各文件头），
-//! 字符串常量直接从二进制符号表实读（SSH_FORWARDING_* / PROXY_* / NOT_IMPORTANT_MARK /
-//! tr() 标签 0x100a5xxxx）。
+//! 隧道 / 端口转发 / 代理 —— 隧道模型与生命周期、转发中心、SOCKS5 编解码、
+//! X11 DISPLAY 解析、代理命令进程桥。
 //!
-//! 已确证核心语义（详见 re-work/notes/tunnel.md）：
-//! - Tunnel 布局 0x48B：uuid(+0x00) session(+0x08) name(+0x10) type(+0x18) error(+0x20)
-//!   error_level(+0x28) flags(+0x2c: bit0=autoOpen, bit1=localhostOnly) state(+0x30)
-//!   listen_port(+0x34) dest_port(+0x36) dest_host(+0x38) assigned_port(+0x40)
+//! 核心语义：
+//! - Tunnel 字段：uuid / session / name / type / error / error_level /
+//!   flags(bit0=auto_open, bit1=localhost_only) / state / listen_port / dest_port /
+//!   dest_host / assigned_port
 //! - TunnelType: 0=Invalid 1=Dynamic 2=Local 3=Remote；State: 0=WaitingToOpen 1=Opened
-//!   2=WaitingToClose 3=Closed（stateText 表 0x100ab5460 实读）
+//!   2=WaitingToClose 3=Closed
 //! - start 守卫 state>=2；stop 守卫 state<=1；Remote 独占会话，Dynamic/Local 复用非独占会话
-//! - setTunnel：state∈{0,3} 清 assigned_port；Closed+空错误早退（保留旧错误）；
-//!   错误级 4，"!important " 前缀 → 3 并剥离；变更发 tunnelChanged
-//! - SOCKS5：仅 CONNECT；无可用方法回 [05,05]（非 RFC 的 FF，二进制实证）；
-//!   域名请求回 atype=1+全零 IPv4；异常消息 tr 表实读
+//! - set_tunnel：state∈{0,3} 清 assigned_port；Closed+空错误早退（保留旧错误）；
+//!   错误级 4，"!important " 前缀 → 3 并剥离；变更发 changed 通知
+//! - SOCKS5：仅 CONNECT；无可用方法回 [05,05]（非 RFC 的 FF）；
+//!   域名请求回 atype=1+全零 IPv4；异常消息见错误串表
 //! - X11：仅 loopback 显示；TCP 端口 = display+6000；空 DISPLAY→unix:/tmp/.X11-unix/X<n>
-//! - ProxyCommand：QProcess 态→socket 态 {NotRunning→0,Starting→2,Running→3}；
-//!   错误表 [FailedToStart→2, Crashed→1, Timedout→5, ReadError→3→1]（0x100982b70 实读）
+//! - ProxyCommand：进程态→socket 态 {NotRunning→0,Starting→2,Running→3}；
+//!   错误表 [FailedToStart→2, Crashed→1, Timedout→5, ReadError→3→1]
 
-pub const NOT_IMPORTANT_MARK: &str = "!important "; // 符号表实读 @0x100ae3190
+pub const NOT_IMPORTANT_MARK: &str = "!important "; // 非重要错误的前缀
 
 // ---------------------------------------------------------------- 类型/状态
 
@@ -28,7 +24,7 @@ pub const NOT_IMPORTANT_MARK: &str = "!important "; // 符号表实读 @0x100ae3
 #[repr(u32)]
 pub enum TunnelType {
     #[default]
-    Unknown = 0, // isValid()==false 的类型
+    Unknown = 0, // is_valid()==false 的类型
     Dynamic = 1, // SOCKS5 动态
     Local = 2,
     Remote = 3,
@@ -44,17 +40,17 @@ pub enum TunnelState {
     Closed = 3,
 }
 
-/// 证据：typeText 0x10018a060（tr id 实读解码）
+/// 隧道类型的显示文本
 pub fn type_text(t: TunnelType) -> &'static str {
     match t {
         TunnelType::Dynamic => "Dynamic forwarding",
         TunnelType::Local => "Local forwarding",
         TunnelType::Remote => "Remote forwarding",
-        TunnelType::Unknown => "", // 证据：shared_null（空串）
+        TunnelType::Unknown => "", // 空串
     }
 }
 
-/// 证据：stateText 0x100188e90 + 字符串表 0x100ab5460 实读；>=4 回退 'Opened'（上游行为）
+/// 隧道状态的显示文本
 pub fn state_text(s: TunnelState) -> &'static str {
     match s {
         TunnelState::WaitingToOpen => "Waiting to open...",
@@ -68,19 +64,19 @@ pub fn state_text(s: TunnelState) -> &'static str {
 
 #[derive(Clone, Debug)]
 pub struct Tunnel {
-    pub uuid: String,          // +0x00 唯一 id（tunnelFromUuid 检索键）
-    pub session: String,       // +0x08 所属会话名（持久化分组键）
-    pub name: String,          // +0x10 显示名（可空；序列化 "name:Type" 的 name 段）
-    pub ttype: TunnelType,     // +0x18
-    pub error: String,         // +0x20
-    pub error_level: u32,      // +0x28 4=重要错误 3=非重要（!important 前缀）
-    pub auto_open: bool,       // +0x2c bit0
-    pub localhost_only: bool,  // +0x2c bit1
-    pub state: TunnelState,    // +0x30
-    pub listen_port: u16,      // +0x34 0=自动分配
-    pub dest_port: u16,        // +0x36
-    pub dest_host: String,     // +0x38
-    pub assigned_port: u16,    // +0x40 Opened 时的实际端口
+    pub uuid: String,          // 唯一 id（tunnel_from_uuid 检索键）
+    pub session: String,       // 所属会话名（持久化分组键）
+    pub name: String,          // 显示名（可空；序列化 "name:Type" 的 name 段）
+    pub ttype: TunnelType,     // 隧道类型
+    pub error: String,         // 错误信息
+    pub error_level: u32,      // 4=重要错误 3=非重要（!important 前缀）
+    pub auto_open: bool,       // flags bit0
+    pub localhost_only: bool,  // flags bit1
+    pub state: TunnelState,    // 当前状态
+    pub listen_port: u16,      // 0=自动分配
+    pub dest_port: u16,        // 目的端口
+    pub dest_host: String,     // 目的主机
+    pub assigned_port: u16,    // Opened 时的实际端口
 }
 
 impl Tunnel {
@@ -102,12 +98,12 @@ impl Tunnel {
         }
     }
 
-    /// 证据：isValid 0x100188c10 —— return *(int*)(this+0x18) != 0
+    /// 类型有效（type != Unknown）即隧道可用
     pub fn is_valid(&self) -> bool {
         self.ttype != TunnelType::Unknown
     }
 
-    /// 证据：listeningPortText 0x100188c20
+    /// 监听端口显示文本：
     /// port!=0 → 十进制；否则 state!=Opened → "Dynamic port allocation"；
     /// 否则 "Local|Remote <assigned_port>"（type==Remote→Remote，其余一律 Local）
     pub fn listening_port_text(&self) -> String {
@@ -121,8 +117,8 @@ impl Tunnel {
         format!("{label} {}", self.assigned_port)
     }
 
-    /// 证据：operator== 0x10018a190 —— 比较 uuid/type/session/listen_port/
-    /// dest_host/dest_port/localhostOnly(bit1)；**不比较** name/error/state/autoOpen(bit0)
+    /// 定义等价比较：uuid/type/session/listen_port/
+    /// dest_host/dest_port/localhost_only(bit1)；**不比较** name/error/state/auto_open(bit0)
     pub fn same_definition(&self, o: &Tunnel) -> bool {
         self.uuid == o.uuid
             && self.ttype == o.ttype
@@ -136,23 +132,23 @@ impl Tunnel {
 
 // ---------------------------------------------------------------- TunnelCenter
 
-/// TunnelSession 语义模型（+0x10 SuperSession*、+0x18 会话名、+0x20 dedicated/busy、
-/// +0x28 starting uuid 列表、+0x30 opened-requested uuid 列表）
+/// 隧道会话语义模型（就绪位、会话名、dedicated/busy、
+/// starting uuid 列表、opened-requested uuid 列表）
 #[derive(Clone, Debug, Default)]
 pub struct TunnelSession {
     pub session_name: String,
-    pub super_ready: bool, // SuperSession::state()==7 (Ready)
-    pub dedicated: bool,   // +0x20：Remote 隧道独占
-    pub starting: Vec<String>, // +0x28
-    pub opened: Vec<String>,   // +0x30（会话 ready 时重放）
+    pub super_ready: bool, // 会话状态 ==7 (Ready)
+    pub dedicated: bool,   // Remote 隧道独占
+    pub starting: Vec<String>, // 启动中的 uuid
+    pub opened: Vec<String>,   // 已请求打开的 uuid（会话 ready 时重放）
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct TunnelCenter {
-    pub tunnels: Vec<Tunnel>,           // this+0x60 QVector<Tunnel> stride 0x48
-    pub sessions: Vec<TunnelSession>,   // this+0x68 QVector<TunnelSession*>
-    pub changed: Vec<String>,           // tunnelChanged 信号记录（测试用）
-    pub ready_emitted: Vec<String>,     // sessionReady 信号记录
+    pub tunnels: Vec<Tunnel>,           // 隧道表
+    pub sessions: Vec<TunnelSession>,   // 会话表
+    pub changed: Vec<String>,           // 变更通知记录（测试用）
+    pub ready_emitted: Vec<String>,     // 就绪通知记录
 }
 
 impl TunnelCenter {
@@ -163,7 +159,7 @@ impl TunnelCenter {
         self.tunnels.iter_mut().find(|t| t.uuid == uuid)
     }
 
-    /// 证据：setTunnel 0x10018bce0
+    /// 更新隧道的状态与错误，并按规则发变更通知
     pub fn set_tunnel(&mut self, uuid: &str, state: TunnelState, error: &str) {
         let idx = match self.tunnels.iter().position(|t| t.uuid == uuid) {
             Some(i) => i,
@@ -171,14 +167,14 @@ impl TunnelCenter {
         };
         let t = &mut self.tunnels[idx];
         if t.state == state && t.error == error {
-            return; // 证据：state 与 error 均相同 → 直接返回
+            return; // state 与 error 均相同 → 直接返回
         }
         t.state = state;
         if state == TunnelState::Closed || state == TunnelState::WaitingToOpen {
-            t.assigned_port = 0; // 证据：(state==3||state==0) → +0x40 = 0
+            t.assigned_port = 0; // Closed / WaitingToOpen 时清零实际端口
         }
         if state == TunnelState::Closed && error.is_empty() {
-            self.changed.push(uuid.into()); // 证据：goto 尾块（仍发 tunnelChanged）
+            self.changed.push(uuid.into()); // 仍发变更通知
             return; // 保留旧 error，不改 error_level
         }
         t.error_level = 4;
@@ -190,7 +186,7 @@ impl TunnelCenter {
         self.changed.push(uuid.into());
     }
 
-    /// 证据：startTunnel 0x10018b640
+    /// 启动隧道：类型无效或已在运行则拒绝
     pub fn start_tunnel(&mut self, uuid: &str) -> bool {
         let (ttype, state) = match self.tunnel_from_uuid(uuid) {
             Some(t) => (t.ttype, t.state),
@@ -223,15 +219,15 @@ impl TunnelCenter {
         };
         self.set_tunnel(uuid, TunnelState::WaitingToOpen, "");
         let s = &mut self.sessions[sess_idx];
-        s.dedicated |= ttype == TunnelType::Remote; // 证据：this[0x20] |= (type==3)
-        s.starting.push(uuid.into());               // +0x28
-        // TunnelSession::openTunnelForwarding：会话 Ready → 立即 async open，否则排队 +0x30
+        s.dedicated |= ttype == TunnelType::Remote; // Remote 置独占标志
+        s.starting.push(uuid.into());               // 记入 starting
+        // 打开转发：会话 Ready → 立即异步打开，否则排队待重放
         if s.super_ready {
             if !s.opened.contains(&uuid.to_string()) {
                 s.opened.push(uuid.into());
             }
         } else {
-            // setSessionReady 时重放 opened 列表
+            // 会话就绪时重放 opened 列表
             if !s.opened.contains(&uuid.to_string()) {
                 s.opened.push(uuid.into());
             }
@@ -239,7 +235,7 @@ impl TunnelCenter {
         true
     }
 
-    /// 证据：stopTunnel 0x10018e8c0
+    /// 停止隧道：仅 WaitingToOpen/Opened 可停
     pub fn stop_tunnel(&mut self, uuid: &str) -> bool {
         let (ttype, state) = match self.tunnel_from_uuid(uuid) {
             Some(t) => (t.ttype, t.state),
@@ -254,18 +250,18 @@ impl TunnelCenter {
         self.set_tunnel(uuid, TunnelState::WaitingToClose, "");
         for s in &mut self.sessions {
             if s.starting.iter().any(|u| u == uuid) {
-                s.starting.retain(|u| u != uuid); // removeOne(+0x28)
-                s.opened.retain(|u| u != uuid);   // removeOne(+0x30)
+                s.starting.retain(|u| u != uuid); // 从 starting 移除
+                s.opened.retain(|u| u != uuid);   // 从 opened 移除
                 if s.super_ready {
-                    // SuperSession::state()==7 → asyncCloseTunnelForwarding(op=0xb)
+                    // 会话已就绪 → 发关闭转发（op=0xb）
                 }
-                break; // 证据：命中即 break
+                break; // 命中即 break
             }
         }
         true
     }
 
-    /// 证据：autoStartTunnels 0x10018b540 —— 遍历全部，flags&1 者 start
+    /// 自动启动：遍历全部隧道，auto_open(bit0) 者 start
     pub fn auto_start_tunnels(&mut self) {
         let uuids: Vec<String> = self
             .tunnels
@@ -278,7 +274,7 @@ impl TunnelCenter {
         }
     }
 
-    /// 证据：sessionTunnels 0x10018d1e0 —— 按会话名(+0x08)序列化为
+    /// 按会话名序列化为
     /// "name:Type[(localhost)][(auto)],listenPort,dest" 以 ';' 连接（即 ssh.tunnels 存储格式）
     pub fn session_tunnels(&self, session: &str) -> String {
         let mut parts: Vec<String> = Vec::new();
@@ -311,17 +307,17 @@ impl TunnelCenter {
         parts.join(";")
     }
 
-    /// 证据：addSessionTunnels 0x10018a580 —— 解析存储串并迁移旧标记：
+    /// 解析存储串并迁移旧标记：
     /// "Direct"→Local, "Reverse"→Remote, "(Local)"→"(localhost)"；
-    /// 每条必须恰好 3 个逗号字段；无名时回退 param_2 + ":port"
+    /// 每条必须恰好 3 个逗号字段；无名时回退 default_name + ":port"
     pub fn add_session_tunnels(&mut self, session: &str, default_name: &str, stored: &str) {
         for entry in stored.split(';') {
             let fields: Vec<&str> = entry.split(',').collect();
             if fields.len() != 3 {
-                continue; // 证据：size!=3 直接跳过
+                continue; // 字段数 !=3 直接跳过
             }
             let mut desc = fields[0].to_string();
-            // 旧标记迁移（顺序与二进制一致）
+            // 旧标记迁移（顺序固定）
             desc = desc.replace("Direct", "Local");
             desc = desc.replace("Reverse", "Remote");
             desc = desc.replace("(Local)", "(localhost)");
@@ -364,7 +360,7 @@ impl TunnelCenter {
             } else {
                 name
             };
-            let uuid = format!("{session}:{name}:{listen_port}"); // 上游 uuid 生成点未反编译，此处保证唯一稳定
+            let uuid = format!("{session}:{name}:{listen_port}"); // 组合键，保证唯一且稳定
             self.tunnels.push(Tunnel {
                 uuid,
                 session: session.to_string(),
@@ -381,9 +377,9 @@ impl TunnelCenter {
     }
 }
 
-// ---------------------------------------------------------------- ForwardingCenter
+// ---------------------------------------------------------------- ForwardRegistry
 
-/// 证据：ProxyServer::ProxyType —— 0=直连 TCP（Local 隧道），1=SOCKS5（Dynamic 隧道）
+/// 代理服务器类型：0=直连 TCP（Local 隧道），1=SOCKS5（Dynamic 隧道）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum ProxyServerType {
@@ -391,10 +387,10 @@ pub enum ProxyServerType {
     Socks5 = 1,
 }
 
-/// ForwardingCenter::Forwarding 表项 { handler, destHost, destPort }（QMap<server, QList>）
+/// 转发表项 { handler, dest_host, dest_port }（按服务器分组）
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForwardingRef {
-    pub handler: usize, // ForwardingHandler* 身份
+    pub handler: usize, // 处理器身份
     pub dest_host: String,
     pub dest_port: u16,
 }
@@ -410,18 +406,18 @@ pub struct ProxyServerState {
     pub forwardings: Vec<ForwardingRef>,
 }
 
-/// 证据：ForwardingCenter 0x1000cc4d0 startForwardingServer ——
-/// 复用 (uuid, listenPort) 相同的服务器；否则新建并 bind
-/// localhostOnly ? Loopback(2) : AnyIPv4(4)；同 (handler,destHost,destPort) 表项去重；
-/// 结果回 proxyServerReady(uuid, actualPort) 或 proxyServerError(uuid, err, msg)。
-/// 自旋锁 busy 标志(+0x20)：sched_yield×16 → sleep 100ms×16 → sleep 10s（证据保留）。
+/// 转发中心：
+/// 复用 (uuid, listen_port) 相同的服务器；否则新建并 bind
+/// localhost_only ? 回环地址 : 任意 IPv4；同 (handler,dest_host,dest_port) 表项去重；
+/// 结果回 ready(uuid, actual_port) 或 error(uuid, err, msg)。
+/// 自旋锁 busy 标志：sched_yield×16 → sleep 100ms×16 → sleep 10s。
 #[derive(Clone, Debug, Default)]
-pub struct ForwardingCenter {
+pub struct ForwardRegistry {
     pub servers: Vec<ProxyServerState>,
     pub last_event: Option<String>,
 }
 
-impl ForwardingCenter {
+impl ForwardRegistry {
     pub fn start_forwarding_server(
         &mut self,
         handler: usize,
@@ -444,7 +440,7 @@ impl ForwardingCenter {
                 ptype,
                 localhost_only,
                 bound_port: listen_port,
-                listening: true, // 真实实现：QTcpServer::listen 结果
+                listening: true, // 真实实现：监听 socket 的 bind 结果
                 error: None,
                 forwardings: Vec::new(),
             });
@@ -469,7 +465,7 @@ impl ForwardingCenter {
         }
     }
 
-    /// 证据：serverPort 0x1000cc3d0 —— 按 uuid 找首个服务器返回实际端口，无则 0
+    /// 按 uuid 找首个服务器返回实际端口，无则 0
     pub fn server_port(&self, uuid: &str) -> u16 {
         self.servers
             .iter()
@@ -478,8 +474,8 @@ impl ForwardingCenter {
             .unwrap_or(0)
     }
 
-    /// 证据：removeForwardingServer 0x1000cc130 —— 按 uuid 整台删除（不区分 handler），
-    /// 释放全部表项并发 proxyServerClosed
+    /// 按 uuid 整台删除（不区分 handler），
+    /// 释放全部表项并发出关闭通知
     pub fn remove_forwarding_server(&mut self, _handler: usize, uuid: &str) {
         if let Some(i) = self.servers.iter().position(|s| s.uuid == uuid) {
             self.servers.remove(i);
@@ -487,8 +483,8 @@ impl ForwardingCenter {
         }
     }
 
-    /// 证据：removeForwardingHandler 0x1000cbb60 —— 摘除该 handler 的全部表项；
-    /// 表项清空后删除服务器并发 proxyServerClosed(server.uuid)
+    /// 摘除该 handler 的全部表项；
+    /// 表项清空后删除服务器并发出关闭通知
     pub fn remove_forwarding_handler(&mut self, handler: usize) {
         let mut closed: Vec<String> = Vec::new();
         for s in &mut self.servers {
@@ -508,23 +504,23 @@ impl ForwardingCenter {
     }
 }
 
-// ---------------------------------------------------------------- ForwardingHandler
+// ---------------------------------------------------------------- 转发项 / X11
 
-/// 证据：ForwardingHandler::Forwarding { uuid, channel, socket }；
-/// RemoteForwarding { uuid, timer, channel, bind_host("localhost"|"") , bind_port, host, port }
+/// 转发连接项含 { uuid, channel, socket }；
+/// RemoteForwarding { uuid, bind_host, bind_port, host, port }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteForwarding {
     pub uuid: String,
-    pub bind_host: String, // localhostOnly ? "localhost" : ""（证据 remoteForwarding 0x1000cf4c0）
-    pub bind_port: u16,    // listenForward 回填实际端口
+    pub bind_host: String, // localhost_only ? "localhost" : ""
+    pub bind_port: u16,    // 打开转发后回填的实际端口
     pub host: String,
     pub port: u16,
 }
 
-/// 证据：x11Forwarding 0x1000cf7d0 —— DISPLAY 解析：
-/// 空 → 环境 DISPLAY，取 ':' 后数字 n → unix:/tmp/.X11-unix/X<n>（domainForwarding）；
+/// DISPLAY 解析：
+/// 空 → 环境 DISPLAY，取 ':' 后数字 n → unix:/tmp/.X11-unix/X<n>（unix 套接字转发）；
 /// 否则 (?<host>.*?):(?<port>\d+)(\.(?<screen>\d+))?；host 以 "unix:"/":" 开头或
-/// =="localhost" 或 QHostAddress.isLoopback 才接受；TCP 端口 = port+6000；
+/// =="localhost" 或回环地址才接受；TCP 端口 = port+6000；
 /// 端口溢出为 0 或 host 为空 → 忽略。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum X11Target {
@@ -579,8 +575,8 @@ fn is_loopback_ip(host: &str) -> bool {
 
 // ---------------------------------------------------------------- SOCKS5
 
-/// 证据：ProxyServer::Socks5State（$_2 直接写线上字节）：0=Succeeded 5=Refused
-/// 7=CommandNotSupported 8=AddressTypeNotSupported；握手拒绝实测写 [05,05]（非 RFC FF）。
+/// SOCKS5 应答码（直接写线上字节）：0=Succeeded 5=Refused
+/// 7=CommandNotSupported 8=AddressTypeNotSupported；握手拒绝写 [05,05]（非 RFC FF）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Socks5Reply {
@@ -600,7 +596,7 @@ pub const SOCKS_ERR_HS_LEN: &str = "SOCKS 5 handshake request is invalid (reques
 pub const SOCKS_ERR_HS_VER: &str = "SOCKS 5 handshake request is invalid (requested version: %1).";
 
 /// 握手：len<3 或 ver!=5 → Err；方法含 0x00 → 回 [05,00] 进入请求态；
-/// 否则回 [05,05] 并断开（证据 socks5Handshake 0x100100b20）
+/// 否则回 [05,05] 并断开
 pub fn socks5_handshake(buf: &[u8]) -> Result<(Vec<u8>, bool), String> {
     if buf.len() < 3 {
         return Err(SOCKS_ERR_HS_LEN.replace("%1", &buf.len().to_string()));
@@ -613,7 +609,7 @@ pub fn socks5_handshake(buf: &[u8]) -> Result<(Vec<u8>, bool), String> {
     if methods.contains(&0) {
         Ok((vec![0x05, 0x00], true)) // 选中 no-auth，state→2
     } else {
-        Ok((vec![0x05, 0x05], false)) // 证据：拒绝字节为 0x05（非 FF），随后 deleteLater
+        Ok((vec![0x05, 0x05], false)) // 拒绝字节为 0x05（非 FF），随后断开
     }
 }
 
@@ -621,13 +617,13 @@ pub fn socks5_handshake(buf: &[u8]) -> Result<(Vec<u8>, bool), String> {
 pub struct Socks5Request {
     pub command: u8,
     pub atype: u8,
-    pub host: String, // IPv4/IPv6 为十进制字符串（QHostAddress::toString）
+    pub host: String, // IPv4/IPv6 为文本形式
     pub port: u16,
 }
 
-/// 证据：socks5Request 0x100100fb0 —— 头部 4B(ver,cmd,resv,atype)；总长必须
+/// 请求解析：头部 4B(ver,cmd,resv,atype)；总长必须
 /// == 6 + addr_len（atype1→4, 4→16, 3→1+len）；cmd!=1→7；atype∉{1,3,4}→8；
-/// host 空→5。域名走异步 DNS（$_3），此处同步建模。
+/// host 空→5。域名走异步 DNS，此处同步建模。
 pub fn socks5_parse_request(buf: &[u8]) -> Result<(Socks5Request, Option<Socks5Reply>, Option<String>), (Option<Socks5Reply>, String)> {
     // (request, Some(reply)=成功路径预置, None) / Err((Some(reply), msg))
     if buf.len() < 5 {
@@ -643,7 +639,7 @@ pub fn socks5_parse_request(buf: &[u8]) -> Result<(Socks5Request, Option<Socks5R
     if ![1u8, 3, 4].contains(&atype) {
         return Err((Some(Socks5Reply::AddressTypeNotSupported), SOCKS_ERR_ATYP.replace("%1", &atype.to_string())));
     }
-    // 证据顺序：先按 atype 算期望总长并校验（!= 6+addr_len → "address length is invalid"，无应答码），
+    // 校验顺序：先按 atype 算期望总长并校验（!= 6+addr_len → "address length is invalid"，无应答码），
     // 再解析地址
     let addr_len = match atype {
         1 => 4usize,
@@ -667,7 +663,7 @@ pub fn socks5_parse_request(buf: &[u8]) -> Result<(Socks5Request, Option<Socks5R
     Ok((Socks5Request { command: cmd, atype, host, port }, Some(Socks5Reply::Succeeded), None))
 }
 
-/// 证据：$_2 0x100101a30 —— 应答 [05, rep, 00, atyp', BND.ADDR, BND.PORT]；
+/// 应答 [05, rep, 00, atyp', BND.ADDR, BND.PORT]；
 /// 请求 atype==3(域名) 时 atyp'=1 且 BND.ADDR=4×0；否则 atyp'=请求值、
 /// IPv6 用 AnyIPv6(::)、IPv4 用 0.0.0.0；BND.PORT=0
 pub fn socks5_reply(rep: Socks5Reply, req_atype: u8) -> Vec<u8> {
@@ -688,7 +684,7 @@ fn ipv4_to_string(b: &[u8]) -> String {
     format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
 }
 fn ipv6_to_string(b: &[u8]) -> String {
-    // QHostAddress::toString 的常规压缩形式；重写用 std 规范化即可（语义等价）
+    // 常规压缩形式；用 std 规范化即可（语义等价）
     let mut o = [0u16; 8];
     for i in 0..8 {
         o[i] = u16::from_be_bytes([b[i * 2], b[i * 2 + 1]]);
@@ -698,8 +694,8 @@ fn ipv6_to_string(b: &[u8]) -> String {
 
 // ---------------------------------------------------------------- ProxyCommand / 代理配置
 
-/// 证据：socketStateFromProcessState 0x100144540
-/// QProcess{NotRunning=0,Starting=1,Running=2} → QAbstractSocket{Unconnected=0,Connecting=2,Connected=3}
+/// 进程状态 → socket 状态：
+/// {NotRunning=0,Starting=1,Running=2} → {Unconnected=0,Connecting=2,Connected=3}
 pub fn socket_state_from_process_state(process_state: u32) -> u32 {
     match process_state {
         1 => 2,
@@ -708,9 +704,9 @@ pub fn socket_state_from_process_state(process_state: u32) -> u32 {
     }
 }
 
-/// 证据：socketErrorFromProcessError 0x100143e70，表 @0x100982b70 实读 [2,1,5,1]
-/// QProcess::ProcessError{FailedToStart=0,Crashed=1,Timedout=2,ReadError=3,WriteError=4}
-/// → SocketError{2=ConnectionRefused,1=HostNotFound,5=SocketTimeout,1, 4→1, >4→-1(Unknown)}
+/// 进程错误 → socket 错误，映射表 [2,1,5,1]：
+/// {FailedToStart=0,Crashed=1,Timedout=2,ReadError=3,WriteError=4}
+/// → {2=ConnectionRefused,1=HostNotFound,5=SocketTimeout,1, 4→1, >4→-1(Unknown)}
 pub fn socket_error_from_process_error(err: u32) -> i32 {
     const TABLE: [i32; 4] = [2, 1, 5, 1];
     if err < 4 {
@@ -722,7 +718,7 @@ pub fn socket_error_from_process_error(err: u32) -> i32 {
     }
 }
 
-/// 证据：setProxyCommand 0x100144100 —— splitCommandLine 后**首 token 弹出**为 program，
+/// 代理命令拆分：**首 token 弹出**为 program，
 /// 其余为 args
 pub fn split_proxy_command(cmd: &str) -> (String, Vec<String>) {
     let mut tokens: Vec<String> = cmd
@@ -736,7 +732,7 @@ pub fn split_proxy_command(cmd: &str) -> (String, Vec<String>) {
     (program, tokens)
 }
 
-/// 代理类型字符串（符号表实读）：None/System/Socks5/Http/ProxyCommand/Global/JumpServers
+/// 代理类型字符串：None/System/Socks5/Http/ProxyCommand/Global/JumpServers
 pub const PROXY_NONE: &str = "None";
 pub const PROXY_SYSTEM: &str = "System";
 pub const PROXY_SOCKS5: &str = "Socks5";
@@ -745,8 +741,8 @@ pub const PROXY_COMMAND: &str = "ProxyCommand";
 pub const PROXY_GLOBAL: &str = "Global";
 pub const PROXY_JUMPSERVERS: &str = "JumpServers";
 
-/// 证据：SshBridge::setProxy/setProxyCommand —— 仅写入 session 选项表（PROP_SESSION_*），
-/// 真正生效在 SshSocket::connectHost（B2.2）；键名从二进制字符串池实读
+/// 代理设置仅写入 session 选项表，
+/// 真正生效在连接阶段；键名见下表
 pub const PROXY_PROP_KEYS: &[&str] = &[
     "session.proxy",
     "session.proxyDns",
@@ -760,18 +756,18 @@ pub const PROXY_PROP_KEYS: &[&str] = &[
     "session.proxyJumpServer1..4",
 ];
 
-/// 隧道持久化键（字符串池实读 "ssh.tunnels"；setTunnels 按会话名 setUserSession）
+/// 隧道持久化键："ssh.tunnels"，按会话名分组存储
 pub const SSH_TUNNELS_KEY: &str = "ssh.tunnels";
 
-/// 证据：SuperSession::asyncOpenTunnelForwarding op=0x16，载荷
-/// [type, uuid, listenPort, destHost, destPort, localhostOnly]（autoOpen 不传）；
-/// asyncCloseTunnelForwarding op=0xb，载荷 [uuid]
+/// 异步消息操作码：打开隧道转发 op=0x16，载荷
+/// [type, uuid, listen_port, dest_host, dest_port, localhost_only]（auto_open 不传）；
+/// 关闭隧道转发 op=0xb，载荷 [uuid]
 pub const ASYNC_OP_OPEN_TUNNEL: u32 = 0x16;
 pub const ASYNC_OP_CLOSE_TUNNEL: u32 = 0xb;
-pub const SUPER_SESSION_STATE_READY: u32 = 7;
+pub const SESSION_STATE_READY: u32 = 7;
 
-/// 证据：SuperSession::openTunnelForwarding 0x1002f5a70 —— 按类型分发到 SshBridge
-pub fn dispatch_open(bridge: &dyn SshBridgeTunnel, t: &Tunnel) {
+/// 按隧道类型分发到桥接层
+pub fn dispatch_open(bridge: &dyn BridgeTunnel, t: &Tunnel) {
     match t.ttype {
         TunnelType::Remote => bridge.open_remote_forwarding(
             &t.uuid, t.listen_port, &t.dest_host, t.dest_port, t.localhost_only,
@@ -784,9 +780,9 @@ pub fn dispatch_open(bridge: &dyn SshBridgeTunnel, t: &Tunnel) {
     }
 }
 
-/// SshBridge 隧道面（证据校验过的入口校验：Local/Remote 要求 destHost.trimmed 非空且
-/// destPort!=0；Dynamic 无目的端校验）
-pub trait SshBridgeTunnel {
+/// 隧道桥接接口（入口校验：Local/Remote 要求 dest_host 去空白后非空且
+/// dest_port!=0；Dynamic 无目的端校验）
+pub trait BridgeTunnel {
     fn open_local_forwarding(&self, uuid: &str, listen: u16, host: &str, port: u16, localhost_only: bool);
     fn open_remote_forwarding(&self, uuid: &str, bind: u16, host: &str, port: u16, localhost_only: bool);
     fn open_dynamic_forwarding(&self, uuid: &str, port: u16, localhost_only: bool);
@@ -794,7 +790,7 @@ pub trait SshBridgeTunnel {
 }
 
 pub fn open_local_forwarding_validated(host: &str, port: u16) -> bool {
-    // 证据：openLocalForwarding 0x1003a3c70 —— trimmed 非空 && destPort != 0
+    // 去空白后非空 && dest_port != 0
     !host.trim().is_empty() && port != 0
 }
 
@@ -810,7 +806,7 @@ mod tests {
 
     #[test]
     fn state_and_type_text_tables() {
-        // 证据：0x100ab5460 表 + typeText tr id 解码
+        // 状态与类型的显示文本表
         assert_eq!(state_text(TunnelState::WaitingToOpen), "Waiting to open...");
         assert_eq!(state_text(TunnelState::Opened), "Opened");
         assert_eq!(state_text(TunnelState::WaitingToClose), "Waiting to close...");
@@ -831,13 +827,13 @@ mod tests {
         assert_eq!(t.listening_port_text(), "Local 54321");
         t.ttype = TunnelType::Remote;
         assert_eq!(t.listening_port_text(), "Remote 54321");
-        t.ttype = TunnelType::Dynamic; // 证据：非 Remote 一律 Local
+        t.ttype = TunnelType::Dynamic; // 非 Remote 一律 Local
         assert_eq!(t.listening_port_text(), "Local 54321");
     }
 
     #[test]
     fn equality_ignores_name_state_autoopen() {
-        // 证据：operator== 只比较 uuid/type/session/ports/destHost/localhostOnly
+        // 只比较 uuid/type/session/ports/dest_host/localhost_only
         let mut a = tunnel(TunnelType::Local);
         let mut b = tunnel(TunnelType::Local);
         a.name = "x".into();
@@ -848,7 +844,7 @@ mod tests {
         b.listen_port = 1;
         assert!(!a.same_definition(&b));
         b.listen_port = 0;
-        assert!(!a.same_definition(&b)); // localhostOnly 参与比较
+        assert!(!a.same_definition(&b)); // localhost_only 参与比较
     }
 
     #[test]
@@ -948,7 +944,7 @@ mod tests {
         assert_eq!(c.tunnels[2].ttype, TunnelType::Remote);
         assert_eq!(c.tunnels[3].ttype, TunnelType::Dynamic);
         assert_eq!(c.tunnels[3].dest_host, "");
-        // 序列化回去（sessionTunnels 格式）
+        // 序列化回去（session_tunnels 格式）
         let s = c.session_tunnels("srv");
         assert!(s.contains("Web:Local(localhost)(auto),8080,127.0.0.1:80"));
         assert!(s.contains("srv:2222:Local,2222,example.com:22"));
@@ -957,7 +953,7 @@ mod tests {
 
     #[test]
     fn socks5_handshake_vectors() {
-        // 无方法 → [05,05]（证据实证，非 RFC 0xFF）
+        // 无方法 → [05,05]（非 RFC 0xFF）
         let (reply, ok) = socks5_handshake(&[5, 1, 2]).unwrap(); // method=2 (GSSAPI)
         assert_eq!(reply, vec![5, 5]);
         assert!(!ok);
@@ -988,7 +984,7 @@ mod tests {
         assert_eq!(socks5_parse_request(&[5, 1, 0, 9, 1, 1, 1, 1, 0, 1]).unwrap_err().0,
                    Some(Socks5Reply::AddressTypeNotSupported));
         assert!(socks5_parse_request(&[5, 1, 0, 1, 1, 2, 3]).unwrap_err().0.is_none());
-        // 应答格式：域名请求 → atyp'=1 + 0.0.0.0:0（证据 $_2）
+        // 应答格式：域名请求 → atyp'=1 + 0.0.0.0:0
         assert_eq!(socks5_reply(Socks5Reply::Succeeded, 3),
                    vec![5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         assert_eq!(socks5_reply(Socks5Reply::CommandNotSupported, 1),
@@ -1027,7 +1023,7 @@ mod tests {
 
     #[test]
     fn forwarding_center_reuse_and_cleanup() {
-        let mut fc = ForwardingCenter::default();
+        let mut fc = ForwardRegistry::default();
         let h1 = 0x1000usize;
         let h2 = 0x2000usize;
         fc.start_forwarding_server(h1, "u1", ProxyServerType::Tcp, 8080, "127.0.0.1", 80, true);
@@ -1037,10 +1033,10 @@ mod tests {
         assert_eq!(fc.servers[0].forwardings.len(), 2); // dest 不同 → 两表项
         fc.start_forwarding_server(h2, "u1", ProxyServerType::Tcp, 8080, "127.0.0.1", 80, true);
         assert_eq!(fc.servers[0].forwardings.len(), 3);
-        // removeForwardingServer 按 uuid 整台删除（证据：不区分 handler）
+        // remove_forwarding_server 按 uuid 整台删除（不区分 handler）
         fc.remove_forwarding_server(h1, "u1");
         assert!(fc.servers.is_empty());
-        // removeForwardingHandler：表项清空才删服务器
+        // remove_forwarding_handler：表项清空才删服务器
         fc.start_forwarding_server(h1, "u2", ProxyServerType::Socks5, 1080, "", 0, false);
         fc.start_forwarding_server(h2, "u2", ProxyServerType::Socks5, 1080, "", 0, false);
         fc.remove_forwarding_handler(h1);
@@ -1052,13 +1048,13 @@ mod tests {
 
     #[test]
     fn bridge_validation_and_dispatch() {
-        // openLocalForwarding 校验：destHost.trimmed 非空 && destPort!=0
+        // open_local_forwarding 校验：dest_host 去空白后非空 && dest_port!=0
         assert!(open_local_forwarding_validated("h", 80));
         assert!(!open_local_forwarding_validated("  ", 80));
         assert!(!open_local_forwarding_validated("h", 0));
 
         struct Rec(std::cell::RefCell<Vec<String>>);
-        impl SshBridgeTunnel for Rec {
+        impl BridgeTunnel for Rec {
             fn open_local_forwarding(&self, u: &str, l: u16, h: &str, p: u16, lo: bool) {
                 self.0.borrow_mut().push(format!("L {u} {l} {h} {p} {lo}"));
             }

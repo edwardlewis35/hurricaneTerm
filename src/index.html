@@ -2,9 +2,17 @@
 <html lang="zh">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>hurricaneTerm</title>
+  <link rel="icon" type="image/png" href="huricano-icon.png" />
   <link rel="stylesheet" href="vendor/xterm.css" />
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="sftp.css" />
+  <link rel="stylesheet" href="terminal-appearance.css" />
+  <link rel="stylesheet" href="mac-window-controls.css" />
+  <link rel="stylesheet" href="quick-connect.css" />
+  <link rel="stylesheet" href="gist-sync.css" />
+  <link rel="stylesheet" href="workspace.css" />
 </head>
 <body>
   <!-- 无边框窗口：标签栏内嵌标题栏（Tabby 形态） -->
@@ -16,15 +24,22 @@
       <span class="ml ml-max" data-act="maximize" title="最大化"></span>
     </div>
     <div id="tabbar"></div>
-    <div class="tb-drag"></div>
+    <div class="tb-drag tb-drag-fill"></div>
     <div id="tb-actions"></div>
     <div id="tb-winctl"></div>
   </header>
 
+  <nav id="actbar" aria-label="终端工具栏"></nav>
+
   <div id="workspace">
-    <nav id="actbar"></nav>
-    <aside id="dock" hidden><div id="dock-body"></div></aside>
-    <div id="dock-resizer" hidden></div>
+    <div id="dock-backdrop" hidden></div>
+    <aside id="dock" hidden role="dialog" aria-modal="true" aria-labelledby="dock-title" tabindex="-1">
+      <header class="dock-window-head">
+        <b id="dock-title">会话</b>
+        <button type="button" id="dock-close" aria-label="关闭工具窗口" title="关闭 (Esc)"></button>
+      </header>
+      <div id="dock-body"></div>
+    </aside>
     <main id="main-area">
       <div id="home" hidden></div>
       <div id="settings" hidden></div>
@@ -41,19 +56,20 @@
         <section class="group" data-g="1" hidden><div class="term-host"></div></section>
       </div>
     </main>
+    <section id="sftp-panel" hidden aria-label="SFTP 文件管理"></section>
   </div>
 
   <footer id="statusbar">
-    <span id="st-mode" class="chip click" title="本地/远程模式（WindTerm Local/Remote Mode）">远程模式</span>
+    <span id="st-mode" class="chip click" title="本地/远程模式">远程模式</span>
     <span id="st-sync" class="chip click" title="同步输入：所有会话同时接收键盘输入">同步输入：关</span>
     <span class="spacer"></span>
     <span id="st-size" class="chip mono" title="活动终端行列">80 × 24</span>
     <span id="st-enc" class="chip mono">UTF-8</span>
     <span id="st-eol" class="chip mono">LF</span>
     <span id="st-zoom" class="chip mono click" title="点击重置字号">13 px</span>
-    <span id="st-theme" class="chip click" title="点击切换主题">tabby-dark</span>
+    <span id="st-theme" class="chip click" title="点击切换主题">dige-black</span>
     <span id="st-clock" class="chip mono"></span>
-    <span class="chip dim">0.7.6</span>
+    <span class="chip dim">0.7.16</span>
   </footer>
 
   <div id="palette" hidden>
@@ -71,12 +87,16 @@
   <script src="vendor/addon-web-links.js"></script>
   <script src="core.js"></script>
   <script src="icons.js"></script>
+  <script src="appearance.js"></script>
+  <script src="common-controls.js"></script>
+  <script src="sftp.js"></script>
   <script src="titlebar.js"></script>
   <script src="tabbar.js"></script>
   <script src="actbar.js"></script>
   <script src="profiles.js"></script>
   <script src="home.js"></script>
   <script src="settings.js"></script>
+  <script src="gist-sync.js"></script>
   <script src="term.js"></script>
   <script src="ui.js"></script>
 </body>

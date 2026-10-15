@@ -26,9 +26,11 @@
   }
 
   function btn(host, icon, title, onClick, cls) {
-    const b = document.createElement('div');
+    const b = document.createElement('button');
+    b.type = 'button';
     b.className = cls || 'tb-btn';
     b.title = title;
+    b.setAttribute('aria-label', title);
     b.innerHTML = window.Icons ? window.Icons.svg(icon) : icon;
     b.addEventListener('click', (e) => { e.stopPropagation(); onClick(b); });
     host.appendChild(b);
@@ -57,16 +59,35 @@
 
       // Tauri 的 decorations:false 会连原生红绿灯一起去掉，此时必须自绘
       const lights = document.getElementById('mac-lights');
-      if (lights && mac) {
+      if (lights && mac && win()) {
         document.body.classList.add('no-native-lights');
+        lights.setAttribute('role', 'group');
+        lights.setAttribute('aria-label', '窗口控制');
+        const controls = {
+          close: { title: '关闭窗口', shape: '<path d="M4 4l4 4M8 4L4 8"/>' },
+          minimize: { title: '最小化窗口', shape: '<path d="M3 6h6"/>' },
+          maximize: { title: '放大或还原窗口', shape: '<path class="ml-expand" d="M3 3h4L3 7zm6 6H5l4-4z"/>' },
+        };
         lights.querySelectorAll('.ml').forEach((m) => {
-          m.addEventListener('click', (e) => {
+          const a = m.dataset.act;
+          const control = controls[a];
+          if (!control) return;
+          // 使用真正的按钮：键盘 Tab/Enter/Space 与鼠标都能操作。
+          // group hover / focus-within 的三个 glyph 同时出现，由独立 CSS 控制。
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = m.className;
+          b.dataset.act = a;
+          b.title = control.title;
+          b.setAttribute('aria-label', control.title);
+          b.innerHTML = '<svg class="ml-glyph" viewBox="0 0 12 12" aria-hidden="true" focusable="false">' + control.shape + '</svg>';
+          b.addEventListener('click', (e) => {
             e.stopPropagation();
-            const a = m.dataset.act;
             if (a === 'close') this.close();
             else if (a === 'minimize') this.minimize();
             else this.toggleMaximize();
           });
+          m.replaceWith(b);
         });
       }
 
@@ -77,7 +98,7 @@
       const bar = document.getElementById('titlebar');
       if (bar) {
         bar.addEventListener('dblclick', (e) => {
-          if (e.target.closest('#tabbar .ht-tab, .tb-btn, .wc, .ml')) return;
+          if (e.target.closest('.ht-tab, .ht-actions, .ht-brand, .tb-btn, .wc, .ml, button, input')) return;
           this.toggleMaximize();
         });
         // 手动拖窗：data-tauri-drag-region 只认事件目标自身，标签条子元素会把它挡住，
@@ -99,16 +120,14 @@
       if (!host) return;
       host.textContent = '';
       const ui = () => (window.UI || (T && T.ui));
-      btn(host, 'search', '查找 (Ctrl+F)', () => ui() && ui().openSearch());
-      btn(host, 'splitH', '左右分屏', () => T && T.term.split('h'));
-      btn(host, 'splitV', '上下分屏', () => T && T.term.split('v'));
-      btn(host, 'terminal', '命令面板 (Ctrl+Shift+P)', () => ui() && ui().openPalette());
       this.settingsBtn = btn(host, 'gear', '设置', (b) => {
         const S = window.Settings;
         if (!S) return;
+        if (ui()) ui().closeDock();
+        if (window.Profiles && Profiles.isOpen()) { Profiles.close(); S.open(); return; }
         S.toggle();
-        b.classList.toggle('on', S.isOpen());
-      });
+      }, 'tb-btn tb-settings');
+      this.settingsBtn.setAttribute('aria-pressed', 'false');
     },
 
     buildWinCtl(host) {
@@ -128,6 +147,7 @@
         return b;
       };
       // macOS 已有左侧红绿灯时不重复放右侧按钮
+      if (mac) { host.hidden = true; return; }
       if (!mac) {
         mk('wc-min', 'minimize', '最小化', () => this.minimize());
         mk('wc-max', 'maximize', '最大化', () => this.toggleMaximize());
@@ -135,7 +155,23 @@
       mk('wc-close', 'x', '关闭', () => this.close());
     },
 
-    refresh() { syncMaxState(); },
+    syncSettings() {
+      const on = !!(window.Settings && window.Settings.isOpen());
+      if (this.settingsBtn) {
+        this.settingsBtn.classList.toggle('on', on);
+        this.settingsBtn.setAttribute('aria-pressed', String(on));
+      }
+    },
+
+    refresh() {
+      syncMaxState();
+      if (window.TabBar) TabBar.revealActive();
+      this.syncSettings();
+      if (this.sidebarBtn) {
+        this.sidebarBtn.classList.toggle('on', !!T.s.dockVisible);
+        this.sidebarBtn.setAttribute('aria-expanded', String(!!T.s.dockVisible));
+      }
+    },
 
     async minimize() { const w = win(); if (w) { try { await w.minimize(); } catch (e) {} } },
     async toggleMaximize() {

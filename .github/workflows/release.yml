@@ -53,7 +53,7 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: 安装 Rust 工具链
@@ -88,6 +88,44 @@ jobs:
       - name: 安装前端依赖
         run: npm ci
 
+      - name: 前端 UI 回归测试
+        run: npm run test:ui
+
+      - name: SFTP 文件管理回归测试
+        run: npm run test:sftp
+
+      - name: 现代控件与终端输出生命周期回归
+        run: |
+          npm run test:controls
+          npm run test:terminal
+
+      - name: 终端透明度、工具浮窗、窗口按钮和图标回归
+        run: |
+          npm run test:appearance
+          npm run test:layout
+          npm run test:mac-controls
+          npm run test:icons
+
+      - name: 快速连接与连续标题栏回归
+        run: |
+          npm run test:quick-connect
+          npm run test:header
+
+      - name: 标签内分屏与 Gist 配置同步回归
+        run: |
+          npm run test:workspace
+          npm run test:gist
+          npm run test:reconnect
+
+      - name: Gist 加密格式与兼容性回归
+        run: |
+          npm run prepare-dist
+          cargo test --manifest-path src-tauri/Cargo.toml gist_sync::tests
+
+      - name: macOS 原生 PTY 关闭与 UTF-8 回归
+        if: startsWith(matrix.platform, 'macos')
+        run: node scripts/native-terminal-test.mjs --online
+
       # 注意：APPLE_* 只能「整组注入」或「整组不注入」。
       # 空字符串会被 tauri-bundler 视为「需要签名」而去 security import 一张空证书，
       # 直接报 `failed to import keychain certificate`（v0.7.0 的 macOS 失败即此）。
@@ -101,14 +139,14 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'hurricaneTerm ${{ github.ref_name }}'
           releaseBody: |
-            hurricaneTerm ${{ github.ref_name }} — WindTerm 逆向分析 → Tauri 重构
+            hurricaneTerm ${{ github.ref_name }} — 跨平台终端（SSH / Telnet / 串口 / TCP + SFTP）
 
             附件为各平台安装包：
             - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
             - Windows：`.msi`、NSIS `.exe`
             - macOS：`.dmg`（Apple Silicon arm64，未签名：首次打开前执行 `xattr -cr /Applications/hurricaneTerm.app`）
 
-            原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
+            原创实现（Apache-2.0）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -128,14 +166,14 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'hurricaneTerm ${{ github.ref_name }}'
           releaseBody: |
-            hurricaneTerm ${{ github.ref_name }} — WindTerm 逆向分析 → Tauri 重构
+            hurricaneTerm ${{ github.ref_name }} — 跨平台终端（SSH / Telnet / 串口 / TCP + SFTP）
 
             附件为各平台安装包：
             - Linux：`.deb`（Debian/Ubuntu/Kali）、`.rpm`、`.AppImage`
             - Windows：`.msi`、NSIS `.exe`
             - macOS：`.dmg`（Apple Silicon arm64，已签名 + 公证）
 
-            原创实现（Apache-2.0），不含 WindTerm 专有代码或数据文件。
+            原创实现（Apache-2.0）。
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

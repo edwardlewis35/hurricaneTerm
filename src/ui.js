@@ -1,10 +1,10 @@
-/* hurricaneTerm — ui.js：侧栏窗格、状态栏、命令面板、浮动搜索、Toast
+/* hurricaneTerm — ui.js：工具浮窗、状态栏、命令面板、浮动搜索、Toast
  * 原创代码 (Apache-2.0)。
  *
  * 0.7.0 改版：删除 0.6.0 的老式菜单栏（#menubar，10 个下拉）与 emoji 工具栏（#toolbar）；
  *   所有入口迁到「左侧图标活动栏（actbar.js）+ 全页设置（settings.js）+ 命令面板 + 右键菜单」。
  *   <dialog> 弹窗（会话表单 / 触发器 / 关于）一并移除：表单归 profiles.js，其余归 settings.js。
- *   窗格内容结构仍对齐 WindTerm（Explorer/Filer/Outline/Sender/Transfer/Output）。
+ *   窗格内容结构：Explorer/Filer/Outline/Sender/Transfer/Output。
  */
 (function () {
   const T = window.WT;
@@ -66,7 +66,7 @@
       set('#st-zoom', T.s.fontSize + ' px');
       set('#st-enc', 'UTF-8');
       set('#st-eol', 'LF');
-      // WindTerm 借鉴：模式色带 + 同步输入描边（全局态一眼可见）
+      // 模式色带 + 同步输入描边（全局态一眼可见）
       document.body.classList.toggle('mode-remote', T.s.mode !== 'Local');
       document.body.classList.toggle('mode-local', T.s.mode === 'Local');
       document.body.classList.toggle('sync-on', !!T.s.sync);
@@ -78,27 +78,36 @@
       return Promise.resolve(w && typeof w.getCurrentWindow === 'function' ? w.getCurrentWindow() : null);
     },
 
-    /* ---------- 侧栏（活动栏驱动） ---------- */
+    /* ---------- 工具浮窗（水平工具栏驱动） ---------- */
     buildDock() {
-      this.renderDock();
+      if (this._dockBuilt) return;
+      this._dockBuilt = true;
+      // 浮窗仅由显式点击或快捷键打开，旧版保存的 dockVisible 不再占用启动空间。
+      T.s.dockVisible = false;
       this.applyDockVisibility();
-
-      // 侧栏宽度拖拽
-      const rz = $('#dock-resizer');
-      if (rz) {
-        let dragging = false;
-        rz.addEventListener('mousedown', (e) => { dragging = true; e.preventDefault(); document.body.classList.add('dragging'); });
-        window.addEventListener('mousemove', (e) => {
-          if (!dragging) return;
-          const w = Math.max(190, Math.min(620, e.clientX - 46));
-          document.documentElement.style.setProperty('--dock-w', w + 'px');
-        });
-        window.addEventListener('mouseup', () => {
-          if (!dragging) return;
-          dragging = false; document.body.classList.remove('dragging');
-          this.fitActive();
-        });
-      }
+      const close = $('#dock-close');
+      if (close) { close.innerHTML = svg('x'); close.addEventListener('click', () => this.closeDock()); }
+      document.addEventListener('pointerdown', (e) => {
+        if (!T.s.dockVisible || e.target.closest('#dock, #actbar, .wt-select-menu, .ht-menu')) return;
+        this.closeDock();
+      }, true);
+      document.addEventListener('keydown', (e) => {
+        if (!T.s.dockVisible) return;
+        // Portaled dropdown/menu handles its own Escape before the surrounding window.
+        if (window.CommonControls && CommonControls.isOpen || window.TabBar && TabBar.menuOpen()) return;
+        if (e.key === 'Escape') {
+          e.preventDefault(); e.stopImmediatePropagation(); this.closeDock(); return;
+        }
+        if (e.key !== 'Tab') return;
+        const dock = $('#dock');
+        const focusable = Array.from(dock.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]'))
+          .filter(el => !el.hidden && !el.closest('[hidden]') && el.getAttribute('aria-hidden') !== 'true');
+        if (!focusable.length) { e.preventDefault(); dock.focus(); return; }
+        const index = focusable.indexOf(document.activeElement);
+        if (index < 0 || e.shiftKey && index === 0 || !e.shiftKey && index === focusable.length - 1) {
+          e.preventDefault(); focusable[e.shiftKey ? focusable.length - 1 : 0].focus();
+        }
+      }, true);
 
       // 分屏分隔条拖拽
       const gut = $('#gutter');
@@ -121,6 +130,7 @@
           const cur = startSize + ((dir === 'v' ? e.clientY : e.clientX) - start);
           const pct = Math.max(12, Math.min(88, (cur / Math.max(1, total)) * 100));
           g0.style.flex = `0 0 ${pct}%`;
+          const state = T.term.workspaceState && T.term.workspaceState(); if (state) state.ratio = pct;
         });
         window.addEventListener('mouseup', () => {
           if (!gdrag) return;
@@ -131,28 +141,61 @@
     },
 
     applyDockVisibility() {
-      const dock = $('#dock'), rz = $('#dock-resizer');
+      const dock = $('#dock'), backdrop = $('#dock-backdrop');
       const vis = !!T.s.dockVisible;
       if (dock) dock.hidden = !vis;
-      if (rz) rz.hidden = !vis;
+      if (backdrop) backdrop.hidden = !vis;
+      const label = PANES.find(p => p[0] === T.s.dockPane);
+      const title = $('#dock-title');
+      if (title) {
+        title.textContent = label ? label[1] : '工具';
+        if (T.s.dockPane === 'transfer') {
+          const count = document.createElement('span'); count.className = 'dock-title-count';
+          count.textContent = this.transfers.length + ' 项'; title.appendChild(count);
+        }
+      }
       if (window.ActBar) ActBar.render();
+      if (window.TitleBar) TitleBar.refresh();
+    },
+
+    focusDock() {
+      const dock = $('#dock');
+      if (!dock || dock.hidden) return;
+      // Re-rendered content must not steal focus from a text field inside the same dialog.
+      if (!dock.contains(document.activeElement)) ($('#dock-close') || dock).focus();
     },
 
     setDockPane(id) {
+      if (!PANES.some(p => p[0] === id)) return;
+      const palette = $('#palette'), search = $('#search-float');
+      if (palette && !palette.hidden) this.closePalette();
+      if (search && !search.hidden) this.closeSearch();
+      if (id === 'filer' && window.SftpPanel) { this.closeDock(); SftpPanel.open(); return; }
+      if (!T.s.dockVisible) this._dockReturnFocus = document.activeElement;
+      if (window.SftpPanel && SftpPanel.isOpen() && SftpPanel.close() === false) return;
+      if (window.Settings && Settings.isOpen()) Settings.close();
+      if (window.Profiles && Profiles.isOpen()) Profiles.close();
       T.s.dockPane = id;
       T.s.dockVisible = true;
       this.applyDockVisibility();
       this.renderDock();
+      this.focusDock();
       T.persistSettings();
-      this.fitActive(40);
+    },
+
+    closeDock() {
+      if (!T.s.dockVisible) return;
+      T.s.dockVisible = false;
+      this.applyDockVisibility();
+      T.persistSettings();
+      const previous = this._dockReturnFocus;
+      this._dockReturnFocus = null;
+      if (previous && previous.isConnected && typeof previous.focus === 'function') previous.focus();
     },
 
     toggleDock() {
-      T.s.dockVisible = !T.s.dockVisible;
-      this.applyDockVisibility();
-      if (T.s.dockVisible) this.renderDock();
-      T.persistSettings();
-      this.fitActive(40);
+      if (T.s.dockVisible) this.closeDock();
+      else this.setDockPane(T.s.dockPane || 'explorer');
     },
 
     renderDock() {
@@ -243,18 +286,29 @@
       });
     },
 
-    openProfiles() {
-      if (window.Profiles) window.Profiles.openManager();
-      else this.toast('机器管理模块未加载');
+    toggleProfiles() {
+      if (window.Profiles?.isOpen()) { Profiles.close(); if (window.ActBar) ActBar.render(); }
+      else this.openProfiles();
     },
 
-    /* MobaXterm 习惯：SSH 连上后自动把文件窗格切到双栏并列出远端家目录（'.' = SFTP 家目录） */
+    openProfiles() {
+      const palette = $('#palette'), search = $('#search-float');
+      if (palette && !palette.hidden) this.closePalette();
+      if (search && !search.hidden) this.closeSearch();
+      if (window.SftpPanel && SftpPanel.isOpen() && SftpPanel.hide() === false) return;
+      this.closeDock();
+      if (window.Settings && Settings.isOpen()) Settings.close();
+      if (window.Profiles) window.Profiles.openManager();
+      else this.toast('机器管理模块未加载');
+      if (window.ActBar) ActBar.render();
+    },
+
+    /* SSH 连接只准备文件管理路径。工具窗口由用户点击打开，不抢占新终端。 */
     onSshConnected(tab) {
       if (!tab || !tab.session || tab.session.protocol !== 'ssh') return;
       T.s.remotePath = '.';
       T.s.filerMode = 'both';
-      this.setDockPane('filer');
-      this.toast('已连接 ' + (tab.session.host || '') + '，文件窗格显示远端目录');
+      this.toast('已连接 ' + (tab.session.host || '') + '，点击文件图标打开 SFTP');
     },
 
     /* ---------- 窗格：文件浏览器（SFTP 双栏） ---------- */
@@ -262,114 +316,26 @@
       const body = $('#dock-body');
       if (!body) return;
       const tab = T.term.activeTab();
-      const isSsh = tab && tab.session && tab.session.protocol === 'ssh' && !tab.exited;
-      const mode = T.s.filerMode || (isSsh ? 'both' : 'local');
-      const lpath = T.s.filerPath || null;
-      const rpath = T.s.remotePath || '.';   // '.' = SFTP 家目录（服务端 cwd）
-      body.innerHTML = `<div class="pane-head"><span>文件浏览器</span><span>
-        ${isSsh ? `<button data-m="local" class="${mode === 'local' ? 'on' : ''}">本地</button>
-        <button data-m="remote" class="${mode === 'remote' ? 'on' : ''}">远端</button>
-        <button data-m="both" class="${mode === 'both' ? 'on' : ''}">双栏</button>` : ''}
-      </span></div>
-      <div class="filer-cols">
-        ${mode !== 'remote' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(lpath || '~')}</span>
-          <span><button id="f-up" title="上级目录">↑</button><button id="f-home" title="主目录">⌂</button><button id="f-upl" title="上传选中项">上传 →</button></span></div>
-          <div id="f-list" class="list"></div></div>` : ''}
-        ${isSsh && mode !== 'local' ? `<div class="filer-col"><div class="pane-head"><span>${escapeHtml(rpath === '.' ? '~' : rpath)}</span>
-          <span><button id="r-up" title="上级目录">↑</button><button id="r-dwl" title="下载选中项">← 下载</button></span></div>
-          <div id="r-list" class="list"><div class="empty">加载中…</div></div></div>` : ''}
-      </div>`;
-      body.querySelectorAll('.pane-head button[data-m]').forEach((b) => { b.onclick = () => { T.s.filerMode = b.dataset.m; this.renderFiler(); }; });
-
-      const rowOf = (e) => {
-        const row = document.createElement('div');
-        row.className = 'row';
-        row.innerHTML = `<span class="ico">${svg(e.is_dir ? 'folder' : 'output')}</span>
-          <span class="col"><b>${escapeHtml(e.name)}</b><i>${e.is_dir ? '目录' : fmtSize(e.size)}</i></span>`;
-        return row;
-      };
-
-      // —— 本地列 ——
-      const flist = body.querySelector('#f-list');
-      if (flist) {
-        let entries = [];
-        try { entries = await T.invoke('fs_list', { path: lpath }).then((v) => (Array.isArray(v) ? v : [])); }
-        catch (e) { flist.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`; }
-        for (const e of entries) {
-          const row = rowOf(e);
-          row.ondblclick = () => { if (e.is_dir) { T.s.filerPath = e.path; this.renderFiler(); } };
-          row.onclick = () => {
-            this._filerSel = e.path; this._filerSelName = e.name;
-            flist.querySelectorAll('.row').forEach((r) => r.classList.remove('sel'));
-            row.classList.add('sel');
-          };
-          flist.appendChild(row);
-        }
-        if (!entries.length && !flist.children.length) flist.innerHTML = '<div class="empty">空目录</div>';
-        body.querySelector('#f-up').onclick = () => { if (lpath) { T.s.filerPath = lpath.replace(/\/+[^/]+\/?$/, '') || '/'; this.renderFiler(); } };
-        body.querySelector('#f-home').onclick = () => { T.s.filerPath = null; this.renderFiler(); };
-        body.querySelector('#f-upl').onclick = () => {
-          if (!isSsh) { this.toast('需要 SSH 会话', 2400, 'err'); return; }
-          if (!this._filerSel) { this.toast('先选中本地文件', 2400, 'err'); return; }
-          const remote = (rpath === '/' ? '' : rpath) + '/' + this._filerSelName;
-          this.toast('上传中：' + this._filerSelName);
-          T.invoke('sftp_upload', { id: tab.id, local: this._filerSel, remote }).catch((e) => this.toast('上传失败：' + e, 3200, 'err'));
-        };
-      }
-
-      // —— 远端列 ——
-      const rlist = body.querySelector('#r-list');
-      if (rlist && isSsh) {
-        try {
-          const ents = await T.invoke('sftp_list', { id: tab.id, path: rpath }).then((v) => (Array.isArray(v) ? v : []));
-          rlist.innerHTML = '';
-          for (const e of ents) {
-            const row = rowOf(e);
-            row.ondblclick = () => {
-              if (e.is_dir) { T.s.remotePath = e.path; this.renderFiler(); }
-              else {
-                const local = (T.s.filerPath || '') + '/' + e.name;
-                this.toast('下载中：' + e.name);
-                T.invoke('sftp_download', { id: tab.id, remote: e.path, local })
-                  .catch((err) => this.toast('下载失败：' + err, 3200, 'err'));
-              }
-            };
-            row.onclick = () => {
-              this._remoteSel = e;
-              rlist.querySelectorAll('.row').forEach((r) => r.classList.remove('sel'));
-              row.classList.add('sel');
-            };
-            rlist.appendChild(row);
-          }
-          if (!ents.length) rlist.innerHTML = '<div class="empty">空目录</div>';
-        } catch (err) { rlist.innerHTML = `<div class="empty">SFTP 失败：${escapeHtml(String(err))}</div>`; }
-        body.querySelector('#r-up').onclick = () => {
-          if (rpath === '.') { this.toast('已在家目录'); return; }
-          T.s.remotePath = rpath.replace(/\/+[^/]+\/?$/, '') || '.';
-          this.renderFiler();
-        };
-        body.querySelector('#r-dwl').onclick = () => {
-          if (!this._remoteSel) { this.toast('先选中远端文件', 2400, 'err'); return; }
-          const local = (T.s.filerPath || '') + '/' + this._remoteSel.name;
-          this.toast('下载中：' + this._remoteSel.name);
-          T.invoke('sftp_download', { id: tab.id, remote: this._remoteSel.path, local })
-            .catch((e2) => this.toast('下载失败：' + e2, 3200, 'err'));
-        };
-      }
+      const connected = tab && tab.session && tab.session.protocol === 'ssh' && !tab.exited;
+      body.innerHTML = `<div class="pane-head"><span>文件管理</span></div>
+        <div class="sender"><b>${escapeHtml(connected ? tab.title : '本地文件')}</b>
+        <p class="dim">独立双栏文件管理，支持书签、筛选、文件编辑与传输队列。</p>
+        <button class="primary" id="open-sftp-panel">打开文件管理 (Ctrl+2)</button></div>`;
+      body.querySelector('#open-sftp-panel').onclick = () => window.SftpPanel && SftpPanel.open();
     },
 
     /* ---------- 窗格：发送 ---------- */
     senderSet(text, direct) {
+      if (!T.s.dockVisible || T.s.dockPane !== 'sender') this.setDockPane('sender');
       const ta = $('#dock-body textarea');
       if (ta) { ta.value = text.replace(/\r$/, ''); ta.focus(); }
-      else { this.setDockPane('sender'); this.toast('已切到「发送」窗格'); }
       if (direct) T.term.broadcast(text, false);
     },
 
     renderSender() {
       const body = $('#dock-body');
       if (!body) return;
-      body.innerHTML = `<div class="pane-head"><span>发送文本</span><span>WindTerm SenderPane</span></div>
+      body.innerHTML = `<div class="pane-head"><span>发送文本</span><span>Sender</span></div>
         <div class="sender">
           <textarea id="send-text" placeholder="输入要发送到终端的文本（Ctrl+Enter 发送）" spellcheck="false"></textarea>
           <div class="sender-btns">
@@ -402,8 +368,9 @@
     renderTransfer() {
       const body = $('#dock-body');
       if (!body) return;
-      let html = `<div class="pane-head"><span>传输</span><span>${this.transfers.length} 项</span></div>`;
-      if (!this.transfers.length) html += '<div class="empty">SFTP 上传/下载进度会出现在这里。<br>X/Y/Zmodem 的队列（re/transfer.rs）尚未接线到 command 层。</div>';
+      this.applyDockVisibility();
+      let html = '';
+      if (!this.transfers.length) html += '<div class="empty">暂无传输记录。上传或下载文件后，可在这里查看进度。</div>';
       for (const t of this.transfers.slice(-20)) {
         const pct = t.total ? Math.min(100, Math.round(t.done * 100 / t.total)) : 0;
         html += `<div class="trow2"><span class="col"><b>${t.dir === 'up' ? '↑' : '↓'} ${escapeHtml(t.name)}</b>
@@ -448,9 +415,13 @@
     },
 
     /* ---------- 浮动搜索 ---------- */
+    toggleSearch() { const bar = $('#search-float'); if (bar && !bar.hidden) this.closeSearch(); else this.openSearch(); },
     openSearch() {
+      this.closeDock();
       const bar = $('#search-float');
       if (!bar) return;
+      const palette = $('#palette'); if (palette && !palette.hidden) this.closePalette();
+      if (window.Profiles?.isOpen()) Profiles.close();
       bar.hidden = false;
       const inp = $('#search-input');
       inp.value = this.lastQuery;
@@ -492,7 +463,10 @@
       try {
         const txt = await navigator.clipboard.readText();
         const t = T.term.activeTab();
-        if (t && txt) T.invoke('write', { id: t.id, data: txt });
+        if (t && txt) {
+          if (T.term.isLive && !T.term.isLive(t)) { if (t.exited) T.term.reconnect?.(t); return; }
+          await T.invoke('write', { id: T.term.ptyId ? T.term.ptyId(t) : t.id, data: txt });
+        }
       } catch (e) { this.toast('粘贴请用 Ctrl+Shift+V（WebKit 剪贴板限制）', 3000, 'err'); }
     },
 
@@ -533,10 +507,12 @@
 
     /* Tabby 入口：机器编辑统一走 profiles.js */
     editProfile(session) {
+      this.closeDock();
       if (window.Profiles) { Profiles.edit(session || null); return; }
       this.toast('机器管理模块未加载', 2400, 'err');
     },
     openSettings(section) {
+      this.closeDock();
       if (window.Settings) Settings.open(section);
       else this.toast('设置模块未加载', 2400, 'err');
     },
@@ -552,14 +528,14 @@
       add('会话', '机器管理…', 'Ctrl+M', 'server', () => this.openProfiles());
       add('会话', '添加机器…', '', 'server', () => this.editProfile(null));
       add('会话', '把当前会话另存为机器…', '', 'copy', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session));
-      add('会话', '关闭当前会话', 'Ctrl+W', 'x', () => T.term.active && T.term.close(T.term.active));
+      add('会话', '关闭当前会话', 'Ctrl+W', 'x', () => T.term.active && (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)));
       add('会话', '关闭其他会话', '', 'x', () => T.term.active && T.term.closeOthers(T.term.active));
       add('会话', '重命名当前标签', 'F2', 'output', () => window.TabBar && TabBar.renameActive());
 
-      add('窗格', '切换侧栏', 'Ctrl+B', 'folder', () => this.toggleDock());
+      add('窗格', '切换工具窗口', 'Ctrl+B', 'folder', () => this.toggleDock());
       for (let i = 0; i < PANES.length; i++) {
         const [id, label] = PANES[i];
-        add('窗格', '侧栏：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));
+        add('窗格', '工具窗口：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));
       }
 
       add('分屏', '左右分屏', 'Ctrl+Shift+E', 'splitH', () => T.term.splitActive('right'));
@@ -593,16 +569,20 @@
       return A;
     },
 
+    togglePalette() { const pane = $('#palette'); if (pane && !pane.hidden) this.closePalette(); else this.openPalette(); },
     openPalette() {
+      this.closeDock();
       const p = $('#palette');
       if (!p) return;
+      const search = $('#search-float'); if (search && !search.hidden) this.closeSearch();
+      if (window.Profiles?.isOpen()) Profiles.close();
       p.hidden = false;
       p.onclick = (e) => { if (e.target === p) this.closePalette(); };
       const inp = $('#palette-input');
       inp.value = '';
       this._pal = this.paletteEntries();
       this.filterPalette('');
-      setTimeout(() => inp.focus(), 0);
+      setTimeout(() => { if (!p.hidden) inp.focus(); }, 0);
     },
     closePalette() {
       const p = $('#palette');
@@ -689,16 +669,17 @@
     if (mod && e.shiftKey && (k === 'C' || k === 'c')) { e.preventDefault(); UI.copy(); return; }
     if (mod && e.shiftKey && (k === 'V' || k === 'v')) { e.preventDefault(); UI.paste(); return; }
     if (mod && !e.shiftKey && (k === 't' || k === 'T')) { e.preventDefault(); T.term.newLocal(); return; }
-    if (mod && !e.shiftKey && (k === 'w' || k === 'W')) { e.preventDefault(); if (T.term.active) T.term.close(T.term.active); return; }
+    if (mod && !e.shiftKey && (k === 'w' || k === 'W')) { e.preventDefault(); if (T.term.active) (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)); return; }
     if (mod && !e.shiftKey && (k === 'f' || k === 'F')) { e.preventDefault(); UI.openSearch(); return; }
     if (mod && !e.shiftKey && (k === 'b' || k === 'B')) { e.preventDefault(); UI.toggleDock(); return; }
     if (mod && !e.shiftKey && (k === 'm' || k === 'M')) { e.preventDefault(); UI.openProfiles(); return; }
-    if (mod && !e.shiftKey && k === ',') { e.preventDefault(); window.Settings ? Settings.toggle() : null; return; }
+    if (mod && !e.shiftKey && k === ',') { e.preventDefault(); UI.closeDock(); window.Settings ? Settings.toggle() : null; return; }
     if (mod && (k === '=' || k === '+')) { e.preventDefault(); T.term.zoom(1); return; }
     if (mod && k === '-') { e.preventDefault(); T.term.zoom(-1); return; }
     // Ctrl+1..6 → 侧栏窗格
     if (mod && !e.shiftKey && k >= '1' && k <= '6') {
       e.preventDefault();
+      if (k === '2' && window.SftpPanel) { UI.closeDock(); SftpPanel.toggle(); return; }
       const p = PANES[+k - 1];
       if (p) UI.setDockPane(p[0]);
       return;
