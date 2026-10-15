@@ -76,7 +76,7 @@
   /* ---------- 状态 ---------- */
   let root = null, tabsEl = null;
   let dragId = null;
-  let menuEl = null, menuBindTimer = null;
+  let menuEl = null, menuAnchor = null, menuBindTimer = null;
   let resizeObserver = null, resizeListener = null, revealFrame = null, lastActive = null, lastOrder = [];
   const MAX_TAB_WIDTH = 180, MIN_TAB_WIDTH = 110;
 
@@ -138,8 +138,11 @@
     return ICONS[p] || ICONS[''];
   }
 
+  function activeTabId() { return T.term?.activeTabId ? T.term.activeTabId() : T.term?.active; }
+
   function displayOrder() {
     const term = T.term;
+    if (typeof term.displayOrder === 'function') return term.displayOrder();
     const ids = (term.order || []).filter((id) => term.tabs[id]);
     const pinned = ids.filter((id) => term.tabs[id].pinned);
     const rest = ids.filter((id) => !term.tabs[id].pinned);
@@ -151,14 +154,15 @@
     clearTimeout(menuBindTimer); menuBindTimer = null;
     if (!menuEl) return;
     menuEl.remove();
-    menuEl = null;
+    if (menuAnchor) menuAnchor.setAttribute('aria-expanded', 'false');
+    menuEl = menuAnchor = null;
     document.removeEventListener('mousedown', onDocDown, true);
     document.removeEventListener('keydown', onDocKey, true);
   }
-  function onDocDown(e) { if (menuEl && !menuEl.contains(e.target)) closeMenu(); }
+  function onDocDown(e) { if (menuEl && !menuEl.contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenu(); }
   function onDocKey(e) { if (e.key === 'Escape') { closeMenu(); e.stopPropagation(); } }
 
-  function openMenu(x, y, build) {
+  function openMenu(x, y, build, anchor = null) {
     closeMenu();
     const m = document.createElement('div');
     m.className = 'ht-menu';
@@ -167,7 +171,8 @@
     const r = m.getBoundingClientRect();
     m.style.left = Math.max(2, Math.min(x, window.innerWidth - r.width - 4)) + 'px';
     m.style.top = Math.max(2, Math.min(y, window.innerHeight - r.height - 4)) + 'px';
-    menuEl = m;
+    menuEl = m; menuAnchor = anchor;
+    if (menuAnchor) menuAnchor.setAttribute('aria-expanded', 'true');
     menuBindTimer = setTimeout(() => {
       menuBindTimer = null;
       if (menuEl !== m) return;
@@ -246,7 +251,7 @@
       mi(m, { label: '活动时通知', svg: 'bell', checked: !!tab.notify, onClick: () => call('toggleNotify', id) });
       msep(m);
       mi(m, { label: '另存为机器', svg: 'server', onClick: () => callProfiles('edit', tab.session) });
-      mi(m, { label: tab.exited ? '关闭标签' : '断开连接', svg: 'x', danger: true, key: 'Ctrl+W', onClick: () => callExisting('close', id) });
+      mi(m, { label: tab.exited ? '关闭标签' : '断开连接', svg: 'x', danger: true, key: 'Ctrl+W', onClick: () => callExisting(T.term.closeTab ? 'closeTab' : 'close', id) });
     });
   }
 
@@ -289,7 +294,7 @@
   }
   /* moveTab 契约：先从 order 移除 dragId，再插入到剩余数组的返回下标处 */
   function dropIndex(dragId, dropId, after) {
-    const base = (T.term.order || []).filter((x) => x !== dragId && T.term.tabs[x]);
+    const base = displayOrder().filter(x => x !== dragId);
     const i = base.indexOf(dropId);
     return i < 0 ? base.length : (after ? i + 1 : i);
   }
@@ -297,22 +302,23 @@
   /* ---------- 标签 DOM ---------- */
   function tabEl(id) {
     const tab = T.term.tabs[id];
+    const peers = T.term.workspaceTabs ? T.term.workspaceTabs(id) : [tab];
     const el = document.createElement('div');
     el.className = 'ht-tab'
-      + (id === T.term.active ? ' ht-active' : '')
+      + (id === activeTabId() ? ' ht-active' : '')
       + (tab.exited ? ' ht-exited' : '');
     el.dataset.id = id;
     el.draggable = true;
     el.title = tab.title || '';
     el.setAttribute('role', 'tab');
-    el.setAttribute('aria-selected', String(id === T.term.active));
-    el.tabIndex = id === T.term.active ? 0 : -1;
+    el.setAttribute('aria-selected', String(id === activeTabId()));
+    el.tabIndex = id === activeTabId() ? 0 : -1;
     if (tab.color) el.style.setProperty('--htc', tab.color);
 
     const ico = document.createElement('span'); ico.className = 'ht-ico'; ico.innerHTML = svg(protoIcon(tab.session));
     const title = document.createElement('span'); title.className = 'ht-title'; title.textContent = tab.title || '';
     el.append(ico, title);
-    if (tab.activity && T.s.activityDot !== false) {
+    if (peers.some(t => t.activity) && T.s.activityDot !== false) {
       const dot = document.createElement('span'); dot.className = 'ht-dot'; dot.title = '有活动'; el.appendChild(dot);
     }
     if (tab.pinned) {
@@ -320,18 +326,18 @@
       pin.innerHTML = svg('pin'); pin.title = '已固定'; el.appendChild(pin);
     }
     const x = document.createElement('span'); x.className = 'ht-x'; x.innerHTML = svg('x'); x.title = '关闭';
-    x.addEventListener('click', (e) => { e.stopPropagation(); callExisting('close', id); });
+    x.addEventListener('click', (e) => { e.stopPropagation(); callExisting(T.term.closeTab ? 'closeTab' : 'close', id); });
     el.appendChild(x);
 
-    el.addEventListener('click', (e) => { if (e.button === 0) callExisting('activate', id); });
+    el.addEventListener('click', (e) => { if (e.button === 0) callExisting(T.term.activateTab ? 'activateTab' : 'activate', id); });
     el.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); callExisting('activate', id); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); callExisting(T.term.activateTab ? 'activateTab' : 'activate', id); }
       if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
         e.preventDefault();
         const ids = displayOrder();
         const next = e.key === 'Home' ? ids[0] : e.key === 'End' ? ids[ids.length - 1]
           : ids[(ids.indexOf(id) + (e.key === 'ArrowRight' ? 1 : -1) + ids.length) % ids.length];
-        callExisting('activate', next, false);
+        callExisting(T.term.activateTab ? 'activateTab' : 'activate', next, false);
         const target = tabsEl.querySelector('[data-id="' + cssEscape(next) + '"]');
         if (target) target.focus({ preventScroll: true });
         revealActive();
@@ -339,7 +345,7 @@
     });
     el.addEventListener('dblclick', (e) => { e.stopPropagation(); startInlineRename(id); });
     el.addEventListener('mousedown', (e) => {
-      if (e.button === 1) { e.preventDefault(); callExisting('close', id); }
+      if (e.button === 1) { e.preventDefault(); callExisting(T.term.closeTab ? 'closeTab' : 'close', id); }
       // 阻止标题栏拖拽吞掉标签上的按下事件
       e.stopPropagation();
     });
@@ -419,7 +425,7 @@
     if (revealFrame !== null) cancelAnimationFrame(revealFrame);
     revealFrame = requestAnimationFrame(() => {
       revealFrame = null;
-      const activeId = T.term && T.term.active;
+      const activeId = activeTabId();
       const act = activeId && tabsEl && tabsEl.querySelector('.ht-tab[data-id="' + cssEscape(activeId) + '"]');
       if (!act) return;
       // Scroll this row only. scrollIntoView can also move Home/Settings in WebKit.
@@ -457,7 +463,7 @@
 
   function render() {
     if (!tabsEl) return;
-    const activeId = T.term ? T.term.active : null;
+    const activeId = activeTabId();
     const scroll = tabsEl.scrollLeft;
     tabsEl.textContent = '';
     const ids = displayOrder();
@@ -499,7 +505,7 @@
     tabsEl.addEventListener('drop', (e) => { /* 落到尾部空白 → 移到末尾 */
       e.preventDefault();
       if (!dragId) return;
-      const base = (T.term.order || []).filter((x) => x !== dragId && T.term.tabs[x]);
+      const base = displayOrder().filter(x => x !== dragId);
       const from = dragId; dragId = null; clearDropMarks();
       call('moveTab', from, base.length);
     });
@@ -521,23 +527,25 @@
     plus.addEventListener('click', (e) => { e.stopPropagation(); call('newLocal'); });
     const caret = document.createElement('button'); caret.type = 'button';
     caret.className = 'ht-caret'; caret.innerHTML = svg('caret'); caret.title = '最近机器 / 添加机器';
-    caret.setAttribute('aria-label', '选择连接');
+    caret.setAttribute('aria-label', '选择连接'); caret.setAttribute('aria-haspopup', 'menu'); caret.setAttribute('aria-expanded', 'false');
     caret.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (menuEl && menuAnchor === caret) { closeMenu(); return; }
       const r = caret.getBoundingClientRect();
-      openMenu(r.left, r.bottom + 2, buildPlusMenu);
+      openMenu(r.left, r.bottom + 2, buildPlusMenu, caret);
     });
     const split = document.createElement('button'); split.type = 'button';
     split.className = 'ht-split'; split.innerHTML = svg('splitH'); split.title = '分屏';
-    split.setAttribute('aria-label', '分屏');
+    split.setAttribute('aria-label', '分屏'); split.setAttribute('aria-haspopup', 'menu'); split.setAttribute('aria-expanded', 'false');
     split.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (menuEl && menuAnchor === split) { closeMenu(); return; }
       const r = split.getBoundingClientRect();
       openMenu(r.left, r.bottom + 2, (m) => {
         mi(m, { label: '向右分屏', svg: 'splitH', key: 'Ctrl+Shift+E', onClick: () => call('splitActive', 'right') });
         mi(m, { label: '向下分屏', svg: 'splitV', key: 'Ctrl+Shift+D', onClick: () => call('splitActive', 'down') });
-        mi(m, { label: '取消分屏', onClick: () => call('unsplit') });
-      });
+        mi(m, { label: '恢复独立标签', onClick: () => call('unsplit') });
+      }, split);
     });
     actions.append(plus, caret, split);
 
@@ -562,6 +570,6 @@
     menuOpen: () => !!menuEl,
     // 对外暴露的浮层菜单：build(m, mi, msep, mhead)，供侧栏/状态栏复用同一套样式与交互
     openMenu: (x, y, build) => openMenu(x, y, (m) => build(m, mi, msep, mhead)),
-    renameActive: () => { const id = T.term && T.term.active; if (id) startInlineRename(id); },
+    renameActive: () => { const id = activeTabId(); if (id) startInlineRename(id); },
   };
 })();

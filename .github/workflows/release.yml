@@ -111,6 +111,14 @@ jobs:
           npm run test:quick-connect
           npm run test:header
 
+      - name: 标签内分屏与 Gist 配置同步回归
+        run: |
+          npm run test:workspace
+          npm run test:gist
+
+      - name: Gist 加密格式与兼容性回归
+        run: cargo test --manifest-path src-tauri/Cargo.toml gist_sync::tests
+
       - name: macOS 原生 PTY 关闭与 UTF-8 回归
         if: startsWith(matrix.platform, 'macos')
         run: node scripts/native-terminal-test.mjs --online

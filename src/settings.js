@@ -19,6 +19,7 @@
     { id: 'appearance', icon: 'palette', label: '外观' },
     { id: 'terminal', icon: 'terminal', label: '终端' },
     { id: 'profiles', icon: 'server', label: '机器与连接' },
+    { id: 'gist', icon: 'refresh', label: 'Gist 同步' },
     { id: 'triggers', icon: 'bell', label: '触发器' },
     { id: 'hotkeys', icon: 'keyboard', label: '快捷键' },
     { id: 'about', icon: 'info', label: '关于' },
@@ -234,6 +235,7 @@
   const RENDERERS = {
     appearance: renderAppearance, terminal: renderTerminal, profiles: renderProfiles,
     triggers: renderTriggers, hotkeys: renderHotkeys, about: renderAbout,
+    gist: () => window.GistSync ? `<div class="gs-root">${GistSync.view()}</div>` : '<p>同步模块未加载</p>',
   };
 
   /* ---------- 事件绑定（每次 render 后重挂） ---------- */
@@ -364,6 +366,7 @@
     const fn = RENDERERS[section] || renderAppearance;
     bodyEl.innerHTML = fn();
     bind();
+    if (section === 'gist' && window.GistSync) GistSync.bind(bodyEl.querySelector('.gs-root'));
     bodyEl.scrollTop = 0;
   }
 

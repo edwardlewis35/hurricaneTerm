@@ -58,12 +58,14 @@ const persisted = w => w.calls.filter(([c, a]) => c === 'ui_state_save' && a.nam
 try {
   const fresh = makeWindow(null); await fresh.WT.init();
   check('A1 新用户界面与终端背景默认100%', fresh.WT.s.backgroundOpacity === 100 && fresh.WT.s.terminalOpacity === 100);
+  check('新安装默认 dige-black 主题', fresh.WT.s.theme === 'dige-black');
   const legacy = makeWindow({ backgroundOpacity: 57 }); await legacy.WT.init(); legacy.WT.persistSettings();
   check('A2 旧用户缺省terminalOpacity迁移已有57%，并写入设置', legacy.WT.s.terminalOpacity === 57 && persisted(legacy).at(-1).terminalOpacity === 57);
   const saved = makeWindow({ backgroundOpacity: 77, terminalOpacity: 34 }); await saved.WT.init();
   check('A3 已有独立终端不透明度保持34%，不被界面77%覆盖', saved.WT.s.terminalOpacity === 34 && saved.WT.s.backgroundOpacity === 77);
   const oldDefault = makeWindow({ theme: 'tabby-dark' }); await oldDefault.WT.init();
   check('A4 更早设置未保存任何不透明度时仍默认100%', oldDefault.WT.s.terminalOpacity === 100);
+  check('保留用户已保存的主题选择', oldDefault.WT.s.theme === 'tabby-dark');
 
   const w = makeWindow({ backgroundOpacity: 83, terminalOpacity: 60 }, true), T = w.WT, TM = T.term;
   await T.init(); TM.applyTheme('tabby-dark');
@@ -73,12 +75,17 @@ try {
   await until(() => first.wrap.querySelector('.xterm-rows')?.textContent.includes('plain text'));
   const rows = first.wrap.querySelector('.xterm-rows');
   check('B1 生产create实际打开xterm DOM renderer并渲染文本', !!rows && rows.textContent.includes('ANSI'));
+  check('生产终端输入光标默认闪烁', first.term.options.cursorBlink === true);
   check('B2 60%终端由完整wrapper实际绘制rgba背景', paint(w, first.wrap) === 'rgba(23, 23, 23, 0.6)');
   check('B3 viewport/screen/rows/xterm不叠加默认背景alpha', ['.xterm', '.xterm-viewport', '.xterm-screen', '.xterm-rows'].every(selector => transparent(paint(w, first.wrap.querySelector(selector)))));
   check('B4 workspace/group/host祖先不垫界面83%的背景', ['#workspace', '#main-area', '#groups', '#groups .group', '.term-host'].every(selector => transparent(paint(w, w.document.querySelector(selector)))));
   check('B5 渲染的默认文字保留不透明前景色且祖先未设置opacity', w.getComputedStyle(rows).color === 'rgb(202, 202, 202)' && [first.wrap, rows, ...first.wrap.querySelectorAll('.xterm, .xterm-screen')].every(el => !el.style.opacity));
   const ansi = [...rows.querySelectorAll('span')].find(el => el.textContent === 'ANSI');
   check('B6 ANSI字符显式背景保持真实色彩，不受整体opacity影响', !!ansi && paint(w, ansi) === 'rgb(255, 97, 90)');
+  await write('Error: test failure\r\n'); TM.runHighlights(first);
+  const redSpans = () => [...rows.querySelectorAll('span')].filter(el => w.getComputedStyle(el).color === 'rgb(217, 83, 79)');
+  await until(() => redSpans().map(el => el.textContent).join('') === 'Error');
+  check('真实xterm渲染器把关键词改成红色字体并保持透明背景', redSpans().length > 0 && redSpans().every(el => transparent(paint(w, el))));
 
   w.Settings.mount(w.document.querySelector('#settings')); w.Settings.open('appearance');
   const uiSlider = w.document.querySelector('[data-opacity]'), termSlider = w.document.querySelector('[data-terminal-opacity]');

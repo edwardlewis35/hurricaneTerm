@@ -91,6 +91,7 @@
       mkBtn(tools, {
         icon: 'home', label: '主页', onClick: () => {
           if (T.ui) T.ui.closeDock();
+          if (window.Home?.isOpen() && T.term.order.length) { Home.hide(); return; }
           if (T.term.order.length) T.term.openHome();
           else if (window.Home) Home.show();
         },
@@ -99,7 +100,7 @@
         icon: 'server', label: '机器管理', key: 'Ctrl+M', cls: 'ab-profiles',
         onClick: () => {
           const P = window.Profiles;
-          if (T.ui) T.ui.openProfiles();
+          if (T.ui) T.ui.toggleProfiles();
           else if (P) P.openManager();
           else if (T.ui) T.ui.toast('机器管理模块未加载');
         },
@@ -121,9 +122,9 @@
 
       // 查询、命令与外观入口集中在同一条工具栏，设置仍位于右上角。
       mkBtn(extras, { icon: 'search', label: '查找', key: 'Ctrl+F',
-        onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.openSearch(); } } });
+        onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.toggleSearch(); } } });
       mkBtn(extras, { icon: 'terminal', label: '命令面板', key: 'Ctrl+Shift+P',
-        onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.openPalette(); } } });
+        onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.togglePalette(); } } });
       mkBtn(extras, {
         icon: 'theme', label: '切换深浅色', onClick: () => {
           if (window.Settings) Settings.cycleLightDark();
@@ -135,13 +136,26 @@
       if (sftp && typeof MutationObserver === 'function') {
         panelObserver = new MutationObserver(() => this.render());
         panelObserver.observe(sftp, { attributes: true, attributeFilter: ['hidden'] });
+        const main = document.getElementById('main-area');
+        if (main) panelObserver.observe(main, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+        const palette = document.getElementById('palette');
+        if (palette) panelObserver.observe(palette, { attributes: true, attributeFilter: ['hidden'] });
       }
       this.render();
     },
 
     /* 点按开合：同 Tabby，再点当前窗格则收起整条侧栏 */
     toggle(paneId) {
-      if (paneId === 'filer' && window.SftpPanel) { if (T.ui) T.ui.closeDock(); SftpPanel.toggle(); this.render(); return; }
+      if (paneId === 'filer' && window.SftpPanel) {
+        if (T.ui) {
+          T.ui.closeDock();
+          if (!SftpPanel.isOpen()) {
+            if (!document.getElementById('search-float')?.hidden) T.ui.closeSearch();
+            if (!document.getElementById('palette')?.hidden) T.ui.closePalette();
+          }
+        }
+        SftpPanel.toggle(); this.render(); return;
+      }
       const ui = T.ui;
       if (!ui) return;
       if (T.s.dockVisible && T.s.dockPane === paneId) ui.toggleDock();
@@ -192,7 +206,15 @@
         if (p.id === cur) this.clearBadge(p.id);
       }
       const sb = root.querySelector('.ab-profiles');
-      if (sb) sb.classList.remove('on');
+      if (sb) {
+        const active = !!window.Profiles?.isOpen(); sb.classList.toggle('on', active);
+        sb.setAttribute('aria-expanded', String(active)); sb.setAttribute('aria-haspopup', 'dialog');
+      }
+      for (const [label, id] of [['查找', 'search-float'], ['命令面板', 'palette']]) {
+        const button = root.querySelector('[aria-label="' + label + '"]');
+        const active = !!document.getElementById(id) && !document.getElementById(id).hidden;
+        if (button) { button.classList.toggle('on', active); button.setAttribute('aria-expanded', String(active)); button.setAttribute('aria-controls', id); }
+      }
     },
   };
 

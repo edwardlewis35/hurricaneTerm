@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.13';
+  const VERSION = '0.7.14';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -19,7 +19,7 @@ window.WT = (function () {
     listen: (e, cb) => ev.listen(e, cb),
 
     s: {
-      theme: 'tabby-dark',
+      theme: 'dige-black',
       fontSize: 13,
       fontFamily: '',
       backgroundOpacity: 100,

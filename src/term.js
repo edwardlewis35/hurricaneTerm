@@ -137,7 +137,63 @@
     order: [],         // ids in open order
     active: null,      // active id
     group: 0,          // active group (0|1)
-    splitDir: null,    // null|'h'|'v'
+    splitDir: null,    // 当前工作区的 null|'h'|'v'，兼容状态栏/分隔条调用
+    workspaces: {},    // workspaceId -> { splitDir, ratio, activeId }；一个标签可含两个 PTY
+
+    workspaceId(tab) { return tab && (tab.workspaceId || tab.id); },
+    workspaceTabs(id) {
+      const key = typeof id === 'object' ? this.workspaceId(id) : this.workspaceId(this.tabs[id]) || id;
+      return this.order.map(x => this.tabs[x]).filter(t => t && !t._closing && this.workspaceId(t) === key);
+    },
+    workspaceTab(id) { return this.workspaceTabs(id)[0] || null; },
+    activeTabId() { return this.workspaceTab(this.active)?.id || this.active; },
+    workspaceState(tab = this.activeTab()) {
+      const id = this.workspaceId(tab);
+      return id ? (this.workspaces[id] ||= { splitDir: null, ratio: null, activeId: tab.id }) : null;
+    },
+    activateTab(id, focus = true) {
+      const t = this.tabs[id]; if (!t) return;
+      const state = this.workspaceState(t);
+      this.activate(this.workspaceTabs(id).some(x => x.id === state.activeId) ? state.activeId : id, focus);
+    },
+    // 只绘制活动标签的窗格。每个标签独立保存方向、比例和上一次聚焦的终端。
+    renderWorkspace() {
+      const active = this.activeTab(), key = this.workspaceId(active), state = this.workspaceState(active);
+      const peers = active ? this.workspaceTabs(active) : [];
+      this.splitDir = peers.length > 1 ? (state.splitDir || 'h') : null;
+      const host = document.getElementById('groups');
+      host.dataset.dir = this.splitDir || '';
+      host.dataset.workspace = key || '';
+      this.groupEl(0).style.flex = this.splitDir && state.ratio ? `0 0 ${state.ratio}%` : '';
+      this.groupEl(1).hidden = !this.splitDir;
+      const gutter = document.getElementById('gutter'); if (gutter) gutter.hidden = !this.splitDir;
+      for (const t of Object.values(this.tabs)) t.wrap.style.display = this.workspaceId(t) === key ? 'block' : 'none';
+      this.renderPaneControls();
+      this.markFocused();
+    },
+    renderPaneControls() {
+      const peers = this.active ? this.workspaceTabs(this.active) : [];
+      for (const g of [0, 1]) {
+        const group = this.groupEl(g);
+        let head = group.querySelector('.pane-controls');
+        if (!head) {
+          head = document.createElement('header'); head.className = 'pane-controls';
+          const title = document.createElement('span'); title.className = 'pane-title';
+          const close = document.createElement('button'); close.type = 'button'; close.className = 'pane-close';
+          close.innerHTML = window.Icons ? Icons.svg('x') : '×';
+          close.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+          close.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); const id = close.dataset.id; if (id) this.close(id); });
+          head.append(title, close); group.prepend(head);
+        }
+        const t = peers.find(x => x.group === g);
+        head.hidden = !this.splitDir || !t;
+        if (t) {
+          head.querySelector('.pane-title').textContent = t.title;
+          const close = head.querySelector('.pane-close'); close.dataset.id = t.id;
+          close.title = '关闭此分屏'; close.setAttribute('aria-label', '关闭分屏：' + t.title);
+        }
+      }
+    },
 
     groupEl(g) { return document.querySelector(`#groups .group[data-g="${g}"]`); },
     tabbarEl(g) { return this.groupEl(g).querySelector('.tabbar'); },
@@ -153,9 +209,11 @@
     },
 
     async create(session, opts) {
-      const g = (opts && opts.group) != null ? opts.group : this.group;
+      const workspaceId = opts && opts.workspaceId;
+      // 新建/复制标签不会继承当前分屏槽位；只有 splitActive 显式加入已有标签。
+      const g = workspaceId && opts.group != null ? opts.group : 0;
       const wrap = document.createElement('div');
-      wrap.className = 'term-wrap';
+      wrap.className = 'term-wrap'; wrap.style.display = 'none';
       this.hostEl(g).appendChild(wrap);
 
       const term = new Terminal({
@@ -166,6 +224,7 @@
         scrollback: 10000,
         allowProposedApi: true,
         macOptionIsMeta: false,
+        cursorBlink: true,
       });
       if (window.Appearance) Appearance.syncTerminal({ wrap, term }, THEMES[T.s.theme].term);
       const fit = new FitAddon.FitAddon();
@@ -221,13 +280,24 @@
         return null;
       }
 
+      // 身份验证期间原标签可能被关闭。迟到的连接必须立即释放，不能复活标签。
+      if (workspaceId && !this.workspaceTabs(workspaceId).length) {
+        term.dispose(); wrap.remove();
+        T.invoke('kill', { id }).catch(() => {});
+        return null;
+      }
       const tab = {
-        id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
+        id, workspaceId: workspaceId || id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
         term, fit, search, wrap, group: g, exited: false, outline: [], session: session || null,
         // Tabby 风格标签属性（tabbar.js 消费）
         color: (session && session.color) || null, pinned: false, notify: false, activity: false,
       };
       this.tabs[id] = tab;
+      this.workspaceState(tab);
+      if (workspaceId && opts.moveExistingTo != null) {
+        const source = this.tabs[opts.sourceId];
+        if (source) { source.group = opts.moveExistingTo; this.hostEl(source.group).appendChild(source.wrap); }
+      }
       // Connecting may await authentication while the user changes opacity/theme.
       // Apply the latest appearance when the session finally becomes a tab.
       if (window.Appearance) Appearance.syncTerminal(tab, THEMES[T.s.theme].term);
@@ -275,7 +345,7 @@
         if (this.active === id) UI.status();
       });
       term.onTitleChange((t) => {
-        if (t && t.trim()) { tab.title = t.trim().slice(0, 28); this.renderTabbar(); }
+        if (t && t.trim()) { if (!tab.customTitle) tab.title = t.trim().slice(0, 28); this.renderPaneControls(); this.renderTabbar(); }
       });
       wrap.addEventListener('mousedown', () => this.activate(id));
 
@@ -377,12 +447,8 @@
       this.renderTabbar();
       this.markFocused();
       if (window.SftpPanel) SftpPanel.onSessionChange();
-      // 每个窗格保留自己的活动终端；切换焦点不能清空另一个窗格。
-      for (const g of [0, 1]) {
-        const peers = this.order.map((x) => this.tabs[x]).filter((x) => x && x.group === g);
-        const shown = g === t.group ? t : peers.find((x) => x.wrap.style.display !== 'none') || peers[peers.length - 1];
-        for (const x of peers) x.wrap.style.display = x === shown ? 'block' : 'none';
-      }
+      this.workspaceState(t).activeId = id;
+      this.renderWorkspace();
       requestAnimationFrame(() => {
         if (t._closing || this.tabs[id] !== t || this.active !== id) return;
         // 分屏和换轴后，两侧终端都需要按各自窗格重新计算行列。
@@ -432,12 +498,19 @@
       t.term.dispose();
       t.wrap.remove();
       this.order = this.order.filter((x) => x !== id);
+      const remaining = this.workspaceTabs(t);
+      if (remaining.length === 1) {
+        const survivor = remaining[0];
+        // 关闭父 pane 后仍保留标签名、固定状态和颜色。
+        if (t.customTitle && !survivor.customTitle) { survivor.title = t.title; survivor.customTitle = true; }
+        survivor.pinned ||= !!t.pinned; survivor.color ||= t.color;
+        survivor.group = 0; this.hostEl(0).appendChild(survivor.wrap);
+        const state = this.workspaceState(survivor); state.splitDir = null; state.ratio = null; state.activeId = survivor.id;
+      } else if (!remaining.length) delete this.workspaces[this.workspaceId(t)];
       if (this.active === id) {
-        const inGroup = this.order.filter((x) => this.tabs[x].group === t.group);
-        const otherVisible = this.order.find((x) => this.tabs[x].wrap.style.display !== 'none');
-        this.active = inGroup.length ? inGroup[inGroup.length - 1] : (otherVisible || this.order[this.order.length - 1] || null);
+        this.active = remaining[0]?.id || this.order[this.order.length - 1] || null;
       }
-      if (this.splitDir && [0, 1].some((g) => !this.order.some((x) => this.tabs[x].group === g))) this.unsplit(true);
+      this.renderWorkspace();
       this.renderTabbar();
       if (this.active) this.activate(this.active);
       else if (window.Home) Home.show();
@@ -497,126 +570,109 @@
     /* ---------- Tabby 风格标签 API（tabbar.js 消费；0.6.0） ---------- */
     // toIndex：tabbar.js 契约——先从 order 移除 id，再插入到剩余数组的 toIndex 处（可等于长度=尾部）
     moveTab(id, toIndex) {
-      const from = this.order.indexOf(id);
-      if (from < 0) return;
-      let to = typeof toIndex === 'string' ? this.order.indexOf(toIndex) : toIndex;
-      this.order.splice(from, 1);
-      if (to < 0) to = 0;
-      if (to > this.order.length) to = this.order.length;
-      this.order.splice(to, 0, id);
+      const workspace = this.workspaceTab(id); if (!workspace) return;
+      const ids = this.displayOrder().filter(x => x !== workspace.id);
+      let index = typeof toIndex === 'string' ? ids.indexOf(toIndex) : toIndex;
+      index = Math.max(0, Math.min(ids.length, Number.isFinite(index) ? index : 0));
+      ids.splice(index, 0, workspace.id);
+      this.order = ids.flatMap(x => this.workspaceTabs(x).map(t => t.id));
       this.renderTabbar();
     },
-    // 显示序（tabbar.js 把 pinned 前置）
     displayOrder() {
-      const pinned = this.order.filter((x) => this.tabs[x] && this.tabs[x].pinned);
-      const rest = this.order.filter((x) => this.tabs[x] && !this.tabs[x].pinned);
-      return [...pinned, ...rest];
+      const seen = new Set(), ids = [];
+      for (const id of this.order) {
+        const t = this.tabs[id]; if (!t) continue;
+        const workspace = this.workspaceId(t); if (seen.has(workspace)) continue;
+        seen.add(workspace); ids.push(id);
+      }
+      return ids.filter(x => this.tabs[x].pinned).concat(ids.filter(x => !this.tabs[x].pinned));
     },
     renameTab(id, title) {
-      const t = this.tabs[id];
-      if (!t || !title) return;
-      t.title = String(title).slice(0, 28);
-      this.renderTabbar();
+      const t = this.workspaceTab(id); if (!t || !title) return;
+      t.title = String(title).slice(0, 28); t.customTitle = true;
+      this.renderPaneControls(); this.renderTabbar();
     },
     setTabColor(id, color) {
-      const t = this.tabs[id];
-      if (!t) return;
-      t.color = color || null;
-      this.renderTabbar();
+      const t = this.workspaceTab(id); if (!t) return;
+      t.color = color || null; this.renderTabbar();
     },
     togglePin(id) {
-      const t = this.tabs[id];
-      if (!t) return;
-      t.pinned = !t.pinned;
-      this.renderTabbar();
+      const t = this.workspaceTab(id); if (!t) return;
+      t.pinned = !t.pinned; this.renderTabbar();
     },
     toggleNotify(id) {
-      const t = this.tabs[id];
-      if (!t) return;
-      t.notify = !t.notify;
-      this.renderTabbar();
+      const t = this.workspaceTab(id); if (!t) return;
+      t.notify = !t.notify; this.renderTabbar();
     },
     async duplicate(id) {
-      const t = this.tabs[id];
-      if (!t) return;
-      await this.create(t.session ? t.session : null, { group: t.group });
+      const t = this.tabs[id]; if (!t) return;
+      return this.create(t.session || null);
+    },
+    async closeTab(id) {
+      // Start all pane cleanup together; an SSH/native cleanup cannot delay removal of a sibling view.
+      return Promise.allSettled(this.workspaceTabs(id).map(t => this.close(t.id)));
     },
     async closeOthers(id) {
-      for (const x of [...this.order]) if (x !== id) await this.close(x);
+      const key = this.workspaceId(this.tabs[id]);
+      return Promise.allSettled(this.displayOrder().filter(x => this.workspaceId(this.tabs[x]) !== key).map(x => this.closeTab(x)));
     },
     async closeRight(id) {
-      const disp = this.displayOrder();
-      const i = disp.indexOf(id);
-      if (i < 0) return;
-      for (const x of disp.slice(i + 1)) await this.close(x);
+      const disp = this.displayOrder(), representative = this.workspaceTab(id);
+      const index = representative ? disp.indexOf(representative.id) : -1;
+      if (index >= 0) return Promise.allSettled(disp.slice(index + 1).map(x => this.closeTab(x)));
     },
     async closeLeft(id) {
-      const disp = this.displayOrder();
-      const i = disp.indexOf(id);
-      if (i < 0) return;
-      for (const x of disp.slice(0, i)) await this.close(x);
+      const disp = this.displayOrder(), representative = this.workspaceTab(id);
+      const index = representative ? disp.indexOf(representative.id) : -1;
+      if (index >= 0) return Promise.allSettled(disp.slice(0, index).map(x => this.closeTab(x)));
     },
-    // Tabby 分屏：在当前标签的对面分组新建一个同 profile 面板
     async splitActive(dir) {
-      const axis = (dir === 'right' || dir === 'left') ? 'h' : 'v';
-      const cur = this.activeTab();
-      if (!cur) return;
-      const wasSplit = !!this.splitDir;
-      // group 0 固定在左/上；只有向左/上分屏时才把原终端移到右/下。
-      if (!wasSplit && (dir === 'left' || dir === 'up')) {
-        cur.group = 1;
-        this.hostEl(1).appendChild(cur.wrap);
+      const cur = this.activeTab(); if (!cur) return;
+      const state = this.workspaceState(cur), workspaceId = this.workspaceId(cur);
+      if (state.connecting) return;
+      if (this.workspaceTabs(cur).length > 1) {
+        this.split((dir === 'right' || dir === 'left') ? 'h' : 'v');
+        this.focusNextGroup(); return;
       }
-      await this.split(axis);
-      const gTarget = cur.group === 1 ? 0 : 1;
-      const created = await this.create(cur.session || null, { group: gTarget });
-      if (!created && !wasSplit) this.unsplit(true);
-      UI.log('分屏：' + dir);
+      state.connecting = true;
+      state.splitDir = (dir === 'right' || dir === 'left') ? 'h' : 'v'; state.ratio = null;
+      const existingGroup = (dir === 'left' || dir === 'up') ? 1 : 0;
+      try {
+        const created = await this.create(cur.session || null, { group: existingGroup === 1 ? 0 : 1, workspaceId, sourceId: cur.id, moveExistingTo: existingGroup });
+        if (!created && this.tabs[cur.id]) {
+          cur.group = 0; this.hostEl(0).appendChild(cur.wrap); state.splitDir = null;
+          if (this.workspaceId(this.activeTab()) === workspaceId) this.renderWorkspace();
+        }
+        if (created) UI.log('标签内分屏：' + dir);
+        return created;
+      } finally { state.connecting = false; }
     },
     newLocal() { return this.create(null); },
     openHome() { if (window.Home) Home.show(); },
     closeHome() { if (window.Home) Home.hide(); },
-
     async split(dir) {
-      this.splitDir = dir;
-      const g1 = this.groupEl(1);
-      g1.hidden = false;
-      const gut = document.getElementById('gutter');
-      if (gut) gut.hidden = false;
-      document.getElementById('groups').dataset.dir = dir;
-      // 换轴向时清掉上次拖拽留下的固定尺寸
-      this.groupEl(0).style.flex = '';
-      this.renderTabbar();
+      const state = this.workspaceState(); if (!state) return;
+      state.splitDir = dir; state.ratio = null; this.renderWorkspace();
       if (this.active) this.activate(this.active);
-      UI.log(`分屏：${dir === 'h' ? '左右' : '上下'}`);
     },
-
     unsplit(silent) {
-      this.splitDir = null;
-      document.getElementById('groups').dataset.dir = '';
-      this.groupEl(0).style.flex = '';
-      for (const id of this.order) {
-        const t = this.tabs[id];
-        if (t.group === 1) { t.group = 0; this.hostEl(0).appendChild(t.wrap); }
+      const active = this.activeTab(); if (!active) return;
+      const peers = this.workspaceTabs(active), state = this.workspaceState(active);
+      delete this.workspaces[this.workspaceId(active)];
+      // Keep every live session: detach the other pane as an independent top-level tab.
+      for (const t of peers) {
+        t.workspaceId = t.id; t.group = 0; this.hostEl(0).appendChild(t.wrap);
+        this.workspaces[t.id] = { splitDir: null, ratio: null, activeId: t.id };
       }
-      this.groupEl(1).hidden = true;
-      const gut = document.getElementById('gutter');
-      if (gut) gut.hidden = true;
-      this.group = 0;
-      this.renderTabbar();
+      state.splitDir = null; state.ratio = null;
+      this.renderWorkspace(); this.renderTabbar();
       if (this.active) this.activate(this.active);
-      else this.markFocused();
-      if (!silent) UI.log('取消分屏');
+      if (!silent) UI.log('已将分屏恢复为独立标签');
     },
-
-    // 在两个分屏组之间轮换焦点
     focusNextGroup() {
       if (!this.splitDir) { UI.toast('当前未分屏'); return; }
-      const cur = this.group;
-      const other = cur === 0 ? 1 : 0;
-      const ids = this.order.filter((id) => this.tabs[id] && this.tabs[id].group === other);
-      if (!ids.length) { UI.toast('另一个窗格没有会话'); return; }
-      this.activate(ids[ids.length - 1]);
+      const other = this.workspaceTabs(this.active).find(t => t.id !== this.active);
+      if (other) this.activate(other.id);
     },
 
     zoom(delta) {
@@ -709,7 +765,7 @@
       try {
         const m = tab.term.registerMarker(0);
         if (!m) return;
-        const d = tab.term.registerDecoration({ marker: m, x: 1, width: Math.max(1, tab.term.cols - 2) });
+        const d = tab.term.registerDecoration({ marker: m, x: 1, width: Math.max(1, tab.term.cols - 2), foregroundColor: THEMES[T.s.theme]?.vars['--warn'] || '#e3d44a' });
         if (!d) { m.dispose(); return; }
         d.onRender((el) => el.classList.add('wt-hit'));
         const entry = { d, m };
@@ -730,7 +786,9 @@
       try {
         const m = tab.term.registerMarker(offset);
         if (!m) return null;
-        const d = tab.term.registerDecoration({ marker: m, x, width });
+        const tone = { 'wt-hl-err': '--danger', 'wt-hl-warn': '--warn', 'wt-hl-ok': '--ok', 'wt-hl-addr': null }[cls];
+        const color = tone ? THEMES[T.s.theme]?.vars[tone] : '#5aa9ff';
+        const d = tab.term.registerDecoration({ marker: m, x, width, foregroundColor: color || '#e3d44a' });
         if (!d) { m.dispose(); return null; }
         d.onRender((el) => el.classList.add(cls));
         return d;

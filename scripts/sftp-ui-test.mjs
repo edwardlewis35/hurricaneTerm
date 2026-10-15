@@ -92,7 +92,9 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
     put(side, id, h + '/docs/nested.txt', { content: 'nested' });
     put(side, id, h + '/<img src=x onerror=alert(1)>.txt', { content: 'untrusted filename' });
   }
-  const T = w.WT = { s: { sftp: { layout: 'horizontal', concurrency: 1, ...preferences }, theme: 'tabby-dark' }, persistSettings() { persisted++; } };
+  // Most existing scenarios deliberately keep hidden files off and use one worker;
+  // the defaults scenario below removes both settings to exercise first launch.
+  const T = w.WT = { s: { sftp: { layout: 'horizontal', concurrency: 1, showHidden: false, ...preferences }, theme: 'tabby-dark' }, persistSettings() { persisted++; } };
   w.UI = { toast(message, duration, kind) { toasts.push({ message, kind }); }, status() {} };
   w.Home = { hide() {}, show() {} };
   w.Settings = { isOpen: () => false };
@@ -215,7 +217,7 @@ await scenario('A 工作区/列表', async h => {
   check('A1 独立面板真实挂载两栏、路径、队列和工具条', h.P.isOpen() && h.qa('#sftp-panel .sftp-pane').length === 2 && !!h.q('.sftp-queue') && h.qa('.sftp-head-actions button').length === 6);
   equal('A2 两栏真实 canonical 路径', [h.P.context.local.path, h.P.context.remote.path], ['/home/local', '/home/alice']);
   check('A3 文件名按文字转义，不能注入图片', !h.q('.sftp-file img') && h.pane('local').textContent.includes('<img src=x onerror=alert(1)>.txt'));
-  check('A4 默认隐藏点文件', !h.row('local', '.secret') && !h.row('remote', '.secret'));
+  check('A4 已保存的隐藏点文件设置继续生效', !h.row('local', '.secret') && !h.row('remote', '.secret'));
   check('A5 目录优先，普通文件按名称自然排序', h.rows('local').slice(0, 3).every(r => /\/(docs|empty|target)$/.test(r.dataset.path)));
   h.clickRow('local', 'alpha.txt'); h.clickRow('local', 'beta.txt', { ctrlKey: true });
   equal('A6 Ctrl 多选保留两个真实 path', [...h.P.context.local.selected].sort(), ['/home/local/alpha.txt', '/home/local/beta.txt']);
@@ -326,10 +328,12 @@ await scenario('E 传输队列/任务ID/控制', async h => {
   h.P.progress({ transferId: first.id, sessionId: 'wrong-session', done: 9, total: 14, status: 'failed' }); equal('E5 不同会话的相同任务ID不能改进度', [first.done, first.status], [0, 'running']);
   h.P.progress({ transferId: first.id, sessionId: 'ssh-a', done: 7, total: 14, status: 'running' });
   check('E6 进度定位真实任务且 DOM 显示 50%', first.done === 7 && h.q(`[data-task="${first.id}"] .sftp-progress i`).style.width === '50%');
+  check('E6b 运行任务的字节和速度位于同一个右侧统计区域', h.q(`[data-task="${first.id}"] .sftp-queue-meta .sftp-queue-bytes`).textContent === '7 B / 14 B' && h.q(`[data-task="${first.id}"] .sftp-queue-meta .sftp-queue-speed`).textContent.includes('/s'));
   await h.P.control(first, 'pause'); equal('E7 运行任务暂停经后端回报为 paused', first.status, 'paused');
   await h.P.control(first, 'resume'); equal('E8 恢复命令作用在相同 transferId', h.calls.filter(([c]) => c === 'sftp_transfer_control').map(([, a]) => [a.transferId, a.action]), [[first.id, 'pause'], [first.id, 'resume']]);
   await h.P.control(queued, 'pause'); equal('E9 等待项可暂停且不调用后端', queued.status, 'paused');
   await h.finish(first.id); equal('E10 完成真正复制文件并记录字节', [first.status, h.need('remote', 'ssh-a', '/home/alice/target/alpha.txt').content, h.T.s.sftp.history[0].done], ['completed', 'alpha original', 14]);
+  check('E10b 完成状态仍保留在右侧统计且不渲染无效操作按钮', h.q(`[data-task="${first.id}"] .sftp-queue-meta .completed`).textContent === '完成' && !h.q(`[data-task="${first.id}"] .sftp-queue-buttons button`));
   equal('E11 首项完成后暂停项不自动启动', h.transfers.size, 0);
   await h.P.control(queued, 'resume'); await until(() => h.transfers.has(queued.id), 'resume did not start queued task');
   await h.P.control(queued, 'cancel'); await settle();
@@ -516,6 +520,51 @@ await scenario('N 原生文件拖动坐标/去重/路径快照', async h => {
   h.setInterceptor((command, args) => command === 'fs_stat' && args.path === '/tmp/closed.txt' ? new Promise(resolve => { releaseClosed = () => resolve({ name: 'closed.txt', path: args.path, is_dir: false, size: 5 }); }) : null);
   const closing = h.nativeDrop(['/tmp/closed.txt'], 'remote'); await until(() => releaseClosed); h.P.hide(); await h.P.open(); releaseClosed(); await closing;
   check('N7 stat等待期间关闭再打开面板也取消旧原生拖动', h.P.tasks.length === 2);
+});
+
+await scenario('O 首次使用的文件传输默认值', async h => {
+  await h.P.open();
+  check('O1 首次打开本地和远程目录默认显示隐藏文件', !!h.row('local', '.secret') && !!h.row('remote', '.secret'));
+  await h.action(null, 'settings');
+  check('O2 设置面板默认显示隐藏文件且并发为4', h.q('[data-pref="showHidden"]').checked && h.q('[data-pref="concurrency"]').value === '4');
+  await h.dialog('取消');
+  await h.go('remote', '/home/alice/target');
+  const entries = h.P.context.local.entries.filter(e => !e.is_dir).slice(0, 5);
+  await h.P.enqueue(h.P.context, 'local', entries, h.P.context, 'remote');
+  await until(() => h.transfers.size === 4, 'default four workers did not start');
+  equal('O3 五个真实上传任务默认四项运行、一项等待', [h.P.tasks.filter(t => t.status === 'running').length, h.P.tasks.filter(t => t.status === 'queued').length], [4, 1]);
+  const waiting = h.P.tasks.find(t => t.status === 'queued');
+  await h.finish(h.P.tasks[0].id);
+  await until(() => h.transfers.has(waiting.id), 'queued fifth transfer did not start');
+  check('O4 完成一项即补充第五项但保持四个活动传输', h.transfers.size === 4 && waiting.status === 'running');
+}, { preferences: { showHidden: undefined, concurrency: undefined } });
+
+await scenario('P 已有文件传输偏好不被默认值覆盖', async h => {
+  await h.P.open();
+  check('P1 显式关闭隐藏文件的已有设置保留', !h.row('local', '.secret') && !h.row('remote', '.secret'));
+  await h.action(null, 'settings');
+  check('P2 已保存并发3及隐藏文件关闭完整回显', h.q('[data-pref="concurrency"]').value === '3' && !h.q('[data-pref="showHidden"]').checked);
+  await h.dialog('保存');
+  h.P.close(); await h.P.open();
+  check('P3 保存并重新打开仍保留显式false和并发3', h.T.s.sftp.showHidden === false && h.T.s.sftp.concurrency === 3 && !h.row('local', '.secret') && h.persisted > 0);
+  await h.go('remote', '/home/alice/target');
+  await h.P.enqueue(h.P.context, 'local', h.P.context.local.entries.filter(e => !e.is_dir).slice(0, 5), h.P.context, 'remote');
+  await until(() => h.transfers.size === 3, 'saved concurrency three did not start');
+  equal('P4 已保存并发3实际限制为三项运行和两项等待', [h.P.tasks.filter(t => t.status === 'running').length, h.P.tasks.filter(t => t.status === 'queued').length], [3, 2]);
+}, { preferences: { showHidden: false, concurrency: 3 } });
+
+await scenario('R 队列统计的响应式布局规则', async h => {
+  await h.P.open();
+  const rules = [...h.q('style[data-file="sftp.css"]').sheet.cssRules];
+  const rule = selector => rules.find(r => r.selectorText === selector)?.style;
+  check('R1 队列文件名可收缩且右侧统计只占实际内容宽度', rule('.sftp-queue-row').getPropertyValue('grid-template-columns') === 'minmax(0, 1fr) auto');
+  check('R2 字节、状态及操作统一靠右并使用等宽数字', rule('.sftp-queue-meta').getPropertyValue('justify-self') === 'end' && rule('.sftp-queue-meta').getPropertyValue('justify-content') === 'flex-end' && rule('.sftp-queue-meta').getPropertyValue('text-align') === 'right' && rule('.sftp-queue-meta').getPropertyValue('font-variant-numeric') === 'tabular-nums');
+  check('R3 已完成任务隐藏空按钮容器，状态可贴近右边缘', rule('.sftp-queue-buttons:empty').getPropertyValue('display') === 'none');
+  const narrow = rules.find(r => r.conditionText === '(max-width: 600px)' && r.cssText.startsWith('@container'));
+  const narrowRules = [...(narrow?.cssRules || [])];
+  check('R4 队列按自身宽度自适应，小窗口和手动缩小面板均换行', rule('.sftp-queue').getPropertyValue('container-type') === 'inline-size' && narrowRules.find(r => r.selectorText === '.sftp-queue-row')?.style.getPropertyValue('grid-template-columns') === 'minmax(0, 1fr)' && narrowRules.find(r => r.selectorText === '.sftp-queue-meta')?.style.getPropertyValue('flex-wrap') === 'wrap');
+  const allRules = rules.flatMap(r => [r, ...r.cssRules || []]);
+  check('R5 窄屏保留速度和完成状态，不再整列隐藏', !allRules.some(r => r.selectorText === '.sftp-queue-speed' && r.style?.display === 'none'));
 });
 
 await scenario('J 主主题继承', async h => {

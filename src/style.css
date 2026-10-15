@@ -5,21 +5,21 @@
  */
 
 :root {
-  /* —— Tabby 深色底盘 —— */
-  --bg: #131d27;              /* $body-bg：应用底色 */
-  --bg2: #1d272d;             /* $content-bg-solid：面板/菜单 */
-  --bg3: #0e151d;             /* $dark：标题栏/活动栏（最深） */
-  --bg4: #20333e;             /* $body-bg2：抬升面/hover */
-  --fg: #cccccc;              /* $body-color */
-  --fg2: rgba(255, 255, 255, .5);   /* $text-muted */
-  --fg3: #ced9e2;             /* $headings-color */
-  --accent: #4fadff;          /* $component-active-color */
-  --accent-bg: rgba(0, 89, 165, .349);
+  /* dige-black also paints the first frame before saved settings load. */
+  --bg: #000000;
+  --bg2: #0d0d0d;
+  --bg3: #000000;
+  --bg4: #1a1a1a;
+  --fg: #c8c8c8;
+  --fg2: rgba(255, 255, 255, .42);
+  --fg3: #e4e4e4;
+  --accent: #4fd75b;
+  --accent-bg: rgba(79, 215, 91, .16);
   --border: rgba(255, 255, 255, .1);  /* $table-border-color：Tabby 用半透明白而非实色 */
-  --border-solid: #24313c;
+  --border-solid: #222222;
   --surface: rgba(255, 255, 255, .025);       /* $table-bg */
   --surface-hover: rgba(255, 255, 255, .05);  /* $table-bg-hover */
-  --input-bg: #181e23;        /* $input-bg */
+  --input-bg: #0a0a0a;
   --color-scheme: dark;
   --placeholder: rgba(255, 255, 255, .5);
   --surface-active: rgba(255, 255, 255, .08);
@@ -29,9 +29,9 @@
   --on-danger: #0e151d;
   --overlay-bg: rgba(0, 0, 0, .55);
   --dialog-shadow: 0 18px 60px rgba(0, 0, 0, .6);
-  --danger: #d9534f;          /* $red */
-  --warn: #f0ad4e;            /* $orange */
-  --ok: #5cb85c;              /* $green */
+  --danger: #ff6b6b;
+  --warn: #e3d44a;
+  --ok: #4fd75b;
   --shadow: 0 0 1rem rgba(0, 0, 0, .25), 0 1px 1px rgba(0, 0, 0, .12); /* $dropdown-box-shadow */
   --r: 6px;                   /* $border-radius .4rem */
   --r-lg: 10px;               /* $border-radius-lg .6rem */
@@ -301,12 +301,8 @@ body.dragging { cursor: col-resize; user-select: none; }
 .term-wrap { position: absolute; inset: 0; }
 .xterm { padding: 4px 0 4px 6px; }
 .xterm .xterm-viewport { background: transparent !important; }
-.xterm-decoration-container .wt-hit { background: rgba(240, 173, 78, .22); border-bottom: 1px solid rgba(240, 173, 78, .5); }
-/* 内置高亮：关键词轻背景，避免连续输出形成左侧色线。 */
-.wt-hl-err { background: rgba(217, 83, 79, .16); }
-.wt-hl-warn { background: rgba(240, 173, 78, .14); }
-.wt-hl-ok { background: rgba(92, 184, 92, .12); }
-.wt-hl-addr { background: rgba(79, 173, 255, .12); }
+/* xterm foregroundColor changes the glyphs; decorations paint no background. */
+.xterm-decoration-container :is(.wt-hit, .wt-hl-err, .wt-hl-warn, .wt-hl-ok, .wt-hl-addr) { background: transparent; border: 0; }
 
 /* Home / Settings 覆盖层：让开标题栏，铺满主区 */
 #home, #settings { position: absolute; inset: 0; z-index: 6; background: var(--window-bg); overflow: auto; }

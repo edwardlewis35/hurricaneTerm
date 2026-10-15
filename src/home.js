@@ -462,7 +462,7 @@
           // Production term.create writes lastUsed. Also support deferred bridge
           // providers that return a tab without updating saved connection metadata.
           if (!session.lastUsed) { session.lastUsed = Date.now(); t.persistSessions?.(); }
-          this.hide(); t.ui?.log?.('主页连接：' + (session.name || ''));
+          this.updateHint(); this.hide(); t.ui?.log?.('主页连接：' + (session.name || ''));
         } else {
           this.hintEl.textContent = '连接未建立，请检查连接信息后重试。'; this.hintEl.classList.add('bad');
         }

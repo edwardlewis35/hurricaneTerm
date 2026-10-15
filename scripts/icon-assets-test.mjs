@@ -59,20 +59,29 @@ const config = JSON.parse(load('src-tauri/tauri.conf.json'));
 const configured = config.bundle.icon.map(path => 'src-tauri/' + path);
 check('Desktop bundle names exactly the intended six platform icons', configured.length === 6 && new Set(configured).size === 6);
 const generated = load('assets/huricano-icon-generated.png');
-check('Original imagegen output is preserved byte for byte', hash(generated) === 'ba8d8613391be52a1f52b29a920ea70c8f91fbe02a43e9bf99e0cdce66b0c3da');
+check('Original imagegen output is preserved byte for byte', hash(generated) === 'bdb02cbbefb5fc927fb852e80dd288ec423f25b14254441ba886942daec5fb69');
 decodePng(generated);
 const master = decodePng(load('assets/huricano-icon.png'));
 check('Normalized mascot master is 1024-square RGBA', master.width === 1024 && master.height === 1024);
 const body = alphaBounds(master);
-check('Icon body matches ChatGPT Dock scale within one pixel', Math.abs(body.width - 824) <= 1 && body.height <= 824 && body.height >= 800);
+check('Sunset icon body is 84% of the canvas and slightly larger than ChatGPT Dock scale', Math.abs(body.width - 860) <= 1 && body.height <= 860 && body.height >= 835 && body.width > 824);
+let opaque = 0, warm = 0, coolBlue = 0;
+for (let index = 0; index < master.pixels.length; index += 4) {
+  const [r, g, b, a] = master.pixels.subarray(index, index + 4);
+  if (a <= 128) continue;
+  opaque++; if (r > g + 10 && r > b + 10) warm++;
+  if (b > r + 15 && b > g + 8) coolBlue++;
+}
+check('Final mascot preserves the warm sunset palette', warm / opaque > 0.9);
+check('Final mascot excludes the previous cool blue palette', coolBlue / opaque < 0.005);
 check('Icon body has balanced transparent margins', Math.abs((body.left + body.right) / 2 - 512) <= 1 && Math.abs((body.top + body.bottom) / 2 - 512) <= 1);
-check('Icon keeps rounded-square corner transparency and clear outside padding', [0, master.width - 1, (master.height - 1) * master.width, master.width * master.height - 1].every(i => master.pixels[i * 4 + 3] < 16) && alphaBounds(master, 16).count / (master.width * master.height) < 0.65);
+check('Icon keeps rounded-square corner transparency and clear outside padding', [0, master.width - 1, (master.height - 1) * master.width, master.width * master.height - 1].every(i => master.pixels[i * 4 + 3] < 16) && alphaBounds(master, 16).count / (master.width * master.height) < 0.70 && alphaBounds(master, 16).left >= 64 && alphaBounds(master, 16).top >= 64 && alphaBounds(master, 16).right <= 960 && alphaBounds(master, 16).bottom <= 960);
 const pngSizes = { '32x32.png': 32, '128x128.png': 128, '128x128@2x.png': 256, 'icon.png': 512 };
 for (const [file, size] of Object.entries(pngSizes)) {
   const image = decodePng(load('src-tauri/icons/' + file));
   const bounds = alphaBounds(image);
   check(`Bundle ${file} has the required RGBA dimensions`, image.width === size && image.height === size);
-  check(`Bundle ${file} preserves mascot scale and centered padding`, Math.abs(bounds.width / size - 824 / 1024) <= 0.05 && Math.abs((bounds.left + bounds.right) / 2 - size / 2) <= 1);
+  check(`Bundle ${file} preserves mascot scale and centered padding`, Math.abs(bounds.width / size - 860 / 1024) <= 0.05 && Math.abs((bounds.left + bounds.right) / 2 - size / 2) <= 1);
 }
 check('Home/favicon uses the exact same 256 px bundle icon', load('src/huricano-icon.png').equals(load('src-tauri/icons/128x128@2x.png')));
 

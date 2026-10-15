@@ -121,7 +121,7 @@ check('Q36 Failed pending connection restores editable drafts and permits retry'
 result = () => Promise.reject(new Error('authentication rejected')); submit(); await settle();
 check('Q37 Rejected connection is handled with inline error, toast, and reset busy state', messages.at(-1).includes('authentication rejected') && H.hintEl.textContent.includes('authentication rejected') && H.el.getAttribute('aria-busy') === 'false' && !H.connectEl.disabled);
 result = () => Promise.resolve({ id: 'new-tab' }); submit(); await settle();
-check('Q38 Successful retry hides the page and logs the connection once', H.el.hidden && logs.at(-1).includes('slow.example.com') && persists > 0);
+check('Q38 Successful retry hides the page, clears pending hint and logs once', H.el.hidden && !H.hintEl.textContent.includes('正在连接') && logs.at(-1).includes('slow.example.com') && persists > 0);
 H.show(); w.WT.term.order = ['existing-tab']; key(H.inputEl, 'Escape');
 check('Q39 Escape returns to an existing terminal and restores keyboard focus', H.el.hidden && focuses === 1);
 w.WT.term.order = []; H.show(); key(H.inputEl, 'Escape');

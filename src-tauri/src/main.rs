@@ -13,6 +13,7 @@ mod ssh_relay;
 #[cfg(unix)]
 mod serial_live;
 mod tcp_live;
+mod gist_sync;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -1084,6 +1085,11 @@ fn triggers_feed(state: tauri::State<TriggersState>, data: String) -> Vec<serde_
     sink.0
 }
 
+#[tauri::command]
+async fn gist_request(request: gist_sync::GistRequest) -> Result<gist_sync::GistResponse, String> {
+    gist_sync::gist_request(request).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1117,6 +1123,7 @@ pub fn run() {
             sftp_transfer_control,
             sessions_load,
             sessions_save,
+            gist_request,
             ui_state_save,
             ui_state_load,
             complete_input,

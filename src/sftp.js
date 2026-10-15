@@ -92,11 +92,11 @@
     return Object.assign(p, {
       layout: p.layout || "auto",
       pathMode: p.pathMode || "remember",
-      concurrency: Math.min(10, Math.max(1, Number(p.concurrency) || 2)),
+      concurrency: Math.min(10, Math.max(1, Math.trunc(Number(p.concurrency) || 4))),
       bookmarks: Array.isArray(p.bookmarks) ? p.bookmarks : [],
       paths: p.paths || {},
       history: Array.isArray(p.history) ? p.history : [],
-      showHidden: !!p.showHidden,
+      showHidden: p.showHidden !== false,
       zebra: p.zebra !== false,
     });
   }
@@ -1312,7 +1312,7 @@
           : t.status === "completed"
             ? 100
             : 0;
-        return `<div class="sftp-queue-row" data-task="${esc(t.id)}"><div class="sftp-queue-name" title="${esc(t.source + " → " + t.target)}">${t.direction === "up" ? "↑" : "↓"} ${esc(t.name)}<div class="sftp-progress"><i style="width:${pct}%"></i></div></div><span>${size(t.done)} / ${t.total ? size(t.total) : "计算中"}</span><span class="sftp-queue-speed sftp-status ${t.status}" title="${esc(t.error || "")}">${label[t.status] || t.status}${t.status === "running" && t.speed ? " · " + size(t.speed) + "/s" : ""}</span><div class="sftp-queue-buttons">${["preparing", "running", "queued", "paused", "pausing"].includes(t.status) ? button(t.status === "paused" ? "resume" : "pause", t.status === "paused" ? "play" : "pause", t.status === "paused" ? "继续" : "暂停") + button("cancel", "x", "取消") : t.status === "failed" ? button("retry", "refresh", "重试") : ""}</div></div>`;
+        return `<div class="sftp-queue-row" data-task="${esc(t.id)}"><div class="sftp-queue-name" title="${esc(t.source + " → " + t.target)}">${t.direction === "up" ? "↑" : "↓"} ${esc(t.name)}<div class="sftp-progress"><i style="width:${pct}%"></i></div></div><div class="sftp-queue-meta"><span class="sftp-queue-bytes">${size(t.done)} / ${t.total ? size(t.total) : "计算中"}</span><span class="sftp-queue-speed sftp-status ${t.status}" title="${esc(t.error || "")}">${label[t.status] || t.status}${t.status === "running" && t.speed ? " · " + size(t.speed) + "/s" : ""}</span><div class="sftp-queue-buttons">${["preparing", "running", "queued", "paused", "pausing"].includes(t.status) ? button(t.status === "paused" ? "resume" : "pause", t.status === "paused" ? "play" : "pause", t.status === "paused" ? "继续" : "暂停") + button("cancel", "x", "取消") : t.status === "failed" ? button("retry", "refresh", "重试") : ""}</div></div></div>`;
       })
       .join("")}`;
     queue.querySelector("[data-clear]").onclick = () => {
@@ -1396,7 +1396,7 @@
                 Math.min(
                   10,
                   Number(el.querySelector('[data-pref="concurrency"]').value) ||
-                    2,
+                    4,
                 ),
               ),
               showHidden: el.querySelector('[data-pref="showHidden"]').checked,

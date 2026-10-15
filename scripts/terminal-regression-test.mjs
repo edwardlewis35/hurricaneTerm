@@ -42,6 +42,7 @@ try {
   let t = tab();
   await write(t, '中文\x1b[31mError\x1b[0m'); TM.runHighlights(t);
   check('T1 ANSI/CJK部分行按实际字符单元定位，首行不偏到上一行', t.calls.length === 1 && t.calls[0].marker.line === 0 && t.calls[0].x === 4 && t.calls[0].width === 5);
+  check('关键词只设置字体前景色，不设置背景色', t.calls[0].foregroundColor === '#d9534f' && !Object.hasOwn(t.calls[0], 'backgroundColor'));
   TM.runHighlights(t);
   check('T2 未变化的可见行不重复创建装饰', t.calls.length === 1);
   const faded = t._highlightEntries[0]; faded.expires = 0; TM.expireHighlights(t); TM.runHighlights(t);
@@ -58,6 +59,7 @@ try {
   const url = 'https://example.com/abc';
   await write(t, 'go ' + url + '\r\n'); TM.runHighlights(t);
   check('T6 超长URL按真实换行分段，不画整行蓝带', t.calls.length === 3 && t.calls.reduce((n, options) => n + options.width, 0) === url.length && t.calls[0].x === 3);
+  check('URL各段统一改字色且保留原背景', t.calls.every(o => o.foregroundColor === '#5aa9ff' && !Object.hasOwn(o, 'backgroundColor')));
   await TM.close(t.id);
   t = tab();
   await write(t, 'plain\r\nError on second row\r\n\x1b[H'); TM.runHighlights(t);
@@ -110,6 +112,7 @@ try {
 
   t = tab(); TM.highlightHit(t);
   check('T18 自定义触发器高亮有独立可回收marker', t.term.markers.length === 1);
+  check('自定义触发器高亮同样只改字色', t.calls[0].foregroundColor === '#f0ad4e' && !Object.hasOwn(t.calls[0], 'backgroundColor'));
   TM.clearHighlights(t);
   check('T19 清理同时释放触发器计时器与marker', t.term.markers.length === 0 && t._hitHighlights.size === 0);
   await TM.close(t.id);

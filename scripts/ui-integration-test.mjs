@@ -105,7 +105,7 @@ ok('C4 emoji 图标已换成内联 SVG', !!$('#home .ht-home-ico svg') && !$('#h
 window.Settings.open('triggers');
 await flush();
 ok('D1 设置页打开', $('#settings').hidden === false && window.Settings.isOpen());
-ok('D2 左导航 6 分区', $$('#settings .st-nav-i').length === 6);
+ok('D2 左导航含 Gist 同步共 7 分区', $$('#settings .st-nav-i').length === 7);
 ok('D3 触发器分区渲染', $('#settings').textContent.includes('触发器') && !!$('#settings [data-tradd]'));
 ok('D4 设置页打开时主页让位', $('#home').hidden === true);
 window.Settings.open('appearance');
@@ -196,7 +196,7 @@ const visibleInGroup = (g) => Array.from(TM.hostEl(g).querySelectorAll('.term-wr
 await TM.splitActive('right');
 await flush();
 const splitCopy = TM.activeTab();
-ok('H1 分屏后 3 标签', TM.order.length === 3);
+ok('H1 分屏保留3个PTY但仅2个顶级标签', TM.order.length === 3 && TM.displayOrder().length === 2 && $$('.ht-tab').length === 2);
 ok('H2 group1 可见', !$('.group[data-g="1"]').hidden);
 ok('H3 分屏分隔条出现', $('#gutter').hidden === false);
 ok('H3b 向右分屏原终端在左、副本在右且都可见', splitSource.group === 0 && splitCopy.group === 1
@@ -209,12 +209,12 @@ ok('H4b 焦点切换保留两侧终端', visibleInGroup(0).length === 1 && visib
 TM.activate(splitSource.id);
 const sameGroupTab = TM.order.map((id) => TM.tabs[id]).find((tab) => tab.group === 0 && tab.id !== splitSource.id);
 TM.activate(sameGroupTab.id);
-ok('H4c 同组切换只替换本组终端，另一侧保持副本', splitSource.wrap.style.display === 'none'
-  && visibleInGroup(0)[0] === sameGroupTab.wrap && visibleInGroup(1)[0] === splitCopy.wrap);
+ok('H4c 切换其他顶级标签隐藏旧标签的整个分屏', splitSource.wrap.style.display === 'none'
+  && splitCopy.wrap.style.display === 'none' && visibleInGroup(0)[0] === sameGroupTab.wrap && TM.groupEl(1).hidden);
 const extraSplitTab = await TM.create(null, { group: 0 });
 TM.activate(splitCopy.id);
 await TM.close(extraSplitTab.id);
-ok('H4d 关闭非聚焦组可见标签后该组补选剩余终端', TM.active === splitCopy.id
+ok('H4d 返回分屏标签并关闭隐藏标签仍保留两个pane', TM.active === splitCopy.id
   && visibleInGroup(0).length === 1 && visibleInGroup(1)[0] === splitCopy.wrap);
 TM.unsplit();
 await flush();
@@ -299,7 +299,7 @@ ok('J4 Toast 走左下角堆叠容器', $$('#toasts .toast').length === 1 && $('
 const before = T.s.theme;
 TM.applyTheme('tabby-light');
 await flush();
-ok('J5 可切到 Tabby 浅色主题', T.s.theme === 'tabby-light' && before === 'tabby-dark');
+ok('J5 从默认 dige-black 可切到浅色主题', T.s.theme === 'tabby-light' && before === 'dige-black');
 ok('J6 主题写入 Tabby 默认 CSS 变量', document.documentElement.style.getPropertyValue('--accent') === '#4fadff');
 ok('J7 --term-bg 驱动标签/主区连体', document.documentElement.style.getPropertyValue('--term-bg') === '#ffffff');
 TM.applyTheme('tabby-dark');

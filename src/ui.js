@@ -130,6 +130,7 @@
           const cur = startSize + ((dir === 'v' ? e.clientY : e.clientX) - start);
           const pct = Math.max(12, Math.min(88, (cur / Math.max(1, total)) * 100));
           g0.style.flex = `0 0 ${pct}%`;
+          const state = T.term.workspaceState && T.term.workspaceState(); if (state) state.ratio = pct;
         });
         window.addEventListener('mouseup', () => {
           if (!gdrag) return;
@@ -146,7 +147,13 @@
       if (backdrop) backdrop.hidden = !vis;
       const label = PANES.find(p => p[0] === T.s.dockPane);
       const title = $('#dock-title');
-      if (title) title.textContent = label ? label[1] : '工具';
+      if (title) {
+        title.textContent = label ? label[1] : '工具';
+        if (T.s.dockPane === 'transfer') {
+          const count = document.createElement('span'); count.className = 'dock-title-count';
+          count.textContent = this.transfers.length + ' 项'; title.appendChild(count);
+        }
+      }
       if (window.ActBar) ActBar.render();
       if (window.TitleBar) TitleBar.refresh();
     },
@@ -279,12 +286,21 @@
       });
     },
 
+    toggleProfiles() {
+      if (window.Profiles?.isOpen()) { Profiles.close(); if (window.ActBar) ActBar.render(); }
+      else this.openProfiles();
+    },
+
     openProfiles() {
+      const palette = $('#palette'), search = $('#search-float');
+      if (palette && !palette.hidden) this.closePalette();
+      if (search && !search.hidden) this.closeSearch();
       if (window.SftpPanel && SftpPanel.isOpen() && SftpPanel.hide() === false) return;
       this.closeDock();
       if (window.Settings && Settings.isOpen()) Settings.close();
       if (window.Profiles) window.Profiles.openManager();
       else this.toast('机器管理模块未加载');
+      if (window.ActBar) ActBar.render();
     },
 
     /* SSH 连接只准备文件管理路径。工具窗口由用户点击打开，不抢占新终端。 */
@@ -352,8 +368,9 @@
     renderTransfer() {
       const body = $('#dock-body');
       if (!body) return;
-      let html = `<div class="pane-head"><span>传输</span><span>${this.transfers.length} 项</span></div>`;
-      if (!this.transfers.length) html += '<div class="empty">SFTP 上传/下载进度会出现在这里。<br>X/Y/Zmodem 的队列（re/transfer.rs）尚未接线到 command 层。</div>';
+      this.applyDockVisibility();
+      let html = '';
+      if (!this.transfers.length) html += '<div class="empty">暂无传输记录。上传或下载文件后，可在这里查看进度。</div>';
       for (const t of this.transfers.slice(-20)) {
         const pct = t.total ? Math.min(100, Math.round(t.done * 100 / t.total)) : 0;
         html += `<div class="trow2"><span class="col"><b>${t.dir === 'up' ? '↑' : '↓'} ${escapeHtml(t.name)}</b>
@@ -398,10 +415,13 @@
     },
 
     /* ---------- 浮动搜索 ---------- */
+    toggleSearch() { const bar = $('#search-float'); if (bar && !bar.hidden) this.closeSearch(); else this.openSearch(); },
     openSearch() {
       this.closeDock();
       const bar = $('#search-float');
       if (!bar) return;
+      const palette = $('#palette'); if (palette && !palette.hidden) this.closePalette();
+      if (window.Profiles?.isOpen()) Profiles.close();
       bar.hidden = false;
       const inp = $('#search-input');
       inp.value = this.lastQuery;
@@ -505,7 +525,7 @@
       add('会话', '机器管理…', 'Ctrl+M', 'server', () => this.openProfiles());
       add('会话', '添加机器…', '', 'server', () => this.editProfile(null));
       add('会话', '把当前会话另存为机器…', '', 'copy', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session));
-      add('会话', '关闭当前会话', 'Ctrl+W', 'x', () => T.term.active && T.term.close(T.term.active));
+      add('会话', '关闭当前会话', 'Ctrl+W', 'x', () => T.term.active && (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)));
       add('会话', '关闭其他会话', '', 'x', () => T.term.active && T.term.closeOthers(T.term.active));
       add('会话', '重命名当前标签', 'F2', 'output', () => window.TabBar && TabBar.renameActive());
 
@@ -546,17 +566,20 @@
       return A;
     },
 
+    togglePalette() { const pane = $('#palette'); if (pane && !pane.hidden) this.closePalette(); else this.openPalette(); },
     openPalette() {
       this.closeDock();
       const p = $('#palette');
       if (!p) return;
+      const search = $('#search-float'); if (search && !search.hidden) this.closeSearch();
+      if (window.Profiles?.isOpen()) Profiles.close();
       p.hidden = false;
       p.onclick = (e) => { if (e.target === p) this.closePalette(); };
       const inp = $('#palette-input');
       inp.value = '';
       this._pal = this.paletteEntries();
       this.filterPalette('');
-      setTimeout(() => inp.focus(), 0);
+      setTimeout(() => { if (!p.hidden) inp.focus(); }, 0);
     },
     closePalette() {
       const p = $('#palette');
@@ -643,7 +666,7 @@
     if (mod && e.shiftKey && (k === 'C' || k === 'c')) { e.preventDefault(); UI.copy(); return; }
     if (mod && e.shiftKey && (k === 'V' || k === 'v')) { e.preventDefault(); UI.paste(); return; }
     if (mod && !e.shiftKey && (k === 't' || k === 'T')) { e.preventDefault(); T.term.newLocal(); return; }
-    if (mod && !e.shiftKey && (k === 'w' || k === 'W')) { e.preventDefault(); if (T.term.active) T.term.close(T.term.active); return; }
+    if (mod && !e.shiftKey && (k === 'w' || k === 'W')) { e.preventDefault(); if (T.term.active) (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)); return; }
     if (mod && !e.shiftKey && (k === 'f' || k === 'F')) { e.preventDefault(); UI.openSearch(); return; }
     if (mod && !e.shiftKey && (k === 'b' || k === 'B')) { e.preventDefault(); UI.toggleDock(); return; }
     if (mod && !e.shiftKey && (k === 'm' || k === 'M')) { e.preventDefault(); UI.openProfiles(); return; }
