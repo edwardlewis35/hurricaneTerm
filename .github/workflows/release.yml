@@ -115,6 +115,7 @@ jobs:
         run: |
           npm run test:workspace
           npm run test:gist
+          npm run test:reconnect
 
       - name: Gist 加密格式与兼容性回归
         run: |

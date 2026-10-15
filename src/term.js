@@ -200,12 +200,161 @@
     hostEl(g) { return this.groupEl(g).querySelector('.term-host'); },
 
     activeTab() { return this.active ? this.tabs[this.active] : null; },
+    // UI IDs and workspace membership stay stable across reconnects. Explicit
+    // null means disconnected; old/test tabs without the property use their ID.
+    ptyId(tab) { return tab ? (tab.ptyId === undefined ? tab.id : tab.ptyId) : null; },
+    isLive(tab) { return !!(tab && !tab._closing && !tab.exited && !tab._reconnecting && this.tabs[tab.id] === tab && this.ptyId(tab)); },
+    canReconnect(tab) { return !!(tab?.session && ['ssh', 'telnet', 'tcp', 'serial'].includes(String(tab.session.protocol || '').toLowerCase())); },
+    writeTo(tab, data) {
+      if (!this.isLive(tab) || !data) return Promise.resolve(false);
+      return T.invoke('write', { id: this.ptyId(tab), data }).then(() => true).catch(() => false);
+    },
+    beginConnection() { this._pendingConnections = (this._pendingConnections || 0) + 1; },
+    endConnection() {
+      this._pendingConnections = Math.max(0, (this._pendingConnections || 0) - 1);
+      if (!this._pendingConnections) this._earlyPtyEvents?.clear();
+    },
+    queuePendingEvent(type, id, data) {
+      // A very fast peer can emit data/exit before its connect IPC returns the
+      // ID. Bound this short handoff buffer, and never reuse old UI-ID lookup.
+      if (!this._pendingConnections || !id) return;
+      const events = (this._earlyPtyEvents ||= new Map());
+      if (!events.has(id) && events.size >= 32) return;
+      const entry = events.get(id) || { parts: [], length: 0, exited: false, omitted: false };
+      events.set(id, entry);
+      if (type === 'exit') { entry.exited = true; return; }
+      if (!entry.exited && data) {
+        let length = Math.min(String(data).length, 65536 - entry.length);
+        if (length < String(data).length && /[\uD800-\uDBFF]/.test(String(data).charAt(length - 1))) length--;
+        if (length > 0) { const part = String(data).slice(0, length); entry.parts.push(part); entry.length += part.length; }
+        if (length < String(data).length) entry.omitted = true;
+      }
+    },
+    consumePendingEvents(tab, nativeId) {
+      const entry = this._earlyPtyEvents?.get(nativeId);
+      this._earlyPtyEvents?.delete(nativeId);
+      if (!entry || tab._closing || this.tabs[tab.id] !== tab || this.ptyId(tab) !== nativeId) return;
+      for (const data of entry.parts) {
+        this.receiveOutput(tab, data);
+        if (tab.logging) tab.logBuf = (tab.logBuf || '') + data;
+      }
+      if (entry.omitted) this.receiveOutput(tab, '\r\n\x1b[2m[连接建立前的初始输出过多，部分内容已省略]\x1b[0m\r\n');
+      if (entry.exited) this.handleExit(tab, nativeId);
+    },
+    handleExit(tab, nativeId) {
+      if (!tab || tab._closing || tab.exited || this.tabs[tab.id] !== tab || this.ptyId(tab) !== nativeId) return false;
+      T.flushLogs(tab);
+      tab.exited = true; tab.ptyId = null;
+      tab._connectionGeneration = (tab._connectionGeneration || 0) + 1;
+      tab._resetInput?.();
+      const text = this.canReconnect(tab) ? '[远程会话已退出或断开，按任意键重新连接]' : '[本地进程已退出，可新建标签重新打开]';
+      this.receiveOutput(tab, '\r\n\x1b[0m\x1b[2m' + text + '\x1b[0m\r\n');
+      this.renderTabbar();
+      window.SftpPanel?.onConnectionChange?.(tab);
+      UI.status();
+      // The backend's exit signal does not carry a cause. Do not call it a
+      // timeout, and release the old entry without ever translating its ID.
+      T.invoke('kill', { id: nativeId }).catch(() => {});
+      return true;
+    },
+    reconnect(tab = this.activeTab()) {
+      if (!tab || tab._closing || this.tabs[tab.id] !== tab || !tab.exited || !this.canReconnect(tab)) return Promise.resolve(null);
+      if (tab._reconnectPromise) return tab._reconnectPromise;
+      const attempt = {};
+      tab._reconnectAttempt = attempt; tab._reconnecting = true;
+      tab._resetInput?.();
+      this.receiveOutput(tab, '\r\n\x1b[2m[正在重新连接…]\x1b[0m\r\n');
+      this.renderTabbar();
+      const promise = (async () => {
+        let nativeId;
+        this.beginConnection();
+        try {
+          nativeId = await this.connectSession(tab.session, tab.term);
+          if (typeof nativeId !== 'string' || !nativeId) throw new Error('连接未返回有效会话');
+          if (tab._closing || this.tabs[tab.id] !== tab || tab._reconnectAttempt !== attempt) {
+            await T.invoke('kill', { id: nativeId }).catch(() => {});
+            return null;
+          }
+          tab.ptyId = nativeId; tab.exited = false; tab._reconnecting = false;
+          tab._connectionGeneration = (tab._connectionGeneration || 0) + 1;
+          tab.cwd = null;
+          this.receiveOutput(tab, '\x1b[2m[已重新连接]\x1b[0m\r\n');
+          this.consumePendingEvents(tab, nativeId);
+          if (!this.isLive(tab)) return null;
+          if (tab.session) { tab.session.lastUsed = Date.now(); T.persistSessions(); }
+          if (String(tab.session?.protocol).toLowerCase() === 'ssh') window.UI?.onSshConnected?.(tab);
+          window.SftpPanel?.onConnectionChange?.(tab);
+          this.renderPaneControls(); this.renderTabbar(); UI.status();
+          if (this.active === tab.id) tab.term.focus();
+          return tab;
+        } catch (_) {
+          if (!tab._closing && this.tabs[tab.id] === tab && tab._reconnectAttempt === attempt) {
+            tab.exited = true; tab.ptyId = null;
+            // Raw network errors can include private endpoint or auth details.
+            this.receiveOutput(tab, '\r\n\x1b[2m[重新连接失败，请检查连接配置或网络，按任意键重试]\x1b[0m\r\n');
+            window.SftpPanel?.onConnectionChange?.(tab);
+            this.renderTabbar(); UI.status();
+          }
+          return null;
+        } finally {
+          this.endConnection();
+          if (tab._reconnectAttempt === attempt) {
+            tab._reconnecting = false; tab._reconnectPromise = null; tab._reconnectAttempt = null;
+          }
+        }
+      })();
+      tab._reconnectPromise = promise;
+      return promise;
+    },
 
     // 字体栈：设置页可选字体族，中文回退到系统 CJK 等宽
     fontStack() {
       const base = (T.s.fontFamily || '').trim();
       const fallback = '"Source Code Pro", "JetBrains Mono", "Noto Sans Mono CJK SC", ui-monospace, monospace';
       return base ? `${base}, ${fallback}` : fallback;
+    },
+
+    // The same protocol contract is used for the initial connection and retry.
+    async connectSession(session, term) {
+      const proto = String(session?.protocol || '').toLowerCase();
+      if ((proto === 'ssh' || proto === 'telnet') && !session.host) throw new Error('远程连接缺少主机地址');
+      if (proto === 'tcp' && !session.host && !session.target) throw new Error('TCP 连接缺少目标地址');
+      if (proto === 'ssh' && session.host) {
+        return T.invoke('connect_ssh', {
+          rows: term.rows, cols: term.cols,
+          host: session.host, port: session.port || null,
+          user: session.user || null, password: session.password || null,
+          keyPath: session.identityFile || null,
+          jumpHost: session.jumpHost || null,
+        });
+      } else if (proto === 'telnet' && session.host) {
+        return T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
+      } else if (proto === 'serial') {
+        // 串口：target=端口名（session.target 键）；参数运行期不可改，重连生效
+        return T.invoke('connect_serial', {
+          target: session.target || session.host || '',
+          baudRate: session.baudRate || null,
+          dataBits: session.dataBits || null,
+          parity: session.parity || null,
+          stopBits: session.stopBits || null,
+          flowControl: session.flowControl || null,
+        });
+      } else if (proto === 'tcp' && (session.host || session.target)) {
+        // 裸 TCP：host:port 或 target 串；代理分流走 re/tcp 语义
+        return T.invoke('connect_tcp', {
+          host: session.host || '', port: session.port || null, target: session.target || null,
+          proxyType: session.proxyType || null,
+          proxyHost: session.proxyHost || null, proxyPort: session.proxyPort || null,
+          proxyUser: session.proxyUser || null, proxyPassword: session.proxyPassword || null,
+          proxyCommand: session.proxyCommand || null,
+        });
+      } else {
+        return T.invoke('spawn', {
+          rows: term.rows, cols: term.cols,
+          command: session && session.command ? session.command : null,
+          args: session ? session.args : null,
+        });
+      }
     },
 
     async create(session, opts) {
@@ -237,44 +386,11 @@
 
       const proto = ((session && session.protocol) || '').toLowerCase();
       let id;
+      this.beginConnection();
       try {
-        if (proto === 'ssh' && session.host) {
-          id = await T.invoke('connect_ssh', {
-            rows: term.rows, cols: term.cols,
-            host: session.host, port: session.port || null,
-            user: session.user || null, password: session.password || null,
-            keyPath: session.identityFile || null,
-            jumpHost: session.jumpHost || null,
-          });
-        } else if (proto === 'telnet' && session.host) {
-          id = await T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
-        } else if (proto === 'serial') {
-          // 串口：target=端口名（session.target 键）；参数运行期不可改，重连生效
-          id = await T.invoke('connect_serial', {
-            target: session.target || session.host || '',
-            baudRate: session.baudRate || null,
-            dataBits: session.dataBits || null,
-            parity: session.parity || null,
-            stopBits: session.stopBits || null,
-            flowControl: session.flowControl || null,
-          });
-        } else if (proto === 'tcp' && (session.host || session.target)) {
-          // 裸 TCP：host:port 或 target 串；代理分流走 re/tcp 语义
-          id = await T.invoke('connect_tcp', {
-            host: session.host || '', port: session.port || null, target: session.target || null,
-            proxyType: session.proxyType || null,
-            proxyHost: session.proxyHost || null, proxyPort: session.proxyPort || null,
-            proxyUser: session.proxyUser || null, proxyPassword: session.proxyPassword || null,
-            proxyCommand: session.proxyCommand || null,
-          });
-        } else {
-          id = await T.invoke('spawn', {
-            rows: term.rows, cols: term.cols,
-            command: session && session.command ? session.command : null,
-            args: session ? session.args : null,
-          });
-        }
+        id = await this.connectSession(session, term);
       } catch (e) {
+        this.endConnection();
         term.dispose(); wrap.remove();
         UI.log('连接失败: ' + (e && e.message ? e.message : String(e)));
         return null;
@@ -282,13 +398,15 @@
 
       // 身份验证期间原标签可能被关闭。迟到的连接必须立即释放，不能复活标签。
       if (workspaceId && !this.workspaceTabs(workspaceId).length) {
+        this.endConnection();
         term.dispose(); wrap.remove();
         T.invoke('kill', { id }).catch(() => {});
         return null;
       }
       const tab = {
-        id, workspaceId: workspaceId || id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
+        id, ptyId: id, workspaceId: workspaceId || id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
         term, fit, search, wrap, group: g, exited: false, outline: [], session: session || null,
+        _inputSubscriptions: [], _connectionGeneration: 0,
         // Tabby 风格标签属性（tabbar.js 消费）
         color: (session && session.color) || null, pinned: false, notify: false, activity: false,
       };
@@ -301,7 +419,8 @@
       // Connecting may await authentication while the user changes opacity/theme.
       // Apply the latest appearance when the session finally becomes a tab.
       if (window.Appearance) Appearance.syncTerminal(tab, THEMES[T.s.theme].term);
-      if (term.parser && term.parser.registerOscHandler) term.parser.registerOscHandler(7, data => {
+      if (term.parser && term.parser.registerOscHandler) tab._inputSubscriptions.push(term.parser.registerOscHandler(7, data => {
+        if (!this.isLive(tab)) return false;
         try {
           const url = new URL(data);
           const path = decodeURIComponent(url.pathname);
@@ -311,14 +430,18 @@
           }
         } catch (_) {}
         return false;
-      });
+      }));
       this.order.push(id);
       // 最近使用：回写 profile 并持久化（Home/＋下拉消费 lastUsed）
       if (session) { session.lastUsed = Date.now(); T.persistSessions(); }
       if (window.Home) Home.hide();
 
       let inputLine = '';   // 输入镜像（Tab 补全上下文；方向键编辑不追踪，v1 够用）
-      term.onData((data) => {
+      const subscribe = subscription => { if (subscription?.dispose) tab._inputSubscriptions.push(subscription); };
+      subscribe(term.onData((data) => {
+        if (tab._closing || this.tabs[tab.id] !== tab) return;
+        if (tab.exited || tab._reconnecting) { if (!tab._reconnecting) this.reconnect(tab); return; }
+        if (!this.isLive(tab)) return;
         let submitted = null;
         for (const ch of data) {
           if (ch === '\r') { submitted = inputLine; inputLine = ''; }
@@ -327,9 +450,9 @@
           else if (ch >= ' ') inputLine += ch;
         }
         if (T.s.sync && T.s.mode === 'Remote') {
-          for (const t of Object.values(this.tabs)) T.invoke('write', { id: t.id, data }).catch(() => {});
+          for (const t of Object.values(this.tabs)) this.writeTo(t, data);
         } else {
-          T.invoke('write', { id, data }).catch(() => {});
+          this.writeTo(tab, data);
         }
         if (submitted !== null) {
           // 大纲语义：记录真实提交的命令行，可点击回跳
@@ -339,29 +462,31 @@
             UI.renderOutline();
           }
         }
-      });
-      term.onResize(({ rows, cols }) => {
-        T.invoke('resize', { id, rows, cols }).catch(() => {});
+      }));
+      subscribe(term.onResize(({ rows, cols }) => {
+        if (this.isLive(tab)) T.invoke('resize', { id: this.ptyId(tab), rows, cols }).catch(() => {});
         if (this.active === id) UI.status();
-      });
-      term.onTitleChange((t) => {
+      }));
+      subscribe(term.onTitleChange((t) => {
+        if (tab._closing || tab.exited) return;
         if (t && t.trim()) { if (!tab.customTitle) tab.title = t.trim().slice(0, 28); this.renderPaneControls(); this.renderTabbar(); }
-      });
+      }));
       wrap.addEventListener('mousedown', () => this.activate(id));
 
       // 选中自动复制（设置页可关）
-      term.onSelectionChange(() => {
+      subscribe(term.onSelectionChange(() => {
         if (T.s.copyOnSelect === false) return;
         const sel = term.getSelection();
         if (!sel) return;
         try { navigator.clipboard && navigator.clipboard.writeText(sel).catch(() => {}); } catch (e) {}
-      });
+      }));
 
       // PuTTY 习惯：中键粘贴；右键粘贴（可关，关闭时右键留给上下文菜单）
       const pasteHere = async () => {
         try {
           const txt = await navigator.clipboard.readText();
-          if (txt) T.invoke('write', { id, data: txt }).catch(() => {});
+          if (tab.exited) { this.reconnect(tab); return; }
+          if (txt) this.writeTo(tab, txt);
         } catch (e) {}
       };
       wrap.addEventListener('mousedown', (e) => {
@@ -379,10 +504,12 @@
       popEl.style.display = 'none';
       wrap.appendChild(popEl);
       const closePop = () => { pop = null; popEl.style.display = 'none'; };
+      tab._resetInput = () => { inputLine = ''; closePop(); };
       const applyDiff = (res, it) => {
+        if (!this.isLive(tab) || (res.generation != null && res.generation !== tab._connectionGeneration)) return;
         const del = Math.max(0, inputLine.length - res.start);
         const text = '\x7f'.repeat(del) + it.value;
-        T.invoke('write', { id, data: text });
+        this.writeTo(tab, text);
         inputLine = inputLine.slice(0, res.start) + it.value;
       };
       const renderPop = () => {
@@ -399,6 +526,27 @@
         popEl.style.display = 'block';
       };
       term.attachCustomKeyEventHandler((ev) => {
+        if (tab._closing || this.tabs[tab.id] !== tab) return false;
+        const key = ev.code || ev.key;
+        // Consume the triggering physical key through keyup, including a keypress
+        // or auto-repeat delivered after a very fast reconnect has completed.
+        if (tab._reconnectKey === key) {
+          if (ev.type === 'keyup') { tab._reconnectKey = null; return false; }
+          if (ev.type === 'keypress' || ev.repeat) { ev.preventDefault(); return false; }
+        }
+        if (tab.exited || tab._reconnecting) {
+          if (ev.type !== 'keydown') return false;
+          const lower = String(ev.key || '').toLowerCase(), mod = ev.ctrlKey || ev.metaKey;
+          const shortcut = ['F11', 'F3'].includes(ev.key) || (mod && (
+            (!ev.shiftKey && ['t', 'w', 'f', 'b', 'm', ',', '1', '2', '3', '4', '5', '6'].includes(lower)) ||
+            (ev.shiftKey && ['p', 'e', 'd', 'w', 'c', 'v'].includes(lower)) || ['=', '+', '-'].includes(lower)));
+          // App shortcuts still bubble to UI, especially Ctrl/Cmd+W close.
+          if (shortcut || ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(ev.key) || ev.isComposing) return false;
+          ev.preventDefault(); ev.stopPropagation();
+          if (!ev.repeat && !tab._reconnecting) { tab._reconnectKey = key; this.reconnect(tab); }
+          return false;
+        }
+        if (ev.type === 'keyup' && tab._reconnectKey) tab._reconnectKey = null;
         if (ev.type !== 'keydown') return pop === null;
         if (pop) {
           if (ev.key === 'Escape') { closePop(); return false; }
@@ -409,13 +557,15 @@
         }
         if (ev.key === 'Tab' && !ev.shiftKey && !ev.ctrlKey) {
           ev.preventDefault();
+          const generation = tab._connectionGeneration || 0, nativeId = this.ptyId(tab);
           T.invoke('complete_input', { line: inputLine, caret: inputLine.length }).then((res) => {
+            if (!this.isLive(tab) || this.ptyId(tab) !== nativeId || (tab._connectionGeneration || 0) !== generation) return;
             // 无候选时把 Tab 交还给 shell（PuTTY/普通终端习惯：shell 自身补全），不能吞键
-            if (!res.items.length) { T.invoke('write', { id, data: '\t' }).catch(() => {}); return; }
+            if (!res.items.length) { this.writeTo(tab, '\t'); return; }
             if (res.items.length === 1) { applyDiff(res, res.items[0]); return; }
-            pop = { items: res.items.slice(0, 12), start: res.start, sel: 0 };
+            pop = { items: res.items.slice(0, 12), start: res.start, sel: 0, generation: tab._connectionGeneration };
             renderPop();
-          }).catch(() => { T.invoke('write', { id, data: '\t' }).catch(() => {}); });
+          }).catch(() => { if (this.isLive(tab) && this.ptyId(tab) === nativeId && (tab._connectionGeneration || 0) === generation) this.writeTo(tab, '\t'); });
           return false;
         }
         return true;
@@ -423,8 +573,10 @@
 
       this.orderWrites(id);
       this.activate(id);
+      this.consumePendingEvents(tab, id);
+      this.endConnection();
       // SSH 连接后准备 SFTP 路径；由工具栏点击打开，不遮住新终端。
-      if (proto === 'ssh' && window.UI && typeof UI.onSshConnected === 'function') UI.onSshConnected(tab);
+      if (proto === 'ssh' && this.isLive(tab) && window.UI && typeof UI.onSshConnected === 'function') UI.onSshConnected(tab);
       // PuTTY 习惯：会话输出落盘（设置页开关；仅对新会话生效）
       if (T.s.sessionLog) this.startLog(tab);
       this.renderTabbar();
@@ -483,7 +635,13 @@
     async close(id) {
       const t = this.tabs[id];
       if (!t || t._closing) return;
+      const nativeId = this.ptyId(t);
       t._closing = true;
+      t._reconnectAttempt = null; t._reconnectPromise = null; t._reconnecting = false;
+      t.ptyId = null; t.exited = true;
+      t._resetInput?.(); t._reconnectKey = null;
+      for (const subscription of t._inputSubscriptions || []) subscription?.dispose?.();
+      t._inputSubscriptions = [];
       if (t.logging) {
         T.flushLogs(t);
         T.invoke('session_log_stop', { id }).catch(() => {});
@@ -516,7 +674,7 @@
       else if (window.Home) Home.show();
       UI.status();
       if (window.SftpPanel) SftpPanel.onSessionChange();
-      try { await T.invoke('kill', { id }); }
+      try { if (nativeId) await T.invoke('kill', { id: nativeId }); }
       catch (e) { UI.log('会话清理失败：' + String(e)); }
     },
 
@@ -723,7 +881,11 @@
       if (window.Settings && Settings.isOpen()) Settings.render();
     },
 
-    findByPty(id) { return this.tabs[id]; },
+    findByPty(id) {
+      if (!id) return null;
+      // A stable UI ID equal to the *old* PTY must not accept late events.
+      return Object.values(this.tabs).find(tab => !tab._closing && this.ptyId(tab) === id) || null;
+    },
 
     searchNext(q) {
       const t = this.activeTab();
@@ -738,12 +900,14 @@
 
     /* ---- triggers engine — 后端语义引擎（re/triggers.rs）优先，v0 本地回退 ---- */
     runTriggers(tab, data) {
-      if (tab._closing || !T.s.triggers.length) return;
+      if (!this.isLive(tab) || !T.s.triggers.length) return;
+      const nativeId = this.ptyId(tab), generation = tab._connectionGeneration || 0;
+      const current = () => this.isLive(tab) && this.ptyId(tab) === nativeId && (tab._connectionGeneration || 0) === generation;
       T.invoke('triggers_feed', { data }).then((acts) => {
-        if (tab._closing) return;
+        if (!current()) return;
         for (const a of acts || []) {
           if (a.action === 'send') {
-            T.invoke('write', { id: tab.id, data: a.text }).catch(() => {});
+            this.writeTo(tab, a.text);
           } else if (a.action === 'bell') {
             UI.beep();
           } else if (a.action === 'highlight') {
@@ -757,7 +921,7 @@
           }
           UI.log(`触发器命中（后端 rule ${a.ruleId ?? ''}）`);
         }
-      }).catch(() => this.runTriggersV0(tab, data));
+      }).catch(() => { if (current()) this.runTriggersV0(tab, data); });
     },
 
     highlightHit(tab) {
@@ -878,7 +1042,7 @@
     },
 
     runTriggersV0(tab, data) {
-      if (tab._closing || this.tabs[tab.id] !== tab) return;
+      if (!this.isLive(tab)) return;
       const rules = T.s.triggers.filter((r) => r.enabled !== false);
       if (!rules.length) return;
       for (const r of rules) {
@@ -886,14 +1050,14 @@
         if (!re.test(data)) continue;
         if (r.action === 'highlight') this.highlightHit(tab);
         else if (r.action === 'bell') UI.beep();
-        else if (r.action === 'send') T.invoke('write', { id: tab.id, data: (r.arg || '') + '\r' }).catch(() => {});
+        else if (r.action === 'send') this.writeTo(tab, (r.arg || '') + '\r');
         UI.log(`触发器「${r.name || r.pattern}」命中`);
       }
     },
 
     broadcast(text, toAll) {
-      const targets = toAll ? Object.values(this.tabs) : [this.activeTab()].filter(Boolean);
-      for (const t of targets) T.invoke('write', { id: t.id, data: text }).catch(() => {});
+      const targets = (toAll ? Object.values(this.tabs) : [this.activeTab()].filter(Boolean)).filter(t => this.isLive(t));
+      for (const t of targets) this.writeTo(t, text);
       UI.log(`发送${toAll ? '（全部 ' + targets.length + ' 个）' : ''}：${text.length} 字节`);
     },
 

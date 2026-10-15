@@ -145,7 +145,7 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
     const match = /^(fs|sftp)_(realpath|list|stat|rename|remove|mkdir|create_file|copy|read_file|write_file|chmod)$/.exec(command);
     if (!match) throw new Error('Unsupported bridge command: ' + command);
     const side = match[1] === 'fs' ? 'local' : 'remote', op = match[2], id = args.id, map = store(side, id);
-    if (side === 'remote' && !TM.tabs[id]?.session) throw new Error('Unknown SSH session');
+    if (side === 'remote' && !TM.findByPty(id)?.session) throw new Error('Unknown SSH session');
     const path = normalize(side, id, args.path);
     if (op === 'realpath') { need(side, id, path); return path; }
     if (op === 'list') return list(side, id, path);
@@ -565,6 +565,54 @@ await scenario('R 队列统计的响应式布局规则', async h => {
   check('R4 队列按自身宽度自适应，小窗口和手动缩小面板均换行', rule('.sftp-queue').getPropertyValue('container-type') === 'inline-size' && narrowRules.find(r => r.selectorText === '.sftp-queue-row')?.style.getPropertyValue('grid-template-columns') === 'minmax(0, 1fr)' && narrowRules.find(r => r.selectorText === '.sftp-queue-meta')?.style.getPropertyValue('flex-wrap') === 'wrap');
   const allRules = rules.flatMap(r => [r, ...r.cssRules || []]);
   check('R5 窄屏保留速度和完成状态，不再整列隐藏', !allRules.some(r => r.selectorText === '.sftp-queue-speed' && r.style?.display === 'none'));
+});
+
+await scenario('S 重连后的原生ID与旧请求隔离', async h => {
+  await h.P.open();
+  const c = h.P.context, machine = c.tab;
+  const cloneRemote = id => { for (const [path, value] of h.store('remote', 'ssh-a')) h.store('remote', id).set(path, { ...value }); };
+  cloneRemote('ssh-a-generation-2');
+  h.put('remote', 'ssh-a-generation-2', '/home/alice/new-generation.txt', { content: 'new connection' });
+  let release;
+  h.setInterceptor((command, args) => command === 'sftp_list' && args.id === 'ssh-a'
+    ? new Promise(resolve => { release = () => resolve([{ name: 'stale-generation.txt', path: '/home/alice/stale-generation.txt', is_dir: false }]); }) : null);
+  const stale = h.P.refresh(); await until(() => !!release);
+  machine.exited = true; machine.ptyId = null; h.P.onConnectionChange(machine);
+  check('S1 退出时稳定窗格ID和文件上下文不变，清除旧远端文件', h.P.context === c && c.id === 'ssh-a' && c.remote.entries.length === 0);
+  check('S2 退出时路径与所有远程导航禁用', h.pane('remote').querySelector('.sftp-path').disabled && [...h.pane('remote').querySelectorAll('.sftp-nav button')].every(b => b.disabled));
+  machine.exited = false; machine.ptyId = 'ssh-a-generation-2'; h.P.onConnectionChange(machine); await settle();
+  check('S3 原标签重连后SFTP使用新的后端ID读取', !!h.row('remote', 'new-generation.txt') && h.calls.some(([command, args]) => command === 'sftp_list' && args.id === 'ssh-a-generation-2'));
+  release(); await stale;
+  check('S4 迟到旧连接目录结果不会覆盖新连接', !!h.row('remote', 'new-generation.txt') && !h.row('remote', 'stale-generation.txt'));
+  h.setInterceptor(null);
+  await h.go('remote', '/home/alice/target');
+  const localEntry = c.local.entries.find(e => e.name === 'alpha.txt');
+  await h.P.enqueue(c, 'local', [localEntry], c, 'remote'); await until(() => h.transfers.size === 1);
+  const task = h.P.tasks.at(-1), oldTransferId = task.id;
+  check('S5 重连后的队列使用新原生会话ID', task.sessionId === 'ssh-a-generation-2' && h.transfers.get(task.id).args.id === 'ssh-a-generation-2');
+  h.P.progress({ transferId: task.id, sessionId: 'ssh-a-generation-2', done: 3, total: 20, status: 'running' });
+  check('S6 新原生会话进度正确关联稳定窗格的任务', task.done === 3);
+  machine.exited = true; machine.ptyId = null; h.P.onConnectionChange(machine); await until(() => !task.working);
+  check('S7 断线任务失败并释放worker，可显式重试', task.status === 'failed' && task.connectionLost && !task.working);
+  h.P.progress({ transferId: oldTransferId, sessionId: 'ssh-a-generation-2', done: 20, total: 20, status: 'completed' });
+  check('S8 旧连接迟到进度不能把失败任务改为完成', task.status === 'failed' && task.done === 3);
+  cloneRemote('ssh-a-generation-3'); machine.exited = false; machine.ptyId = 'ssh-a-generation-3'; h.P.onConnectionChange(machine); await settle();
+  check('S9 重连不自动向新连接重放旧文件传输', !h.calls.some(([command, args]) => command === 'sftp_transfer_start' && args.id === 'ssh-a-generation-3'));
+  h.q(`[data-task="${oldTransferId}"] [data-action="retry"]`).click(); await until(() => h.transfers.size === 1);
+  check('S10 用户确认重试才为新连接创建新的transferId', task.id !== oldTransferId && task.sessionId === 'ssh-a-generation-3' && h.transfers.get(task.id).args.id === 'ssh-a-generation-3');
+  await h.finish(task.id);
+  check('S11 重试成功并只写到新连接文件树', task.status === 'completed' && h.store('remote', 'ssh-a-generation-3').has('/home/alice/target/alpha.txt') && !h.store('remote', 'ssh-a-generation-2').has('/home/alice/target/alpha.txt'), JSON.stringify({status:task.status,target:task.target,error:task.error,newHas:h.store('remote', 'ssh-a-generation-3').has('/home/alice/target/alpha.txt'),oldHas:h.store('remote', 'ssh-a-generation-2').has('/home/alice/target/alpha.txt')}));
+});
+
+await scenario('T 断线不丢失编辑器未保存内容', async h => {
+  await h.P.open(); await h.menu('remote', 'alpha.txt', '查看 / 编辑');
+  const input = h.q('.sftp-editor textarea'), c = h.P.context;
+  input.value = 'unsaved across reconnect';
+  c.tab.exited = true; c.tab.ptyId = null; h.P.onConnectionChange(c.tab); await settle();
+  check('T1 断线保持编辑器原DOM和未保存文本', h.q('.sftp-editor textarea') === input && input.value === 'unsaved across reconnect');
+  check('T2 编辑器打开时底层远程路径和导航仍禁用', h.pane('remote').querySelector('.sftp-path').disabled && [...h.pane('remote').querySelectorAll('.sftp-nav button')].every(b => b.disabled));
+  h.q('[data-save]').click(); await settle();
+  check('T3 断线状态保存不发送任何远端写入', !h.calls.some(([command]) => command === 'sftp_write_file') && input.value === 'unsaved across reconnect');
 });
 
 await scenario('J 主主题继承', async h => {

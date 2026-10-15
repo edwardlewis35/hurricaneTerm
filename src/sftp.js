@@ -117,9 +117,12 @@
     };
   }
   const ssh = (tab) =>
-    !!(tab && tab.session && tab.session.protocol === "ssh" && !tab.exited);
+    !!(tab && tab.session && tab.session.protocol === "ssh" && !tab.exited && !tab._closing &&
+      (!T.term.isLive || T.term.isLive(tab)));
+  const nativeId = (tab) => T.term.ptyId ? T.term.ptyId(tab) : tab?.id;
+  const connectionChanged = "SSH 连接已断开或重新连接，请重新发起操作";
   const contextKey = (tab) =>
-    ssh(tab)
+    tab?.session?.protocol === "ssh"
       ? `${tab.session.user || ""}@${tab.session.host}:${tab.session.port || 22}`
       : "local";
   function newPane(path) {
@@ -163,10 +166,14 @@
   function invoke(c, side, op, args = {}) {
     if (side === "remote" && !connected(c))
       return Promise.reject(new Error("远程操作需要已连接的 SSH 会话"));
-    return T.invoke(
+    const id = side === "remote" ? nativeId(c.tab) : null;
+    return Promise.resolve(T.invoke(
       (side === "remote" ? "sftp_" : "fs_") + op,
-      side === "remote" ? { id: c.id, ...args } : args,
-    );
+      side === "remote" ? { id, ...args } : args,
+    )).then(value => {
+      if (side === "remote" && (!connected(c) || nativeId(c.tab) !== id)) throw new Error(connectionChanged);
+      return value;
+    });
   }
   function button(action, icon, text, disabled = false, on = false) {
     return `<button type="button" class="sftp-icon${on ? " on" : ""}" data-action="${action}" title="${esc(text)}" aria-label="${esc(text)}"${disabled ? " disabled" : ""}>${svg(icon)}</button>`;
@@ -282,9 +289,10 @@
   function updateNav(side) {
     const p = current[side],
       pane = root.querySelector(`[data-side="${side}"]`);
-    pane.querySelector('[data-action="back"]').disabled = p.historyIndex <= 0;
+    const disconnected = side === "remote" && !connected();
+    pane.querySelector('[data-action="back"]').disabled = disconnected || p.historyIndex <= 0;
     pane.querySelector('[data-action="forward"]').disabled =
-      p.historyIndex >= p.history.length - 1;
+      disconnected || p.historyIndex >= p.history.length - 1;
   }
   function visible(p) {
     const q = p.filter.toLocaleLowerCase();
@@ -1158,7 +1166,7 @@
       tasks.push({
         id: uuid(),
         key,
-        sessionId: remote.id,
+        sessionId: nativeId(remote.tab),
         context: remote,
         sourceContext: source,
         targetContext: target,
@@ -1203,11 +1211,16 @@
   }
   async function runTask(task) {
     try {
+      const checkConnection = () => {
+        if (task.connectionLost || !connected(task.context) || nativeId(task.context.tab) !== task.sessionId) throw new Error(connectionChanged);
+      };
+      checkConnection();
       const previous = conflictChain;
       let unlock;
       conflictChain = new Promise((resolve) => (unlock = resolve));
       await previous;
       try {
+        checkConnection();
         if (task.status === "cancelled") return;
         task.policy = await conflictPolicy(task);
       } finally {
@@ -1220,6 +1233,7 @@
       if (task.status === "paused")
         await new Promise((resolve) => (task.resumeWaiter = resolve));
       if (task.status === "cancelled") return;
+      checkConnection();
       task.status = "running";
       task.started = Date.now();
       renderQueue();
@@ -1231,6 +1245,7 @@
         upload: task.direction === "up",
         policy: task.policy,
       });
+      checkConnection();
       if (!["cancelled", "skipped"].includes(task.status))
         task.status = "completed";
       await Promise.all([
@@ -1248,7 +1263,9 @@
         ),
       ]);
     } catch (e) {
-      if (task.status === "cancelling" || /cancel/i.test(String(e)))
+      if (task.connectionLost) {
+        task.status = "failed"; task.error = connectionChanged;
+      } else if (task.status === "cancelling" || /cancel/i.test(String(e)))
         task.status = "cancelled";
       else {
         task.status = "failed";
@@ -1265,9 +1282,12 @@
       const t = tasks.find((t) => t.status === "queued" && !t.claimed);
       if (!t) break;
       t.claimed = true;
+      t.working = true;
       activeWorkers++;
       runTask(t).finally(() => {
+        t.working = false;
         activeWorkers--;
+        renderQueue();
         pump();
       });
     }
@@ -1312,7 +1332,7 @@
           : t.status === "completed"
             ? 100
             : 0;
-        return `<div class="sftp-queue-row" data-task="${esc(t.id)}"><div class="sftp-queue-name" title="${esc(t.source + " → " + t.target)}">${t.direction === "up" ? "↑" : "↓"} ${esc(t.name)}<div class="sftp-progress"><i style="width:${pct}%"></i></div></div><div class="sftp-queue-meta"><span class="sftp-queue-bytes">${size(t.done)} / ${t.total ? size(t.total) : "计算中"}</span><span class="sftp-queue-speed sftp-status ${t.status}" title="${esc(t.error || "")}">${label[t.status] || t.status}${t.status === "running" && t.speed ? " · " + size(t.speed) + "/s" : ""}</span><div class="sftp-queue-buttons">${["preparing", "running", "queued", "paused", "pausing"].includes(t.status) ? button(t.status === "paused" ? "resume" : "pause", t.status === "paused" ? "play" : "pause", t.status === "paused" ? "继续" : "暂停") + button("cancel", "x", "取消") : t.status === "failed" ? button("retry", "refresh", "重试") : ""}</div></div></div>`;
+        return `<div class="sftp-queue-row" data-task="${esc(t.id)}"><div class="sftp-queue-name" title="${esc(t.source + " → " + t.target)}">${t.direction === "up" ? "↑" : "↓"} ${esc(t.name)}<div class="sftp-progress"><i style="width:${pct}%"></i></div></div><div class="sftp-queue-meta"><span class="sftp-queue-bytes">${size(t.done)} / ${t.total ? size(t.total) : "计算中"}</span><span class="sftp-queue-speed sftp-status ${t.status}" title="${esc(t.error || "")}">${label[t.status] || t.status}${t.status === "running" && t.speed ? " · " + size(t.speed) + "/s" : ""}</span><div class="sftp-queue-buttons">${["preparing", "running", "queued", "paused", "pausing"].includes(t.status) ? button(t.status === "paused" ? "resume" : "pause", t.status === "paused" ? "play" : "pause", t.status === "paused" ? "继续" : "暂停") + button("cancel", "x", "取消") : t.status === "failed" ? button("retry", "refresh", "重试", !!t.working) : ""}</div></div></div>`;
       })
       .join("")}`;
     queue.querySelector("[data-clear]").onclick = () => {
@@ -1328,6 +1348,10 @@
             (t) => t.id === b.closest("[data-task]").dataset.task,
           );
           if (b.dataset.action === "retry") {
+            if (t.working) return;
+            if (!connected(t.context)) throw new Error(connectionChanged);
+            t.sessionId = nativeId(t.context.tab);
+            t.connectionLost = false;
             t.id = uuid();
             t.status = "queued";
             t.claimed = false;
@@ -1535,6 +1559,35 @@
         load(current, "remote", current.remote.path);
       }
     },
+    onConnectionChange(tab) {
+      const c = contexts.get(tab?.id);
+      if (!c) return;
+      c.tab = tab;
+      c.key = contextKey(tab);
+      const p = c.remote;
+      p.seq++; p.loading = false; p.entries = []; p.selected.clear(); p.home = null;
+      p.error = connected(c) ? null : "连接 SSH 会话后即可浏览远程目录";
+      for (const task of tasks) {
+        if (task.context !== c || !["queued", "preparing", "running", "paused", "pausing", "cancelling"].includes(task.status)) continue;
+        if (connected(c) && nativeId(tab) === task.sessionId) continue;
+        task.connectionLost = true; task.status = "failed"; task.error = connectionChanged;
+        task.resumeWaiter?.(); task.resumeWaiter = null;
+        if (task.started) T.invoke("sftp_transfer_control", { transferId: task.id, action: "cancel" }).catch(() => {});
+        if (!task.claimed) record(task);
+      }
+      renderQueue();
+      if (current !== c || !this.isOpen()) return;
+      dropGeneration++; cancelDrag();
+      // Keep an open editor or conflict dialog intact, including unsaved text.
+      if (!root.querySelector(".sftp-modal")) renderShell();
+      else {
+        renderList("remote");
+        root.querySelectorAll('[data-side="remote"] button, [data-side="remote"] input').forEach(el => { el.disabled = !connected(c); });
+        updateNav("remote");
+      }
+      if (connected(c)) load(c, "remote", p.path || ".", false);
+      renderQueue();
+    },
     syncCwd(id, path) {
       const c = contexts.get(id);
       if (!c || prefs().pathMode !== "sync" || !path?.startsWith("/")) return;
@@ -1548,7 +1601,7 @@
           t = tasks.find(
             (t) => t.id === p.transferId && t.sessionId === p.sessionId,
           );
-        if (!t) return;
+        if (!t || t.connectionLost) return;
         t.done = p.done || 0;
         t.total = p.total || 0;
         if (p.status) t.status = p.status;

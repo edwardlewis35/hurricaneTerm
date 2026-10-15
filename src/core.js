@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.7.15';
+  const VERSION = '0.7.16';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -198,7 +198,8 @@ window.WT = (function () {
     await WT.listen('pty-output', (e) => {
       const { id, data } = e.payload;
       const tab = WT.term.findByPty(id);
-      if (!tab || tab._closing) return;
+      if (!tab) { WT.term.queuePendingEvent('output', id, data); return; }
+      if (tab._closing || tab.exited) return;
       WT.term.receiveOutput(tab, data);
       if (tab.logging) tab.logBuf = (tab.logBuf || '') + data;
       // 活动通知：后台标签有输出且开了 notify → 圆点
@@ -219,12 +220,9 @@ window.WT = (function () {
     });
     await WT.listen('pty-exit', (e) => {
       const tab = WT.term.findByPty(e.payload.id);
-      if (!tab || tab.exited) return;
-      WT.flushLogs(tab);
-      tab.exited = true;
-      WT.term.receiveOutput(tab, '\r\n\x1b[2m[进程已退出]\x1b[0m\r\n');
-      WT.term.renderTabbar();
-      WT.ui.log('会话退出 ' + e.payload.id.slice(0, 8));
+      if (!tab) { WT.term.queuePendingEvent('exit', e.payload.id); return; }
+      if (!WT.term.handleExit(tab, e.payload.id)) return;
+      WT.ui.log('会话退出或断开 ' + e.payload.id.slice(0, 8));
     });
 
     window.addEventListener('resize', () => {

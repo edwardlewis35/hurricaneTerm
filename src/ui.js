@@ -463,7 +463,10 @@
       try {
         const txt = await navigator.clipboard.readText();
         const t = T.term.activeTab();
-        if (t && txt) T.invoke('write', { id: t.id, data: txt });
+        if (t && txt) {
+          if (T.term.isLive && !T.term.isLive(t)) { if (t.exited) T.term.reconnect?.(t); return; }
+          await T.invoke('write', { id: T.term.ptyId ? T.term.ptyId(t) : t.id, data: txt });
+        }
       } catch (e) { this.toast('粘贴请用 Ctrl+Shift+V（WebKit 剪贴板限制）', 3000, 'err'); }
     },
 
