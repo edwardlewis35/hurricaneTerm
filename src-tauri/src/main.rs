@@ -14,6 +14,7 @@ mod ssh_relay;
 mod serial_live;
 mod tcp_live;
 mod gist_sync;
+mod ai;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -1090,6 +1091,18 @@ async fn gist_request(request: gist_sync::GistRequest) -> Result<gist_sync::Gist
     gist_sync::gist_request(request).await
 }
 
+#[tauri::command]
+async fn ai_chat(app: AppHandle, state: State<'_, ai::AiState>, request: ai::AiChatRequest) -> Result<ai::AiChatResponse, String> {
+    ai::chat(&state, request, move |delta| {
+        app.emit("ai-chat-delta", delta).map_err(|_| "AI 界面无法接收回复".to_owned())
+    }).await
+}
+
+#[tauri::command]
+fn ai_cancel(state: State<'_, ai::AiState>, request_id: String) -> bool {
+    state.cancel(&request_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1097,6 +1110,7 @@ pub fn run() {
         .manage(TransferState::default())
         .manage(TriggersState::default())
         .manage(LogState::default())
+        .manage(ai::AiState::default())
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
@@ -1124,6 +1138,8 @@ pub fn run() {
             sessions_load,
             sessions_save,
             gist_request,
+            ai_chat,
+            ai_cancel,
             ui_state_save,
             ui_state_load,
             complete_input,

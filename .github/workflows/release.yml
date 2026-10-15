@@ -116,11 +116,13 @@ jobs:
           npm run test:workspace
           npm run test:gist
           npm run test:reconnect
+          npm run test:ai
 
       - name: Gist 加密格式与兼容性回归
         run: |
           npm run prepare-dist
           cargo test --manifest-path src-tauri/Cargo.toml gist_sync::tests
+          cargo test --manifest-path src-tauri/Cargo.toml ai::tests
 
       - name: macOS 原生 PTY 关闭与 UTF-8 回归
         if: startsWith(matrix.platform, 'macos')

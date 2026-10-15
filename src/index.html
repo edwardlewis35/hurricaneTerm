@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="quick-connect.css" />
   <link rel="stylesheet" href="gist-sync.css" />
   <link rel="stylesheet" href="workspace.css" />
+  <link rel="stylesheet" href="ai.css" />
 </head>
 <body>
   <!-- 无边框窗口：标签栏内嵌标题栏（Tabby 形态） -->
@@ -56,6 +57,7 @@
         <section class="group" data-g="1" hidden><div class="term-host"></div></section>
       </div>
     </main>
+    <aside id="ai-panel" hidden aria-label="AI 助手"></aside>
     <section id="sftp-panel" hidden aria-label="SFTP 文件管理"></section>
   </div>
 
@@ -69,7 +71,7 @@
     <span id="st-zoom" class="chip mono click" title="点击重置字号">13 px</span>
     <span id="st-theme" class="chip click" title="点击切换主题">dige-black</span>
     <span id="st-clock" class="chip mono"></span>
-    <span class="chip dim">0.7.16</span>
+    <span class="chip dim">0.7.17</span>
   </footer>
 
   <div id="palette" hidden>
@@ -98,6 +100,7 @@
   <script src="settings.js"></script>
   <script src="gist-sync.js"></script>
   <script src="term.js"></script>
+  <script src="ai.js"></script>
   <script src="ui.js"></script>
 </body>
 </html>

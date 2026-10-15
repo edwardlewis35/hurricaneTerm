@@ -8,6 +8,7 @@
 
   // path 内容：viewBox 0 0 16 16，stroke 由 CSS 控制
   const P = {
+    sparkles: '<path d="m6 1.5 1.6 4.4L12 7.5l-4.4 1.6L6 13.5 4.4 9.1 0 7.5l4.4-1.6z"/><path d="m12.5 1 .7 1.8L15 3.5l-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7zM13 10l.7 1.8 1.8.7-1.8.7L13 15l-.7-1.8-1.8-.7 1.8-.7z"/>',
     terminal: '<rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.6"/><polyline points="4.6 6.6 6.6 8.6 4.6 10.6"/><line x1="8.4" y1="10.8" x2="11.4" y2="10.8"/>',
     server: '<rect x="2" y="2.8" width="12" height="4.2" rx="1.2"/><rect x="2" y="9" width="12" height="4.2" rx="1.2"/><circle cx="4.6" cy="4.9" r=".55" fill="currentColor" stroke="none"/><circle cx="4.6" cy="11.1" r=".55" fill="currentColor" stroke="none"/>',
     folder: '<path d="M1.8 3h4.1l1.5 1.7h6.8V13H1.8z"/>',

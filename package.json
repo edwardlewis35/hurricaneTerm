@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.7.16",
+  "version": "0.7.17",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
@@ -18,7 +18,8 @@
     "test:header": "node scripts/header-continuity-test.mjs",
     "test:workspace": "node scripts/workspace-regression-test.mjs",
     "test:gist": "node scripts/gist-sync-test.mjs",
-    "test:reconnect": "node scripts/reconnect-regression-test.mjs"
+    "test:reconnect": "node scripts/reconnect-regression-test.mjs",
+    "test:ai": "node scripts/ai-ui-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

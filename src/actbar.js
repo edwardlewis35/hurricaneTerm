@@ -121,6 +121,9 @@
       }
 
       // 查询、命令与外观入口集中在同一条工具栏，设置仍位于右上角。
+      const ai = mkBtn(extras, { icon: 'sparkles', label: 'AI 助手',
+        onClick: () => window.AiPanel?.toggle() });
+      ai.dataset.aiToggle = ''; ai.setAttribute('aria-controls', 'ai-panel'); ai.setAttribute('aria-expanded', 'false');
       mkBtn(extras, { icon: 'search', label: '查找', key: 'Ctrl+F',
         onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.toggleSearch(); } } });
       mkBtn(extras, { icon: 'terminal', label: '命令面板', key: 'Ctrl+Shift+P',
@@ -194,6 +197,8 @@
 
     render() {
       if (!root) return;
+      const ai = root.querySelector('[data-ai-toggle]');
+      if (ai) { const active = !!window.AiPanel?.isOpen(); ai.classList.toggle('on', active); ai.setAttribute('aria-expanded', String(active)); }
       const open = !!T.s.dockVisible;
       const cur = open ? T.s.dockPane : null;
       for (const p of PANES) {

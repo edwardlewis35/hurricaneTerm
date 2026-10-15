@@ -533,6 +533,7 @@
       add('会话', '重命名当前标签', 'F2', 'output', () => window.TabBar && TabBar.renameActive());
 
       add('窗格', '切换工具窗口', 'Ctrl+B', 'folder', () => this.toggleDock());
+      add('窗格', 'AI 助手', '', 'sparkles', () => setTimeout(() => window.AiPanel?.toggle(), 0));
       for (let i = 0; i < PANES.length; i++) {
         const [id, label] = PANES[i];
         add('窗格', '工具窗口：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));

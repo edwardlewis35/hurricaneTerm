@@ -80,7 +80,7 @@ try {
   check('L1 toolbar is the second body row, outside the floating dialog', d.querySelector('#actbar').parentElement === d.body && d.querySelector('#actbar').previousElementSibling.id === 'titlebar');
   check('L2 saved legacy sidebar state does not open a fixed panel at startup', d.querySelector('#dock').hidden && d.querySelector('#dock-backdrop').hidden && !w.WT.s.dockVisible);
   check('L3 old sidebar resizer is removed', !d.querySelector('#dock-resizer'));
-  check('L4 settings remains in the top right, other tools are in the second row', d.querySelectorAll('#tb-actions button').length === 1 && d.querySelector('#tb-actions .tb-settings') && d.querySelectorAll('#actbar button').length === 11);
+  check('L4 settings remains in the top right, tools and AI are in the second row', d.querySelectorAll('#tb-actions button').length === 1 && d.querySelector('#tb-actions .tb-settings') && d.querySelectorAll('#actbar button').length === 12 && d.querySelector('#actbar [data-ai-toggle]').getAttribute('aria-controls') === 'ai-panel');
   const paneButton = d.querySelector('[data-pane="sender"]'); paneButton.focus(); paneButton.click();
   check('L5 tool click opens an accessible floating dialog and backdrop', !d.querySelector('#dock').hidden && !d.querySelector('#dock-backdrop').hidden && d.querySelector('#dock').getAttribute('aria-modal') === 'true');
   check('L6 selected tool is expanded and window title describes it', paneButton.getAttribute('aria-expanded') === 'true' && d.querySelector('#dock-title').textContent === '发送');
@@ -144,7 +144,7 @@ try {
   check('L37 moving the tabbar disconnects the old ResizeObserver and removes stale DOM', observers[observerCount - 1].disconnected && d.querySelectorAll('.ht-tabbar').length === 1);
   w.TabBar.dispose(); check('L38 explicit disposal releases its observer and DOM', observers.at(-1).disconnected && !d.querySelector('.ht-tabbar'));
   const before = listeners.length; w.UI.buildDock(); w.ActBar.mount(d.querySelector('#actbar'));
-  check('L39 toolbar and dock build do not duplicate long-lived listeners', before === listeners.length && d.querySelectorAll('#actbar button').length === 11);
+  check('L39 toolbar and dock build do not duplicate long-lived listeners', before === listeners.length && d.querySelectorAll('#actbar button').length === 12);
   check('L40 user window actions persist state', persisted > 10);
   settingsVisible = profilesVisible = sftpVisible = false; w.UI.closeDock(); paneButton.focus();
   const focused = d.activeElement;
