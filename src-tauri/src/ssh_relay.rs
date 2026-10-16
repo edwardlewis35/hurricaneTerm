@@ -200,7 +200,7 @@ pub fn parse_proxy_url(url: &str) -> Option<Proxy> {
     }
 }
 
-fn system_proxy() -> Proxy {
+pub(crate) fn system_proxy() -> Proxy {
     for key in ["ALL_PROXY", "all_proxy"] {
         if let Ok(v) = std::env::var(key) {
             if let Some(p) = parse_proxy_url(&v) {

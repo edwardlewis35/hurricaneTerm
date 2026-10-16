@@ -119,9 +119,9 @@ check('Long-lived forms do not retain per-field reset callbacks', resetTargets.l
 check('Repeated removal leaves only the original native select in its form', d.querySelectorAll('#form select').length === 1 && d.querySelectorAll('#form .wt-select').length === 1);
 d.querySelector('#terminal').innerHTML = '<div><select><option>terminal output</option></select></div>'; await wait();
 check('Terminal output is excluded from control observer work', !d.querySelector('#terminal .wt-select'));
-const css = readFileSync(source + 'style.css', 'utf8'), tabs = readFileSync(source + 'tabbar.js', 'utf8');
+const css = readFileSync(source + 'style.css', 'utf8'), actbar = readFileSync(source + 'actbar.js', 'utf8');
 check('Titlebar action icons have one shared size across platforms', css.includes('--ico-titlebar: 16px') && !css.includes('body.is-mac { --ico:'));
-check('Split toolbar button participates in same center-aligned layout', tabs.includes('.ht-plus, .ht-caret, .ht-split { display:flex; align-items:center; justify-content:center;'));
+check('Split toolbar button shares the centered second-row button layout', actbar.includes("cls: 'ab-split ht-split'") && /\.ab-btn\s*\{[^}]*display:\s*flex;\s*align-items:\s*center;\s*justify-content:\s*center;/.test(css));
 check('Output keyword highlights no longer draw persistent colored side lines', ['err', 'warn', 'ok', 'addr'].every(kind => !new RegExp(`\\.wt-hl-${kind}\\s*\\{[^}]*box-shadow`).test(css)));
 check('No runtime errors during complete interactions', errors.length === 0);
 for (const [pass, name] of results) console.log(`${pass ? 'PASS' : 'FAIL'} ${name}`);

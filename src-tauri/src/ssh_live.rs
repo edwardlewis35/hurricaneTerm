@@ -6,6 +6,7 @@
 use crate::re::ssh_auth::{map_auth_state, AuthState};
 use crate::ssh_relay;
 use crate::{AppHandle, Emitter, OutPayload};
+use crate::connection_error::{self, BoxError};
 
 /// 事件汇：生产走 AppHandle，测试可注入收集器——同一代码路径 e2e 可测
 #[derive(Clone)]
@@ -16,8 +17,16 @@ impl Sink {
     }
     pub fn from_app(app: AppHandle) -> Self {
         Sink(std::sync::Arc::new(move |t, id, d| {
-            let _ = app.emit(t, OutPayload { id, data: d });
+            if t == "connection-error" {
+                if let Ok(payload) = serde_json::from_str::<connection_error::ConnectionError>(&d) { let _ = app.emit(t, payload); }
+            } else {
+                let _ = app.emit(t, OutPayload { id, data: d });
+            }
         }))
+    }
+    fn connection_error(&self, id: &str, error: &(dyn std::error::Error + 'static), secrets: &[String]) {
+        let payload = connection_error::ConnectionError::new(id, "ssh", error, secrets);
+        if let Ok(data) = serde_json::to_string(&payload) { self.emit("connection-error", id.into(), data); }
     }
 }
 use russh::keys::PublicKeyOrCertificate;
@@ -169,7 +178,7 @@ impl Handler for WtHandler {
             }
             Some(ok) => {
                 if !ok {
-                    eprintln!("[ssh] 主机密钥不匹配，拒绝连接（known_hosts 可删除该条目重试）");
+                    eprintln!("[ssh] 主机密钥不匹配，拒绝连接；请先核实服务器密钥和 known_hosts 记录");
                 }
                 ok
             }
@@ -216,13 +225,23 @@ pub fn spawn_session(
     let app2 = app.clone();
     let id2 = id.clone();
     let host2 = host.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+    std::thread::Builder::new().name("ssh-session".into()).spawn(move || {
+        let sink = Sink::from_app(app2);
+        let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("tokio rt");
-        if let Err(e) = rt.block_on(run(
-            Sink::from_app(app2),
+        {
+            Ok(rt) => rt,
+            Err(error) => {
+                let error = connection_error::context("runtime", "无法启动 SSH 连接任务", Box::new(error));
+                sink.connection_error(&id, error.as_ref(), &[]);
+                session_alive.store(false, Ordering::Release);
+                let _ = app.emit("pty-exit", OutPayload { id, data: String::new() });
+                return;
+            }
+        };
+        let _ = rt.block_on(run(
+            sink,
             id2,
             host2,
             port,
@@ -237,12 +256,10 @@ pub fn spawn_session(
             stop_rx,
             sftp_rx,
             proxy,
-        )) {
-            eprintln!("[ssh] {e}");
-        }
+        ));
         session_alive.store(false, Ordering::Release);
         let _ = app.emit("pty-exit", OutPayload { id, data: String::new() });
-    });
+    })?;
 
     Ok(SshCtl {
         alive,
@@ -274,11 +291,29 @@ pub async fn run(
     // Cancellation surrounds the whole session, including handshake, auth,
     // PTY requests and channel backpressure. A stop is not restricted to the
     // established shell's select loop.
-    tokio::select! {
+    let mut secrets = connection_error::proxy_secrets(&proxy);
+    if let Some(password) = &password { secrets.push(password.clone()); }
+    let result = tokio::select! {
         biased;
-        _ = stop_rx.recv() => Ok(()),
-        result = run_session(app, id, host, port, user, password, key_path,
+        _ = stop_rx.recv() => return Ok(()),
+        result = run_session(app.clone(), id.clone(), host, port, user, password, key_path,
             rows, cols, config_dir, in_rx, rz_rx, sftp_rx, proxy) => result,
+    };
+    if let Err(error) = &result {
+        // A queued user close takes precedence over a simultaneous IO error.
+        if stop_rx.try_recv().is_ok() { return Ok(()); }
+        app.connection_error(&id, error.as_ref(), &secrets);
+    }
+    result
+}
+
+async fn phase<T, E, F>(deadline: tokio::time::Instant, stage: &'static str, label: impl Into<String>, future: F) -> Result<T, BoxError>
+where E: std::error::Error + Send + Sync + 'static, F: std::future::Future<Output = Result<T, E>> {
+    let label = label.into();
+    match tokio::time::timeout_at(deadline, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(connection_error::context(stage, label, Box::new(error))),
+        Err(_) => Err(connection_error::failure(stage, label, "操作超时")),
     }
 }
 
@@ -311,43 +346,54 @@ async fn run_session(
         },
         log: Vec::new(),
     };
-    let connect = async { Ok::<_, Box<dyn std::error::Error + Send + Sync>>(match proxy {
-        ssh_relay::Proxy::None => client::connect(cfg, (host.as_str(), port), handler).await?,
+    // DNS, TCP/proxy, and SSH handshake share one bounded connection budget.
+    // Wrapping each await separately retains the phase and its original cause.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let proxy = if matches!(proxy, ssh_relay::Proxy::System) { ssh_relay::system_proxy() } else { proxy };
+    let mut session = match proxy {
+        ssh_relay::Proxy::None => {
+            let addresses: Vec<_> = phase(deadline, "dns", format!("SSH DNS 解析失败 {host}:{port}"), tokio::net::lookup_host((host.as_str(), port))).await?.collect();
+            if addresses.is_empty() { return Err(connection_error::failure("dns", "SSH DNS 解析失败", format!("{host} 没有可用地址"))); }
+            let socket = phase(deadline, "tcp", format!("SSH TCP 连接失败 {host}:{port}"), tokio::net::TcpStream::connect(addresses.as_slice())).await?;
+            socket.set_nodelay(true).map_err(|e| connection_error::context("tcp", "SSH socket 配置失败", Box::new(e)))?;
+            phase(deadline, "handshake", format!("SSH 协议握手失败 {host}:{port}"), client::connect_stream(cfg, socket, handler)).await?
+        }
         proxy => {
-            // 架构：libssh 连本地中继 -> 本层 dial_any 统一拨号（SOCKS5/HTTP/ProxyCommand/System）
+            let proxy_name = match &proxy {
+                ssh_relay::Proxy::Socks5(p) => format!("SOCKS5 代理 {}:{}", p.addr, p.port),
+                ssh_relay::Proxy::Http(p) => format!("HTTP CONNECT 代理 {}:{}", p.addr, p.port),
+                ssh_relay::Proxy::ProxyCommand(_) => "ProxyCommand 代理".into(),
+                ssh_relay::Proxy::Jump(_) => "SSH 跳板机".into(),
+                _ => "代理".into(),
+            };
             let h = host.clone();
-            let dialed = tokio::task::spawn_blocking(move || {
-                ssh_relay::dial_any(&proxy, &h, port, std::time::Duration::from_secs(30))
-            })
-            .await
-            .map_err(|e| e.to_string())??;
+            let dial_task = tokio::task::spawn_blocking(move || ssh_relay::dial_any(&proxy, &h, port, std::time::Duration::from_secs(30)));
+            let dialed = phase(deadline, "proxy", format!("{proxy_name}拨号任务失败"), dial_task).await?
+                .map_err(|error| connection_error::context("proxy", format!("{proxy_name}连接目标 {host}:{port} 失败"), Box::new(error)))?;
             match dialed {
                 ssh_relay::Dialed::Tcp(socket) => {
-                    // SOCKS / HTTP CONNECT already return a TCP tunnel. Avoid
-                    // two bridging pumps, buffer copies and spawn_blocking
-                    // round-trips for every subsequent SSH packet.
-                    socket.set_nonblocking(true)?;
-                    socket.set_nodelay(true)?;
-                    let stream = tokio::net::TcpStream::from_std(socket)?;
-                    client::connect_stream(cfg, stream, handler).await?
+                    socket.set_nonblocking(true).map_err(|e| connection_error::context("proxy", "代理 socket 配置失败", Box::new(e)))?;
+                    socket.set_nodelay(true).map_err(|e| connection_error::context("proxy", "代理 socket 配置失败", Box::new(e)))?;
+                    let stream = tokio::net::TcpStream::from_std(socket).map_err(|e| connection_error::context("proxy", "代理 socket 接管失败", Box::new(e)))?;
+                    phase(deadline, "handshake", format!("SSH 经{proxy_name}握手失败 {host}:{port}"), client::connect_stream(cfg, stream, handler)).await?
                 }
                 dialed => {
                     let (rd, wr, cancel) = dialed.split_with_cancel();
-                    let stream = ssh_relay::to_tokio_with_cancel(rd, wr, cancel).await?;
-                    client::connect_stream(cfg, stream, handler).await?
+                    let stream = phase(deadline, "proxy", "代理数据通道初始化失败", ssh_relay::to_tokio_with_cancel(rd, wr, cancel)).await?;
+                    phase(deadline, "handshake", format!("SSH 经{proxy_name}握手失败 {host}:{port}"), client::connect_stream(cfg, stream, handler)).await?
                 }
             }
         }
-    }) };
-    let mut session = tokio::time::timeout(std::time::Duration::from_secs(30), connect)
-        .await.map_err(|_| "SSH 连接或握手超时（30 秒）")??;
+    };
     log(&app, &id, format!("已连接 {host}:{port} (ssh-2)"));
 
     // —— 认证序列：none -> publickey -> password -> keyboard-interactive ——
     let mut authed = false;
     let mut steps: Vec<(&'static str, i32)> = Vec::new();
+    let mut auth_failures = Vec::new();
+    let auth_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 
-    let r = session.authenticate_none(&user).await?;
+    let r = phase(auth_deadline, "authentication", format!("SSH 认证协商失败 {user}@{host}"), session.authenticate_none(&user)).await?;
     let code = auth_code(&r);
     steps.push(("none", code));
     if code == 0 {
@@ -357,34 +403,39 @@ async fn run_session(
     if !authed {
         if let Some(kp) = &key_path {
             let key_path = expand(kp);
-            match tokio::task::spawn_blocking(move || load_secret_key(key_path, None)).await? {
+            let key_label = key_path.display().to_string();
+            match phase(auth_deadline, "authentication", "SSH 私钥读取任务失败", tokio::task::spawn_blocking(move || load_secret_key(key_path, None))).await? {
                 Ok(key) => {
                     let pk = PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha512));
-                    let r = session.authenticate_publickey(&user, pk).await?;
+                    let r = phase(auth_deadline, "authentication", "SSH 公钥认证失败", session.authenticate_publickey(&user, pk)).await?;
                     let code = auth_code(&r);
                     steps.push(("publickey", code));
                     if code == 0 {
                         authed = true;
+                    } else {
+                        auth_failures.push(format!("服务器拒绝公钥认证（{key_label}）"));
                     }
                 }
-                Err(e) => steps.push(("publickey", -1)),
+                Err(e) => {
+                    steps.push(("publickey", -1));
+                    auth_failures.push(format!("无法读取私钥 {key_label}：{e}"));
+                }
             }
         }
     }
 
     if !authed {
         if let Some(pw) = &password {
-            let r = session.authenticate_password(&user, pw).await?;
+            let r = phase(auth_deadline, "authentication", "SSH 用户名/密码认证失败", session.authenticate_password(&user, pw)).await?;
             let code = auth_code(&r);
             steps.push(("password", code));
             if code == 0 {
                 authed = true;
             } else if code == 1 {
+                auth_failures.push("服务器拒绝用户名/密码认证".into());
                 // keyboard-interactive 兜底（op=3）：start -> 逐轮应答
                 use russh::client::KeyboardInteractiveAuthResponse as Kbi;
-                let mut resp = session
-                    .authenticate_keyboard_interactive_start(&user, None)
-                    .await?;
+                let mut resp = phase(auth_deadline, "authentication", "SSH 交互认证协商失败", session.authenticate_keyboard_interactive_start(&user, None)).await?;
                 let mut code2 = 1i32;
                 loop {
                     match resp {
@@ -392,12 +443,15 @@ async fn run_session(
                         Kbi::Failure { partial_success, .. } => { code2 = if partial_success { 2 } else { 1 }; break }
                         Kbi::InfoRequest { prompts, .. } => {
                             let answers = vec![pw.clone(); prompts.len().max(1)];
-                            resp = session.authenticate_keyboard_interactive_respond(answers).await?;
+                            resp = phase(auth_deadline, "authentication", "SSH 交互认证应答失败", session.authenticate_keyboard_interactive_respond(answers)).await?;
                         }
                     }
                 }
                 steps.push(("keyboard-interactive", code2));
                 if code2 == 0 { authed = true; }
+                else { auth_failures.push("服务器拒绝 keyboard-interactive 认证".into()); }
+            } else {
+                auth_failures.push("服务器要求额外认证步骤（partial success）".into());
             }
         }
     }
@@ -411,7 +465,8 @@ async fn run_session(
         );
     }
     if !authed {
-        return Err("所有认证方法均失败".into());
+        if auth_failures.is_empty() { auth_failures.push("服务器未接受免密认证，未提供可用的私钥或密码".into()); }
+        return Err(connection_error::failure("authentication", format!("SSH 认证失败 {user}@{host}"), auth_failures.join("；")));
     }
 
     // —— 自动登录 expect 引擎（re/auto_login.rs，自动登录 默认规则：login:/password:）——
@@ -422,15 +477,18 @@ async fn run_session(
     let mut al_tail = String::new();
 
     // —— shell 通道 ——
-    let chan = session.channel_open_session().await?;
+    let chan = phase(tokio::time::Instant::now() + std::time::Duration::from_secs(10), "channel", "SSH 会话通道打开失败", session.channel_open_session()).await?;
     let ssh_handle = std::sync::Arc::new(session); // channel_open_session 取 &self，Arc 共享
     let (mut reader, chan) = chan.split();
-    chan.request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
-        .await?;
-    chan.request_shell(true).await?;
-    log(&app, &id, "shell 已启动".into());
     let mut stdout_decoder = crate::terminal_io::Utf8Decoder::default();
     let mut stderr_decoder = crate::terminal_io::Utf8Decoder::default();
+    let pty_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    phase(pty_deadline, "pty", "SSH PTY 请求失败", chan.request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])).await?;
+    channel_ack(&mut reader, pty_deadline, "pty", "服务器拒绝分配 SSH PTY", &app, &id, &mut stdout_decoder, &mut stderr_decoder).await?;
+    let shell_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    phase(shell_deadline, "shell", "SSH shell 请求失败", chan.request_shell(true)).await?;
+    channel_ack(&mut reader, shell_deadline, "shell", "服务器拒绝启动 SSH shell", &app, &id, &mut stdout_decoder, &mut stderr_decoder).await?;
+    log(&app, &id, "shell 已启动".into());
     // JoinSet aborts these tasks on drop. Closing a tab cannot leave detached
     // transfers retaining SSH handle clones after the shell has been removed.
     let mut sftp_jobs = tokio::task::JoinSet::new();
@@ -438,7 +496,8 @@ async fn run_session(
     loop {
         tokio::select! {
             Some(b) = in_rx.recv() => {
-                if chan.data_bytes(bytes::Bytes::from(b)).await.is_err() { break; }
+                chan.data_bytes(bytes::Bytes::from(b)).await
+                    .map_err(|e| connection_error::context("io", "SSH 发送数据失败", Box::new(e)))?;
             }
             Some((c, r)) = rz_rx.recv() => {
                 let _ = chan.window_change(c, r, 0, 0).await;
@@ -490,6 +549,28 @@ async fn run_session(
         .disconnect(Disconnect::ByApplication, "bye", "en")
         .await;
     Ok(())
+}
+
+async fn channel_ack(
+    reader: &mut russh::ChannelReadHalf, deadline: tokio::time::Instant, stage: &'static str, label: &'static str,
+    app: &Sink, id: &str, stdout: &mut crate::terminal_io::Utf8Decoder, stderr: &mut crate::terminal_io::Utf8Decoder,
+) -> Result<(), BoxError> {
+    phase(deadline, stage, label, async {
+        loop {
+            match reader.wait().await {
+                Some(ChannelMsg::Success) => return Ok(()),
+                Some(ChannelMsg::Failure) => return Err(io::Error::new(io::ErrorKind::PermissionDenied, "SSH 服务器返回 CHANNEL_FAILURE")),
+                Some(ChannelMsg::Close) | Some(ChannelMsg::Eof) | None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "SSH 服务器在确认请求前关闭通道")),
+                Some(ChannelMsg::Data { data }) => {
+                    let text = stdout.push(&data); if !text.is_empty() { app.emit("pty-output", id.into(), text); }
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    let text = stderr.push(&data); if !text.is_empty() { app.emit("pty-output", id.into(), text); }
+                }
+                _ => {},
+            }
+        }
+    }).await
 }
 
 async fn open_sftp(h: &std::sync::Arc<client::Handle<WtHandler>>)

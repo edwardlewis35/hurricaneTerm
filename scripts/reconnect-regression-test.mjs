@@ -79,7 +79,7 @@ try {
   const connectArgs = calls.filter(([c]) => c === 'connect_ssh').at(-1)[1];
   check('R08 Retry reuses the original host/user/port/key/jump settings and current dimensions', connectArgs.host === ssh.host && connectArgs.user === ssh.user && connectArgs.port === 2222 && connectArgs.keyPath === ssh.identityFile && connectArgs.jumpHost === ssh.jumpHost && connectArgs.rows === tab.term.rows && connectArgs.cols === tab.term.cols);
   resolveConnect('replacement-ssh'); await until(() => !tab._reconnecting); interceptor = null;
-  await until(() => text(tab).includes('已重新连接'));
+  await until(() => text(tab).includes('连接请求已发送'));
   check('R09 Successful reconnect changes only native identity and preserves workspace/tab metadata', tab.id === stable && tab.ptyId === 'replacement-ssh' && tab.term === terminal && tab.wrap === wrap && tab.pinned && tab.title === 'Pinned session' && tab.color === '#ffffff' && TM.displayOrder().length === 1);
   check('R10 New native events map to the existing pane and old events stay rejected', TM.findByPty('replacement-ssh') === tab && TM.findByPty(firstNative) === null && TM.isLive(tab));
   check('R11 Reconnect refreshes SFTP with new native identity without registering new IPC/input listeners', connectionChanges.at(-1)[1] === 'replacement-ssh' && listenCount === initialListeners && tab._inputSubscriptions.length === originalSubscriptions);
@@ -95,7 +95,7 @@ try {
   exit(tab); interceptor = command => command === 'connect_ssh' ? Promise.reject(new Error('fixture private failure')) : null;
   tab.term.input('retry-trigger-not-forwarded', true); await until(() => !tab._reconnecting);
   await until(() => text(tab).includes('重新连接失败'));
-  check('R16 Failed reconnect stays disconnected and offers another key retry without raw private error', tab.exited && tab.ptyId === null && text(tab).includes('按任意键重试') && !text(tab).includes('fixture private failure'));
+  check('R16 Failed reconnect retains concrete cause and offers another key retry', tab.exited && tab.ptyId === null && text(tab).includes('按任意键重试') && text(tab).includes('fixture private failure'));
   interceptor = null; key(tab, 'F1'); await until(() => !tab._reconnecting);
   check('R17 A function key retries successfully after a failed attempt', TM.isLive(tab) && tab.id === stable);
   release(tab, 'F1');

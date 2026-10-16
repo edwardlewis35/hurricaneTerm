@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
-enum Stage { Auth, Pty, Sftp }
+enum Stage { Auth, Pty, Sftp, RejectAuth, RejectPty, RejectShell }
 #[derive(Clone, Copy)]
 enum ProxyKind { Socks, Http }
 type Entered = Arc<Mutex<Option<oneshot::Sender<()>>>>;
@@ -32,6 +32,7 @@ impl russh::server::Handler for TestClient {
             self.notify_entered();
             return std::future::pending().await;
         }
+        if matches!(self.stage, Stage::RejectAuth) { return Ok(Auth::Reject { proceed_with_methods: None, partial_success: false }); }
         Ok(Auth::Accept)
     }
     async fn channel_open_session(&mut self, _: Channel<Msg>, reply: ChannelOpenHandle, _: &mut Session) -> Result<(), Self::Error> {
@@ -43,10 +44,12 @@ impl russh::server::Handler for TestClient {
             self.notify_entered();
             return std::future::pending().await;
         }
+        if matches!(self.stage, Stage::RejectPty) { session.channel_failure(channel)?; return Ok(()); }
         session.channel_success(channel)?;
         Ok(())
     }
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
+        if matches!(self.stage, Stage::RejectShell) { session.channel_failure(channel)?; return Ok(()); }
         session.channel_success(channel)?;
         Ok(())
     }
@@ -189,3 +192,106 @@ async fn close_cancels_spawned_sftp_workers() { closes_at(Stage::Sftp, None).awa
 async fn ssh_through_socks_tcp_fastpath_reaches_auth_and_closes() { closes_at(Stage::Auth, Some(ProxyKind::Socks)).await; }
 #[tokio::test]
 async fn ssh_through_http_tcp_fastpath_reaches_auth_and_closes() { closes_at(Stage::Auth, Some(ProxyKind::Http)).await; }
+
+async fn capture_failure(host: String, port: u16, root: PathBuf, proxy: ssh_relay::Proxy, password: Option<String>, key: Option<String>) -> (String, Vec<crate::connection_error::ConnectionError>) {
+    let (input, input_rx) = mpsc::unbounded_channel(); let (resize, resize_rx) = mpsc::unbounded_channel();
+    let (stop, stop_rx) = mpsc::unbounded_channel(); let (requests, request_rx) = mpsc::unbounded_channel();
+    let events = Arc::new(Mutex::new(Vec::new())); let collect = events.clone();
+    let sink = Sink(Arc::new(move |topic, _, data| { if topic == "connection-error" { collect.lock().unwrap().push(serde_json::from_str(&data).unwrap()); } }));
+    let result = tokio::time::timeout(Duration::from_secs(5), run(sink, "failure-fixture".into(), host, port, "fixture-user".into(), password, key, 24, 80, root, input_rx, resize_rx, stop_rx, request_rx, proxy)).await.expect("failure must be delivered promptly");
+    drop((input, resize, stop, requests));
+    let error = result.expect_err("fixture must reject connection").to_string();
+    let events = events.lock().unwrap().clone();
+    (error, events)
+}
+
+async fn failure_server(stage: Stage, scratch: &Scratch) -> (u16, tokio::task::JoinHandle<()>) {
+    let key = scratch.0.join("fixture-host-key");
+    assert!(std::process::Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-f"]).arg(&key).status().unwrap().success());
+    let config = russh::server::Config { keys: vec![load_secret_key(key, None).unwrap()], auth_rejection_time: Duration::ZERO, ..Default::default() };
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let port = socket.local_addr().unwrap().port();
+    let entered = Arc::new(Mutex::new(None));
+    let task = tokio::spawn(async move { let _ = TestServer { stage, entered }.run_on_socket(Arc::new(config), &socket).await; });
+    (port, task)
+}
+
+#[tokio::test]
+async fn dns_failure_is_reported_once_with_phase_and_cause() {
+    let scratch = Scratch::new();
+    // NUL makes the system resolver fail locally, without an external DNS query.
+    let (_, events) = capture_failure("invalid\0host".into(), 22, scratch.0.clone(), ssh_relay::Proxy::None, None, None).await;
+    assert_eq!(events.len(), 1); assert_eq!(events[0].stage, "dns"); assert!(events[0].error.contains("DNS")); assert!(!events[0].error.contains('\0'));
+}
+
+#[tokio::test]
+async fn refused_tcp_connection_keeps_underlying_os_reason() {
+    let scratch = Scratch::new(); let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let port = socket.local_addr().unwrap().port(); drop(socket);
+    let (_, events) = capture_failure("127.0.0.1".into(), port, scratch.0.clone(), ssh_relay::Proxy::None, None, None).await;
+    assert_eq!(events.len(), 1); assert_eq!(events[0].stage, "tcp"); assert!(events[0].error.contains(&port.to_string())); assert!(events[0].error.contains("os error"));
+}
+
+#[tokio::test]
+async fn authentication_failure_includes_missing_key_detail_without_password() {
+    let scratch = Scratch::new(); let (port, server) = failure_server(Stage::RejectAuth, &scratch).await;
+    let secret = "fixture-password-must-not-leak";
+    let (_, events) = capture_failure("127.0.0.1".into(), port, scratch.0.clone(), ssh_relay::Proxy::None, Some(secret.into()), Some(scratch.0.join("missing-private-key").to_string_lossy().into())).await;
+    server.abort(); assert_eq!(events.len(), 1); assert_eq!(events[0].stage, "authentication"); assert!(events[0].error.contains("私钥")); assert!(events[0].error.contains("missing-private-key")); assert!(!events[0].error.contains(secret));
+}
+
+#[tokio::test]
+async fn changed_host_key_has_a_specific_user_visible_reason() {
+    let scratch = Scratch::new(); let (port, server) = failure_server(Stage::RejectPty, &scratch).await;
+    std::fs::write(scratch.0.join("known_hosts"), "127.0.0.1|different-key\n").unwrap();
+    let (_, events) = capture_failure("127.0.0.1".into(), port, scratch.0.clone(), ssh_relay::Proxy::None, None, None).await;
+    server.abort(); assert_eq!(events.len(), 1); assert_eq!(events[0].stage, "host-key"); assert!(events[0].error.contains("known_hosts"));
+}
+
+#[tokio::test]
+async fn server_pty_and_shell_rejections_are_not_silent_successes() {
+    for (stage, expected) in [(Stage::RejectPty, "pty"), (Stage::RejectShell, "shell")] {
+        let scratch = Scratch::new(); let (port, server) = failure_server(stage, &scratch).await;
+        let (_, events) = capture_failure("127.0.0.1".into(), port, scratch.0.clone(), ssh_relay::Proxy::None, None, None).await;
+        server.abort(); assert_eq!(events.len(), 1); assert_eq!(events[0].stage, expected); assert!(events[0].error.contains("CHANNEL_FAILURE"));
+    }
+}
+
+#[tokio::test]
+async fn proxy_status_is_reported_without_echoing_proxy_credentials() {
+    let scratch = Scratch::new(); let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let port = socket.local_addr().unwrap().port();
+    let password = "proxy-secret-fixture";
+    let server = tokio::spawn(async move {
+        let (mut client, _) = socket.accept().await.unwrap(); let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") { let mut byte = [0]; client.read_exact(&mut byte).await.unwrap(); head.push(byte[0]); }
+        client.write_all(format!("HTTP/1.1 407 {password}\r\n\r\n").as_bytes()).await.unwrap();
+    });
+    let proxy = ssh_relay::Proxy::Http(ssh_relay::HttpProxy { addr: "127.0.0.1".into(), port, user: Some("fixture".into()), password: Some(password.into()), proxy_dns: true });
+    let (_, events) = capture_failure("target.invalid".into(), 22, scratch.0.clone(), proxy, None, None).await;
+    server.await.unwrap(); assert_eq!(events.len(), 1); assert_eq!(events[0].stage, "proxy"); assert!(events[0].error.contains("407")); assert!(events[0].error.contains("HTTP CONNECT")); assert!(!events[0].error.contains(password));
+}
+
+#[tokio::test]
+async fn jump_authentication_error_reaches_the_outer_connection() {
+    let scratch = Scratch::new(); let (port, server) = failure_server(Stage::RejectAuth, &scratch).await;
+    let spec = crate::jump::JumpSpec { host: "127.0.0.1".into(), port, user: "fixture".into(), password: None, key_path: Some(scratch.0.join("missing-jump-key").to_string_lossy().into()) };
+    let proxy = ssh_relay::Proxy::Jump(crate::jump::opener(spec, scratch.0.clone()));
+    let (_, events) = capture_failure("target.invalid".into(), 22, scratch.0.clone(), proxy, None, None).await;
+    server.abort(); assert_eq!(events.len(), 1); assert_eq!(events[0].stage, "proxy"); assert!(events[0].error.contains("jump auth failed")); assert!(events[0].error.contains("私钥读取失败"));
+}
+
+#[tokio::test]
+async fn user_close_does_not_emit_a_connection_failure() {
+    let scratch = Scratch::new(); let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap(); let port = listener.local_addr().unwrap().port();
+    let (_input, input_rx) = mpsc::unbounded_channel(); let (_resize, resize_rx) = mpsc::unbounded_channel(); let (stop, stop_rx) = mpsc::unbounded_channel(); let (_sftp, sftp_rx) = mpsc::unbounded_channel();
+    let events = Arc::new(Mutex::new(Vec::new())); let collect = events.clone();
+    let task = tokio::spawn(run(Sink(Arc::new(move |topic, _, data| collect.lock().unwrap().push((topic.to_string(), data)))), "close-no-error".into(), "127.0.0.1".into(), port, "fixture".into(), None, None, 24, 80, scratch.0.clone(), input_rx, resize_rx, stop_rx, sftp_rx, ssh_relay::Proxy::None));
+    let (_stream, _) = listener.accept().await.unwrap(); stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), task).await.unwrap().unwrap().unwrap();
+    assert!(!events.lock().unwrap().iter().any(|(topic, _)| topic == "connection-error"));
+}
+
+#[tokio::test]
+async fn timeout_retains_the_actual_connection_phase() {
+    let error = phase(tokio::time::Instant::now() + Duration::from_millis(10), "handshake", "SSH banner 握手失败", std::future::pending::<Result<(), io::Error>>()).await.unwrap_err();
+    let payload = crate::connection_error::ConnectionError::new("timeout-fixture", "ssh", error.as_ref(), &[]);
+    assert_eq!(payload.stage, "handshake"); assert!(payload.error.contains("banner")); assert!(payload.error.contains("超时"));
+}

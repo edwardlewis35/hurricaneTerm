@@ -16,6 +16,7 @@ mod tcp_live;
 mod gist_sync;
 mod ai;
 mod agent_exec;
+mod connection_error;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -254,7 +255,7 @@ fn connect_telnet(
     use std::io::Write as _;
     use std::net::TcpStream;
     let stream = TcpStream::connect((host.as_str(), port))
-        .map_err(|e| format!("连接失败 {host}:{port}: {e}"))?;
+        .map_err(|e| connection_error::redact(&format!("Telnet TCP/DNS 连接失败 {host}:{port}：{e}"), &[]))?;
     let mut reader = stream.try_clone().map_err(|e| e.to_string())?;
     let mut resp_writer = stream.try_clone().map_err(|e| e.to_string())?;
     let killer = stream.try_clone().map_err(|e| e.to_string())?;
@@ -361,9 +362,13 @@ fn connect_ssh(
 
     // 跳板机：proxy 为直连且填了 jump_host 时，走 Proxy::Jump（direct-tcpip 二级会话）
     let jh = jump_host.as_deref().unwrap_or("").trim().to_string();
+    let jump_spec = if jh.is_empty() { None } else {
+        Some(jump::parse_spec(&jh, user.as_deref().filter(|u| !u.is_empty()).unwrap_or("root"))
+            .ok_or("SSH 跳板机地址格式错误，请使用 user@host[:port] 或 user@[IPv6]:port，端口范围为 1–65535")?)
+    };
     let proxy_is_none = matches!(proxy, ssh_relay::Proxy::None);
-    let proxy = if !jh.is_empty() && proxy_is_none {
-        match jump::parse_spec(&jh, user.as_deref().unwrap_or("root")) {
+    let proxy = if proxy_is_none {
+        match jump_spec {
             Some(mut spec) => {
                 spec.password = password.clone().filter(|p| !p.is_empty());
                 spec.key_path = key_path.clone().filter(|k| !k.is_empty());
@@ -396,7 +401,7 @@ fn connect_ssh(
         config_dir,
         proxy,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| connection_error::redact(&format!("SSH 连接任务启动失败：{e}"), &[]))?;
 
     let ssh_in = ctl.input;
     let rz = ctl.resize;
@@ -461,7 +466,7 @@ fn connect_serial(
     let id = Uuid::new_v4().to_string();
     let (host_label, ctl) =
         serial_live::spawn_session(app.clone(), id.clone(), target.trim(), &opts)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| connection_error::redact(&format!("串口打开或配置失败 {target}：{e}"), &[]))?;
     let _ = host_label; // 标题用会话名；host=portName 已在 serial_live 内处理
     let stop = ctl.stop;
     state.0.lock().unwrap().insert(
@@ -520,8 +525,10 @@ fn connect_tcp(
         proxy_env: String::new(),
     };
     let id = Uuid::new_v4().to_string();
+    let connection_label = params.target.clone();
+    let secrets = vec![params.proxy_password.clone(), params.proxy_command.clone()];
     let (_label, ctl) = tcp_live::spawn_session(app.clone(), id.clone(), params)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| connection_error::redact(&format!("TCP 连接或代理协商失败 {connection_label}：{e}"), &secrets))?;
     let tcp_live::TcpCtl { writer, stop, killer } = ctl;
     state.0.lock().unwrap().insert(
         id.clone(),
@@ -1162,6 +1169,7 @@ fn ai_cancel(state: State<'_, ai::AiState>, request_id: String) -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PtyState::default())
         .manage(TransferState::default())
         .manage(TriggersState::default())

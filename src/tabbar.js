@@ -63,14 +63,15 @@
   border:1px solid var(--accent); border-radius:var(--r-sm); padding:0 4px; height:19px; font:inherit; }
 
 .ht-actions { display:flex; align-items:center; gap:0; flex:0 0 auto; height:100%; padding:0 4px; }
-.ht-plus, .ht-caret, .ht-split { display:flex; align-items:center; justify-content:center; border-radius:var(--r);
+.ht-plus, .ht-caret { display:flex; align-items:center; justify-content:center; border-radius:var(--r);
   cursor:default; color:var(--fg2); transition:var(--t); }
 .ht-plus { width:30px; height:30px; }
 .ht-caret { width:30px; height:30px; }
-.ht-split { width:30px; height:30px; margin-left:4px; }
 .ht-actions button { padding:0; border:0; background:transparent; color:var(--fg2); }
-.ht-plus svg, .ht-caret svg, .ht-split svg { width:var(--ico-titlebar, 16px); height:var(--ico-titlebar, 16px); }
-.ht-plus:hover, .ht-caret:hover, .ht-split:hover { background:var(--surface-hover); color:var(--fg3); }
+.ht-plus svg, .ht-caret svg { width:var(--ico-titlebar, 16px); height:var(--ico-titlebar, 16px); }
+.ht-plus:hover, .ht-caret:hover { background:var(--surface-hover); color:var(--fg3); }
+.ht-connections { max-width:min(420px, calc(100vw - 8px)); max-height:min(480px, calc(100dvh - 110px)); overflow-y:auto; overscroll-behavior:contain; }
+.ht-menu .mi:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; background:var(--surface-hover); }
 `;
 
   /* ---------- 状态 ---------- */
@@ -154,25 +155,39 @@
     clearTimeout(menuBindTimer); menuBindTimer = null;
     if (!menuEl) return;
     menuEl.remove();
-    if (menuAnchor) menuAnchor.setAttribute('aria-expanded', 'false');
+    if (menuAnchor) { menuAnchor.setAttribute('aria-expanded', 'false'); menuAnchor.classList.remove('on'); }
     menuEl = menuAnchor = null;
     document.removeEventListener('mousedown', onDocDown, true);
     document.removeEventListener('keydown', onDocKey, true);
   }
   function onDocDown(e) { if (menuEl && !menuEl.contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenu(); }
-  function onDocKey(e) { if (e.key === 'Escape') { closeMenu(); e.stopPropagation(); } }
+  function menuItems() { return menuEl ? Array.from(menuEl.children).filter(el => el.classList.contains('mi') && !el.classList.contains('dis')) : []; }
+  function onDocKey(e) {
+    if (e.key === 'Escape') { const anchor = menuAnchor; closeMenu(); anchor?.focus(); e.preventDefault(); e.stopPropagation(); }
+    else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+      const items = menuItems(); if (!items.length) return;
+      const index = items.indexOf(document.activeElement);
+      const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+        : index < 0 ? (e.key === 'ArrowDown' ? 0 : items.length - 1)
+        : (index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items[next].focus(); e.preventDefault(); e.stopPropagation();
+    } else if (['Enter', ' '].includes(e.key) && menuItems().includes(document.activeElement)) {
+      e.preventDefault(); e.stopPropagation(); document.activeElement.click();
+    }
+  }
 
   function openMenu(x, y, build, anchor = null) {
     closeMenu();
     const m = document.createElement('div');
     m.className = 'ht-menu';
+    m.setAttribute('role', 'menu');
     document.body.appendChild(m);
     build(m);
     const r = m.getBoundingClientRect();
     m.style.left = Math.max(2, Math.min(x, window.innerWidth - r.width - 4)) + 'px';
     m.style.top = Math.max(2, Math.min(y, window.innerHeight - r.height - 4)) + 'px';
     menuEl = m; menuAnchor = anchor;
-    if (menuAnchor) menuAnchor.setAttribute('aria-expanded', 'true');
+    if (menuAnchor) { menuAnchor.setAttribute('aria-expanded', 'true'); menuAnchor.classList.add('on'); }
     menuBindTimer = setTimeout(() => {
       menuBindTimer = null;
       if (menuEl !== m) return;
@@ -186,6 +201,8 @@
   function mi(menu, opt) {
     const d = document.createElement('div');
     d.className = 'mi' + (opt.danger ? ' danger' : '') + (opt.submenu ? ' sub' : '') + (opt.disabled ? ' dis' : '');
+    d.setAttribute('role', 'menuitem'); d.tabIndex = -1;
+    if (opt.disabled) d.setAttribute('aria-disabled', 'true');
     const chk = document.createElement('span'); chk.className = 'chk';
     chk.textContent = opt.checked ? '✓' : '';
     d.appendChild(chk);
@@ -398,26 +415,48 @@
 
   /* ---------- 「＋」区（新建 + 下拉：最近机器 / 添加机器 / 打开主页） ---------- */
   function buildPlusMenu(m) {
+    m.classList.add('ht-connections');
+    // A saved profile appears once. Keep separate profiles for the same host
+    // (different users/options) distinct, and do not mutate their stored order.
+    const seen = new Set(), seenIds = new Set();
+    const sessions = (Array.isArray(T.s?.sessions) ? T.s.sessions : []).filter(session => {
+      if (!session || typeof session !== 'object' || seen.has(session)) return false;
+      const id = typeof session.id === 'string' || typeof session.id === 'number' ? String(session.id) : '';
+      if (id && seenIds.has(id)) return false;
+      seen.add(session); if (id) seenIds.add(id); return true;
+    });
+    const list = sessions.filter(s => Number.isFinite(Number(s.lastUsed)) && Number(s.lastUsed) > 0)
+      .sort((a, b) => Number(b.lastUsed) - Number(a.lastUsed)).slice(0, 10);
+    const recent = new Set(list), saved = sessions.filter(session => !recent.has(session));
+    const connections = (items, group) => {
+      for (const session of items) {
+        const label = session.name || session.host || session.target || '未命名机器';
+        const item = mi(m, { svg: protoIcon(session), label, onClick: () => callExisting('create', session) });
+        item.dataset.connectionGroup = group; item.title = label;
+      }
+    };
     mhead(m, '最近使用的机器');
-    const list = ((T.s && T.s.sessions) || [])
-      .filter((s) => s && s.lastUsed)
-      .sort((a, b) => ((b.lastUsed || 0) > (a.lastUsed || 0)) ? 1 : -1)
-      .slice(0, 10);
     if (!list.length) {
       mi(m, { label: '（暂无最近机器）', disabled: true });
-    } else {
-      for (const s of list) {
-        mi(m, {
-          svg: protoIcon(s),
-          label: s.name || s.host || s.target || '未命名机器',
-          onClick: () => callExisting('create', s),
-        });
-      }
-    }
+    } else connections(list, 'recent');
+    msep(m); mhead(m, '已保存的机器');
+    if (saved.length) connections(saved, 'saved');
+    else mi(m, { label: list.length ? '（暂无其他已保存机器）' : '（暂无已保存机器）', disabled: true });
     msep(m);
     mi(m, { label: '新建本地会话', svg: 'terminal', key: 'Ctrl+T', onClick: () => call('newLocal') });
     mi(m, { label: '添加机器…', svg: 'server', key: 'Ctrl+M', onClick: () => callProfiles('openManager') });
     mi(m, { label: '打开主页', svg: 'home', onClick: () => call('openHome') });
+  }
+
+  function toggleSplitMenu(anchor) {
+    if (!anchor) return;
+    if (menuEl && menuAnchor === anchor) { closeMenu(); return; }
+    const r = anchor.getBoundingClientRect();
+    openMenu(r.left, r.bottom + 2, m => {
+      mi(m, { label: '向右分屏', svg: 'splitH', key: 'Ctrl+Shift+E', onClick: () => call('splitActive', 'right') });
+      mi(m, { label: '向下分屏', svg: 'splitV', key: 'Ctrl+Shift+D', onClick: () => call('splitActive', 'down') });
+      mi(m, { label: '恢复独立标签', onClick: () => call('unsplit') });
+    }, anchor);
   }
 
   /* ---------- 渲染 ---------- */
@@ -526,7 +565,7 @@
     plus.setAttribute('aria-label', '新建标签页');
     plus.addEventListener('click', (e) => { e.stopPropagation(); call('newLocal'); });
     const caret = document.createElement('button'); caret.type = 'button';
-    caret.className = 'ht-caret'; caret.innerHTML = svg('caret'); caret.title = '最近机器 / 添加机器';
+    caret.className = 'ht-caret'; caret.innerHTML = svg('caret'); caret.title = '最近使用 / 已保存的机器';
     caret.setAttribute('aria-label', '选择连接'); caret.setAttribute('aria-haspopup', 'menu'); caret.setAttribute('aria-expanded', 'false');
     caret.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -534,20 +573,13 @@
       const r = caret.getBoundingClientRect();
       openMenu(r.left, r.bottom + 2, buildPlusMenu, caret);
     });
-    const split = document.createElement('button'); split.type = 'button';
-    split.className = 'ht-split'; split.innerHTML = svg('splitH'); split.title = '分屏';
-    split.setAttribute('aria-label', '分屏'); split.setAttribute('aria-haspopup', 'menu'); split.setAttribute('aria-expanded', 'false');
-    split.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (menuEl && menuAnchor === split) { closeMenu(); return; }
-      const r = split.getBoundingClientRect();
-      openMenu(r.left, r.bottom + 2, (m) => {
-        mi(m, { label: '向右分屏', svg: 'splitH', key: 'Ctrl+Shift+E', onClick: () => call('splitActive', 'right') });
-        mi(m, { label: '向下分屏', svg: 'splitV', key: 'Ctrl+Shift+D', onClick: () => call('splitActive', 'down') });
-        mi(m, { label: '恢复独立标签', onClick: () => call('unsplit') });
-      }, split);
+    caret.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowDown') return;
+      e.preventDefault(); e.stopPropagation();
+      if (!(menuEl && menuAnchor === caret)) { const r = caret.getBoundingClientRect(); openMenu(r.left, r.bottom + 2, buildPlusMenu, caret); }
+      menuItems()[0]?.focus();
     });
-    actions.append(plus, caret, split);
+    actions.append(plus, caret);
 
     root.append(tabsEl, actions);
     el.appendChild(root);
@@ -567,6 +599,7 @@
     dispose,
     revealActive,
     closeMenu,
+    toggleSplitMenu,
     menuOpen: () => !!menuEl,
     // 对外暴露的浮层菜单：build(m, mi, msep, mhead)，供侧栏/状态栏复用同一套样式与交互
     openMenu: (x, y, build) => openMenu(x, y, (m) => build(m, mi, msep, mhead)),

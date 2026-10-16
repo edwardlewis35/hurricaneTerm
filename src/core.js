@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.8.0';
+  const VERSION = '0.8.1';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -17,6 +17,37 @@ window.WT = (function () {
     VERSION,
     invoke: (c, a) => core.invoke(c, a),
     listen: (e, cb) => ev.listen(e, cb),
+
+    copyText(text, options = {}) {
+      const value = String(text ?? '');
+      const write = async () => {
+        if (options.shouldWrite && !options.shouldWrite()) return false;
+        const native = window.__TAURI__?.clipboardManager;
+        if (native?.writeText) { await native.writeText(value); return true; }
+        if (window.__TAURI_INTERNALS__) { await WT.invoke('plugin:clipboard-manager|write_text', { text: value }); return true; }
+        try {
+          if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+          await navigator.clipboard.writeText(value); return true;
+        } catch (_) {
+          // Browser previews can lack the asynchronous API. Keep the fallback
+          // within this document and restore focus and DOM selection afterwards.
+          const previous = document.activeElement, selection = window.getSelection();
+          const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+          const field = document.createElement('textarea'); field.value = value; field.readOnly = true;
+          field.style.cssText = 'position:fixed;left:-10000px;top:0;opacity:0';
+          document.body.append(field);
+          try { field.focus(); field.select(); if (!document.execCommand?.('copy')) throw new Error('无法写入系统剪贴板'); }
+          finally {
+            field.remove();
+            try { previous?.focus({ preventScroll: true }); selection?.removeAllRanges(); for (const range of ranges) selection?.addRange(range); } catch (_) {}
+          }
+          return true;
+        }
+      };
+      const operation = (WT._clipboardQueue || Promise.resolve()).then(write);
+      WT._clipboardQueue = operation.catch(() => {});
+      return operation;
+    },
 
     s: {
       theme: 'dige-black',
@@ -221,6 +252,20 @@ window.WT = (function () {
     });
     await WT.listen('sftp-transfer-progress', (e) => {
       if (window.SftpPanel) SftpPanel.progress(e.payload.data);
+    });
+    await WT.listen('connection-error', (e) => {
+      const payload = e.payload || {};
+      if (typeof payload.id !== 'string') return;
+      let details = payload;
+      if (!payload.error && typeof payload.data === 'string') {
+        try { const parsed = JSON.parse(payload.data); details = parsed && typeof parsed === 'object' ? parsed : { error: payload.data }; }
+        catch (_) { details = { error: payload.data }; }
+      }
+      details = { error: String(details.error || details.message || '连接异常，未返回具体原因').slice(0, 16384),
+        stage: String(details.stage || '').slice(0, 64), protocol: String(details.protocol || '').slice(0, 16) };
+      const tab = WT.term.findByPty(payload.id);
+      if (!tab) { WT.term.queuePendingEvent('error', payload.id, details); return; }
+      WT.term.handleConnectionError(tab, payload.id, details);
     });
     await WT.listen('pty-exit', (e) => {
       const tab = WT.term.findByPty(e.payload.id);

@@ -223,6 +223,7 @@
       const entry = events.get(id) || { parts: [], length: 0, exited: false, omitted: false };
       events.set(id, entry);
       if (type === 'exit') { entry.exited = true; return; }
+      if (type === 'error') { entry.error ||= data; return; }
       if (!entry.exited && data) {
         let length = Math.min(String(data).length, 65536 - entry.length);
         if (length < String(data).length && /[\uD800-\uDBFF]/.test(String(data).charAt(length - 1))) length--;
@@ -239,7 +240,34 @@
         if (tab.logging) tab.logBuf = (tab.logBuf || '') + data;
       }
       if (entry.omitted) this.receiveOutput(tab, '\r\n\x1b[2m[连接建立前的初始输出过多，部分内容已省略]\x1b[0m\r\n');
+      if (entry.error) this.handleConnectionError(tab, nativeId, entry.error);
       if (entry.exited) this.handleExit(tab, nativeId);
+    },
+    connectionErrorText(session, error) {
+      let text = typeof error === 'string' ? error : String(error?.error || error?.message || error || '未返回具体原因');
+      const seen = new Set(); let cause = error?.cause;
+      while (cause && !seen.has(cause) && seen.size < 4) { seen.add(cause); text += '\n原因：' + String(cause.message || cause); cause = cause.cause; }
+      text = text.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, '').replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|[^\[\]])/g, '')
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
+      for (const key of ['password', 'proxyPassword', 'passphrase', 'keyPassphrase', 'privateKey', 'token']) {
+        const secret = session?.[key]; if (typeof secret === 'string' && secret) text = text.split(secret).join('[已隐藏]');
+      }
+      text = text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, '[私钥已隐藏]')
+        .replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/@:]+:[^\s/@]*@/gi, '$1[凭据已隐藏]@')
+        .replace(/\b(Authorization\s*[:=]\s*)(?:Basic|Bearer)\s+\S+/gi, '$1[已隐藏]')
+        .replace(/\b(password|passwd|token|api[_-]?key|secret)\s*[:=]\s*("[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi, '$1=[已隐藏]');
+      if (text.length > 8192) { let end = 8192; if (/[\uD800-\uDBFF]/.test(text[end - 1])) end--; text = text.slice(0, end) + '\n[错误详情过长，已截断]'; }
+      return text.trim() || '未返回具体原因';
+    },
+    handleConnectionError(tab, nativeId, details) {
+      if (!tab || tab._closing || tab.exited || this.tabs[tab.id] !== tab || this.ptyId(tab) !== nativeId) return false;
+      const message = this.connectionErrorText(tab.session, details);
+      tab.connectionError = { nativeId, message, stage: details?.stage || '' };
+      this.receiveOutput(tab, '\r\n[连接失败]\r\n' + message.replace(/\r?\n/g, '\r\n') + '\r\n', { triggers: false });
+      UI.log('连接失败 · ' + tab.title + '：' + message);
+      this.handleExit(tab, nativeId);
+      UI.showConnectionError?.(tab.session, message, { tab, stage: details?.stage });
+      return true;
     },
     handleExit(tab, nativeId) {
       if (!tab || tab._closing || tab.exited || this.tabs[tab.id] !== tab || this.ptyId(tab) !== nativeId) return false;
@@ -279,7 +307,8 @@
           tab.ptyId = nativeId; tab.exited = false; tab._reconnecting = false;
           tab._connectionGeneration = (tab._connectionGeneration || 0) + 1;
           tab.cwd = null;
-          this.receiveOutput(tab, '\x1b[2m[已重新连接]\x1b[0m\r\n');
+          tab.connectionError = null;
+          this.receiveOutput(tab, '\x1b[2m[连接请求已发送]\x1b[0m\r\n');
           this.consumePendingEvents(tab, nativeId);
           if (!this.isLive(tab)) return null;
           if (tab.session) { tab.session.lastUsed = Date.now(); T.persistSessions(); }
@@ -288,11 +317,14 @@
           this.renderPaneControls(); this.renderTabbar(); UI.status();
           if (this.active === tab.id) tab.term.focus();
           return tab;
-        } catch (_) {
+        } catch (error) {
           if (!tab._closing && this.tabs[tab.id] === tab && tab._reconnectAttempt === attempt) {
             tab.exited = true; tab.ptyId = null;
-            // Raw network errors can include private endpoint or auth details.
-            this.receiveOutput(tab, '\r\n\x1b[2m[重新连接失败，请检查连接配置或网络，按任意键重试]\x1b[0m\r\n');
+            const message = this.connectionErrorText(tab.session, error);
+            tab.connectionError = { message };
+            this.receiveOutput(tab, '\r\n[重新连接失败]\r\n' + message.replace(/\r?\n/g, '\r\n') + '\r\n[按任意键重试]\r\n', { triggers: false });
+            UI.log('重新连接失败 · ' + tab.title + '：' + message);
+            UI.showConnectionError?.(tab.session, message, { tab });
             window.SftpPanel?.onConnectionChange?.(tab);
             this.renderTabbar(); UI.status();
           }
@@ -327,6 +359,9 @@
           user: session.user || null, password: session.password || null,
           keyPath: session.identityFile || null,
           jumpHost: session.jumpHost || null,
+          proxyType: session.proxyType || null, proxyHost: session.proxyHost || null,
+          proxyPort: session.proxyPort || null, proxyUser: session.proxyUser || null,
+          proxyPassword: session.proxyPassword || null, proxyCommand: session.proxyCommand || null,
         });
       } else if (proto === 'telnet' && session.host) {
         return T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
@@ -393,7 +428,9 @@
       } catch (e) {
         this.endConnection();
         term.dispose(); wrap.remove();
-        UI.log('连接失败: ' + (e && e.message ? e.message : String(e)));
+        const message = this.connectionErrorText(session, e);
+        UI.log('连接失败：' + message);
+        UI.showConnectionError?.(session, message);
         return null;
       }
 
@@ -474,13 +511,27 @@
       }));
       wrap.addEventListener('mousedown', () => this.activate(id));
 
-      // 选中自动复制（设置页可关）
+      // Coalesce drag updates; preserve ordering with explicit copy operations.
+      let selectionTimer = null, selectionVersion = 0, copyFailureShown = false;
+      const clearSelectionCopy = () => { clearTimeout(selectionTimer); selectionTimer = null; selectionVersion++; };
+      const copySelection = () => {
+        clearTimeout(selectionTimer); selectionTimer = null;
+        const value = term.getSelection(), version = selectionVersion;
+        const valid = () => !tab._closing && this.tabs[tab.id] === tab && T.s.copyOnSelect !== false && selectionVersion === version && term.getSelection() === value;
+        if (!value || !valid()) return;
+        const copying = T.copyText ? T.copyText(value, { shouldWrite: valid }) : navigator.clipboard?.writeText(value);
+        Promise.resolve(copying).then(done => { if (done !== false) copyFailureShown = false; }).catch(() => {
+          if (valid() && !copyFailureShown) { copyFailureShown = true; UI.toast?.('自动复制失败，可用 Ctrl+Shift+C 重试', 3500, 'err'); }
+        });
+      };
       subscribe(term.onSelectionChange(() => {
-        if (T.s.copyOnSelect === false) return;
-        const sel = term.getSelection();
-        if (!sel) return;
-        try { navigator.clipboard && navigator.clipboard.writeText(sel).catch(() => {}); } catch (e) {}
+        clearSelectionCopy();
+        if (T.s.copyOnSelect === false || !term.getSelection() || tab._closing) return;
+        selectionTimer = setTimeout(copySelection, 60);
       }));
+      const finishSelectionCopy = () => { if (selectionTimer !== null) copySelection(); };
+      document.addEventListener('mouseup', finishSelectionCopy, true);
+      subscribe({ dispose() { clearSelectionCopy(); document.removeEventListener('mouseup', finishSelectionCopy, true); } });
 
       // PuTTY 习惯：中键粘贴；右键粘贴（可关，关闭时右键留给上下文菜单）
       const pasteHere = async () => {

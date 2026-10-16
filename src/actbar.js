@@ -121,6 +121,15 @@
       }
 
       // 查询、命令与外观入口集中在同一条工具栏，设置仍位于右上角。
+      const split = mkBtn(extras, { icon: 'splitH', label: '分屏', cls: 'ab-split ht-split',
+        onClick: button => window.TabBar?.toggleSplitMenu(button) });
+      split.setAttribute('aria-haspopup', 'menu'); split.setAttribute('aria-expanded', 'false');
+      split.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowDown') return;
+        event.preventDefault(); event.stopPropagation();
+        if (split.getAttribute('aria-expanded') !== 'true') window.TabBar?.toggleSplitMenu(split);
+        document.querySelector('.ht-menu > .mi:not(.dis)')?.focus();
+      });
       const ai = mkBtn(extras, { icon: 'sparkles', label: 'AI 助手',
         onClick: () => window.AiPanel?.toggle() });
       ai.dataset.aiToggle = ''; ai.setAttribute('aria-controls', 'ai-panel'); ai.setAttribute('aria-expanded', 'false');

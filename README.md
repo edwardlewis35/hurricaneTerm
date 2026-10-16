@@ -11,7 +11,7 @@
 界面为 Tabby 风格的无边框窗口、顶部扁平标签栏、新建连接页与全页设置，
 配色令牌取自 [Tabby](https://github.com/eugeny/tabby) 上游 `theme.vars.scss` / `colorSchemes.ts`。
 
-标签末尾的 `+` 新建本地终端，旁边可选择连接或分屏；设置入口位于右上角。
+标签末尾的 `+` 新建本地终端，旁边的连接菜单按最近使用和其他已保存机器分组，未使用过的保存连接也可直接打开；分屏入口位于标签下方第二行功能栏，设置入口位于右上角。
 标签统一最大 180 px，数量增加时等宽压缩到 110 px，再沿单行滚动；滚轮、触控板和键盘可选择标签，新建按钮始终可见。工具浮窗支持 Esc、外点和关闭按钮；新建或切换会话会收起浮窗。
 
 应用图标为原创晚霞红 Huricano 拟人云朵飓风，macOS 图标主体宽度约占画布 84%，比本机 ChatGPT 图标参考略大；高分辨率 ICNS、Windows ICO、主页与 favicon 使用同一素材。生成提示与源图在 `assets/`。
@@ -20,6 +20,8 @@
 工具栏位于标签下方第二行并靠右排列，六个工具窗格以浮窗打开。状态栏默认关闭，可在外观设置中开启。
 机器管理使用全页的连接列表与编辑表单。六套主题统一驱动输入框、下拉菜单、浮层与滚动条。
 同一工具按钮和最近机器箭头再次点击可关闭窗口。每个标签可独立保存左右或上下两个分屏、比例和聚焦位置；分屏关闭按钮只关闭该终端，顶部标签关闭整个工作区。新安装默认 dige-black，保留已有主题选择；输入光标默认闪烁，关键词高亮只改变字体颜色。
+连接失败会显示包含目标、阶段和底层原因的持续详情窗口，支持复制、关闭和在原窗格重试；DNS、连接拒绝、认证、私钥、主机密钥、代理/跳板、PTY与Shell拒绝分别保留原因。密码、令牌和私钥内容过滤后再显示。成功连接不再弹出打开SFTP的提示。
+选中终端文字会自动写入系统剪贴板；桌面使用官方原生剪贴板插件，只授权写入文本。拖动选择合并更新，松开鼠标立即复制，清空选择/关闭终端不会把旧选区写回；可在设置中关闭此行为。
 SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键重新连接”。按键使用原连接配置重新连接，保留标签、分屏及已有输出；触发按键不会发送到远端。连接失败可以再次按键重试，关闭快捷键仍正常工作。SFTP 随新连接更新，旧传输不会自动重放，需要显式重试。
 
 设置中的 [GitHub Gist 同步](docs/GIST_SYNC.md) 提供 Gist ID、访问 Token 和加密密钥，支持 Tabby Cloud Sync Settings 的文件名、V1 读取和 V2 加密格式。同步机器连接前展示差异并确认，保留云端其他设置；默认排除本机密码和私钥内容。
@@ -81,6 +83,8 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 前端验证：`npm run test:sftp` 和 `npm run test:ui`。后端安全测试：`cargo test sftp_safety_tests`、`cargo test files::tests`（需要构建依赖）。
 控件与终端回归：`npm run test:controls`、`npm run test:terminal`。独立透明度、工具浮窗与标签、macOS 窗口按钮、图标格式回归：`npm run test:appearance`、`npm run test:layout`、`npm run test:mac-controls`、`npm run test:icons`。快速连接与连续标题栏：`npm run test:quick-connect`、`npm run test:header`。发布 CI 额外在 macOS 运行真实 PTY 的空闲 / 连续输出 / 忽略 HUP 关闭测试，以及跨字节读取的 UTF-8 测试。
+
+连接菜单与报错/复制回归：`npm run test:connections`、`npm run test:connection-feedback`；原生错误与SSH失败场景：`cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests`、`cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests`。
 
 AI 前端回归：`npm run test:ai`、`npm run test:ai-agent`、`npm run test:ai-ops`；原生命令测试：`cargo test --manifest-path src-tauri/Cargo.toml agent_exec::tests`；原生传输测试：`cargo test --manifest-path src-tauri/Cargo.toml ai::tests`。后者使用真实本地 HTTP mock，不访问用户模型账号。
 

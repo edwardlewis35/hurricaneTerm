@@ -43,6 +43,45 @@
       setTimeout(() => { el.remove(); }, ms || 2400);
     },
 
+    showConnectionError(session, error, options = {}) {
+      this._connectionErrorDialog?.close(false);
+      const previous = document.activeElement;
+      const message = T.term.connectionErrorText(session, error);
+      const protocol = String(session?.protocol || 'local').toLowerCase();
+      const destination = session?.host || session?.target || '本地终端';
+      const port = session?.port || ({ ssh: 22, telnet: 23 })[protocol];
+      const host = String(destination).includes(':') && !String(destination).startsWith('[') ? '[' + destination + ']' : destination;
+      const target = (session?.user ? session.user + '@' : '') + host + (port ? ':' + port : '');
+      const stages = { dns: '解析地址', tcp: '建立 TCP 连接', proxy: '代理 / 跳板连接', handshake: 'SSH 握手', authentication: '身份认证', 'host-key': '校验主机密钥', channel: '建立会话通道', pty: '分配终端', shell: '启动 Shell', io: '连接读写' };
+      const stage = stages[options.stage] || '';
+      const details = ['连接：' + (session?.name || destination), '协议：' + protocol.toUpperCase(), '目标：' + target, stage ? '阶段：' + stage : '', '', message].filter((v, i) => v || i === 4).join('\n');
+      const overlay = document.createElement('div'); overlay.className = 'connection-error-overlay'; overlay.dataset.connectionError = '';
+      const box = document.createElement('section'); box.className = 'connection-error-box'; box.setAttribute('role', 'alertdialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-label', '连接失败');
+      const title = document.createElement('h3'); title.textContent = '连接失败';
+      const subtitle = document.createElement('p'); subtitle.textContent = '检查下面的原因后，可修改连接配置或重新连接。';
+      const pre = document.createElement('pre'); pre.dataset.connectionErrorDetails = ''; pre.textContent = details; pre.tabIndex = 0;
+      const feedback = document.createElement('p'); feedback.className = 'connection-error-feedback'; feedback.setAttribute('role', 'status');
+      const actions = document.createElement('div'); actions.className = 'connection-error-actions';
+      const makeButton = label => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; actions.append(b); return b; };
+      const copy = makeButton('复制错误详情'), retry = makeButton('重试连接'), close = makeButton('关闭'); retry.className = 'primary';
+      const controller = { close: (restore = true) => { overlay.remove(); if (this._connectionErrorDialog === controller) this._connectionErrorDialog = null; if (restore && previous?.isConnected) previous.focus({ preventScroll: true }); } };
+      copy.onclick = async () => {
+        try { await T.copyText(details); if (overlay.isConnected) feedback.textContent = '错误详情已复制'; }
+        catch (_) { if (overlay.isConnected) feedback.textContent = '复制失败，可选中上方详情后手动复制'; }
+      };
+      retry.onclick = () => { controller.close(false); const tab = options.tab; if (tab && T.term.tabs[tab.id] === tab && tab.exited) T.term.reconnect(tab); else T.term.create(session || null); };
+      close.onclick = () => controller.close();
+      overlay.addEventListener('pointerdown', e => { if (e.target === overlay) controller.close(); });
+      overlay.addEventListener('keydown', e => {
+        e.stopPropagation();
+        if (e.key === 'Escape') { e.preventDefault(); controller.close(); }
+        if (e.key === 'Tab') { const items = [pre, copy, retry, close], index = items.indexOf(document.activeElement); e.preventDefault(); items[(index + (e.shiftKey ? -1 : 1) + items.length) % items.length].focus(); }
+      });
+      box.append(title, subtitle, pre, feedback, actions); overlay.append(box); document.body.append(overlay);
+      this._connectionErrorDialog = controller; close.focus({ preventScroll: true });
+      return controller;
+    },
+
     beep() {
       try {
         const ctx = this._ac || (this._ac = new (window.AudioContext || window.webkitAudioContext)());
@@ -309,7 +348,7 @@
       if (!tab || !tab.session || tab.session.protocol !== 'ssh') return;
       T.s.remotePath = '.';
       T.s.filerMode = 'both';
-      this.toast('已连接 ' + (tab.session.host || '') + '，点击文件图标打开 SFTP');
+
     },
 
     /* ---------- 窗格：文件浏览器（SFTP 双栏） ---------- */
@@ -457,7 +496,7 @@
       if (!t) return;
       const sel = t.term.getSelection();
       if (!sel) { this.toast('无选中文本', 1600, 'err'); return; }
-      try { await navigator.clipboard.writeText(sel); this.toast('已复制 ' + sel.length + ' 字符', 1600, 'ok'); }
+      try { await T.copyText(sel); this.toast('已复制 ' + sel.length + ' 字符', 1600, 'ok'); }
       catch (e) { this.toast('复制失败：' + e, 3000, 'err'); }
     },
     async paste() {

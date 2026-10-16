@@ -45,11 +45,11 @@ w.Element.prototype.getBoundingClientRect = function () {
   let left = 0, width = 0;
   if (this.id === 'titlebar') width = viewport;
   else if (this.id === 'tabbar') width = parseFloat(this.style.width) || 0;
-  else if (this.classList.contains('ht-actions')) width = 98;
+  else if (this.classList.contains('ht-actions')) width = 68;
   else if (this.id === 'tb-actions') width = 46;
   else if (this.classList.contains('tb-drag-fill')) width = 200; // flex whitespace must not reduce the width calculation
   else if (this.classList.contains('tb-drag')) width = 8;
-  else if (this.classList.contains('ht-tabs')) width = Math.max(0, (parseFloat(d.querySelector('#tabbar').style.width) || 0) - 98);
+  else if (this.classList.contains('ht-tabs')) width = Math.max(0, (parseFloat(d.querySelector('#tabbar').style.width) || 0) - 68);
   else if (this.classList.contains('ht-tab')) {
     width = parseFloat(d.querySelector('.ht-tabbar').style.getPropertyValue('--ht-tab-width')) || 180;
     left = Array.from(this.parentElement.children).indexOf(this) * width - this.parentElement.scrollLeft;
@@ -80,7 +80,7 @@ try {
   check('L1 toolbar is the second body row, outside the floating dialog', d.querySelector('#actbar').parentElement === d.body && d.querySelector('#actbar').previousElementSibling.id === 'titlebar');
   check('L2 saved legacy sidebar state does not open a fixed panel at startup', d.querySelector('#dock').hidden && d.querySelector('#dock-backdrop').hidden && !w.WT.s.dockVisible);
   check('L3 old sidebar resizer is removed', !d.querySelector('#dock-resizer'));
-  check('L4 settings remains in the top right, tools and AI are in the second row', d.querySelectorAll('#tb-actions button').length === 1 && d.querySelector('#tb-actions .tb-settings') && d.querySelectorAll('#actbar button').length === 12 && d.querySelector('#actbar [data-ai-toggle]').getAttribute('aria-controls') === 'ai-panel');
+  check('L4 settings remains in the top right, tools, split and AI are in the second row', d.querySelectorAll('#tb-actions button').length === 1 && d.querySelector('#tb-actions .tb-settings') && d.querySelectorAll('#actbar button').length === 13 && d.querySelector('#actbar .ht-split') && d.querySelector('#actbar [data-ai-toggle]').getAttribute('aria-controls') === 'ai-panel');
   const paneButton = d.querySelector('[data-pane="sender"]'); paneButton.focus(); paneButton.click();
   check('L5 tool click opens an accessible floating dialog and backdrop', !d.querySelector('#dock').hidden && !d.querySelector('#dock-backdrop').hidden && d.querySelector('#dock').getAttribute('aria-modal') === 'true');
   check('L6 selected tool is expanded and window title describes it', paneButton.getAttribute('aria-expanded') === 'true' && d.querySelector('#dock-title').textContent === '发送');
@@ -109,7 +109,7 @@ try {
   check('L21 pinned tabs retain a title and the same width', row.firstElementChild.dataset.id === 'tab-1' && !!row.firstElementChild.querySelector('.ht-title') && !!row.firstElementChild.querySelector('.ht-pin'));
   populate(6); check('L22 tabs uniformly compress between 110 and 180 pixels', width() >= 110 && width() < 180);
   populate(18); check('L23 many tabs keep a readable 110px minimum and overflow one row', width() === 110 && row.scrollWidth > row.clientWidth);
-  check('L24 add, connection and split actions remain outside the scrolling row', !row.contains(d.querySelector('.ht-plus')) && d.querySelectorAll('.ht-actions button').length === 3);
+  check('L24 add and connection remain beside tabs while split moves to the second row', !row.contains(d.querySelector('.ht-plus')) && d.querySelectorAll('.ht-actions button').length === 2 && d.querySelector('#actbar .ht-split') && !d.querySelector('#tabbar .ht-split'));
   const wheel = new w.WheelEvent('wheel', { deltaY: 200, bubbles: true, cancelable: true }); row.dispatchEvent(wheel);
   check('L25 vertical wheel scrolls tabs horizontally', wheel.defaultPrevented && row.scrollLeft === 200);
   row.dispatchEvent(new w.WheelEvent('wheel', { deltaX: 70, deltaY: 4, bubbles: true, cancelable: true }));
@@ -144,7 +144,7 @@ try {
   check('L37 moving the tabbar disconnects the old ResizeObserver and removes stale DOM', observers[observerCount - 1].disconnected && d.querySelectorAll('.ht-tabbar').length === 1);
   w.TabBar.dispose(); check('L38 explicit disposal releases its observer and DOM', observers.at(-1).disconnected && !d.querySelector('.ht-tabbar'));
   const before = listeners.length; w.UI.buildDock(); w.ActBar.mount(d.querySelector('#actbar'));
-  check('L39 toolbar and dock build do not duplicate long-lived listeners', before === listeners.length && d.querySelectorAll('#actbar button').length === 12);
+  check('L39 toolbar and dock build do not duplicate long-lived listeners', before === listeners.length && d.querySelectorAll('#actbar button').length === 13);
   check('L40 user window actions persist state', persisted > 10);
   settingsVisible = profilesVisible = sftpVisible = false; w.UI.closeDock(); paneButton.focus();
   const focused = d.activeElement;

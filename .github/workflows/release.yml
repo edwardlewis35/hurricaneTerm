@@ -119,6 +119,8 @@ jobs:
           npm run test:ai
           npm run test:ai-agent
           npm run test:ai-ops
+          npm run test:connections
+          npm run test:connection-feedback
 
       - name: Gist 加密格式与兼容性回归
         run: |
@@ -126,6 +128,9 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml gist_sync::tests
           cargo test --manifest-path src-tauri/Cargo.toml ai::tests
           cargo test --manifest-path src-tauri/Cargo.toml agent_exec::tests
+          cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests
+          cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests
+          cargo test --manifest-path src-tauri/Cargo.toml jump::tests
 
       - name: macOS 原生 PTY 关闭与 UTF-8 回归
         if: startsWith(matrix.platform, 'macos')
