@@ -15,6 +15,7 @@ mod serial_live;
 mod tcp_live;
 mod gist_sync;
 mod ai;
+mod agent_exec;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,8 @@ struct Entry {
     killer: Option<pty_child::Killer>,
     closer: Option<Box<dyn Fn() + Send>>,
     sftp: Option<tokio::sync::mpsc::UnboundedSender<ssh_live::SftpReq>>,
+    exec: agent_exec::Target,
+    alive: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -130,6 +133,7 @@ fn default_shell() -> String {
 fn spawn(
     app: AppHandle,
     state: State<PtyState>,
+    executions: State<agent_exec::AgentExecState>,
     rows: u16,
     cols: u16,
     command: Option<String>,
@@ -182,6 +186,7 @@ fn spawn(
 
     let id = Uuid::new_v4().to_string();
     let output_stopped = Arc::new(AtomicBool::new(false));
+    let alive = Arc::new(AtomicBool::new(true));
 
     {
         let id2 = id.clone();
@@ -211,7 +216,11 @@ fn spawn(
 
     let id3 = id.clone();
     let app3 = app.clone();
+    let executions = executions.inner().clone();
+    let child_alive = alive.clone();
     let killer = pty_child::monitor_child(child, move || {
+        child_alive.store(false, Ordering::Release);
+        executions.cancel_session(&id3);
         let _ = app3.emit("pty-exit", ExitPayload { id: id3 });
     });
 
@@ -227,6 +236,8 @@ fn spawn(
                 killer: Some(killer),
                 closer: Some(Box::new(move || { output_stopped.store(true, Ordering::Release); })),
                 sftp: None,
+                exec: agent_exec::Target::Local { cwd: std::env::current_dir().ok() },
+                alive,
             },
         );
     Ok(id)
@@ -304,6 +315,8 @@ fn connect_telnet(
                 let _ = killer.shutdown(std::net::Shutdown::Both);
             })),
             sftp: None,
+            exec: agent_exec::Target::Unsupported,
+            alive: Arc::new(AtomicBool::new(true)),
         },
     );
     Ok(id)
@@ -399,7 +412,9 @@ fn connect_ssh(
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
-            sftp: Some(ctl.sftp),
+            sftp: Some(ctl.sftp.clone()),
+            exec: agent_exec::Target::Ssh(ctl.sftp),
+            alive: ctl.alive,
         },
     );
     Ok(id)
@@ -456,6 +471,8 @@ fn connect_serial(
             resize: Box::new(|_r, _c| Ok(())), // 串口无窗口尺寸概念
             killer: None,
             sftp: None,
+            exec: agent_exec::Target::Unsupported,
+            alive: Arc::new(AtomicBool::new(true)),
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
@@ -513,6 +530,8 @@ fn connect_tcp(
             resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义
             killer: None,
             sftp: None,
+            exec: agent_exec::Target::Unsupported,
+            alive: Arc::new(AtomicBool::new(true)),
             closer: Some(Box::new(move || {
                 let _ = stop.send(()); // 通知 pump
                 killer(); // shutdown(Both)/kill child → 读线程退出 → detach 信号对
@@ -589,8 +608,9 @@ fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<()
 }
 
 #[tauri::command]
-async fn kill(state: State<'_, PtyState>, id: String) -> Result<(), String> {
+async fn kill(state: State<'_, PtyState>, executions: State<'_, agent_exec::AgentExecState>, id: String) -> Result<(), String> {
     let entry = state.0.lock().map_err(|e| e.to_string())?.remove(&id);
+    executions.cancel_session(&id);
     // Removing the entry is idempotent; release the global map before any
     // signal, socket shutdown or destructor runs. None run on the UI thread.
     if let Some(mut entry) = entry {
@@ -1099,6 +1119,42 @@ async fn ai_chat(app: AppHandle, state: State<'_, ai::AiState>, request: ai::AiC
 }
 
 #[tauri::command]
+async fn ai_agent_step(app: AppHandle, state: State<'_, ai::AiState>, request: ai::AiAgentRequest) -> Result<ai::AiAgentResponse, String> {
+    ai::agent_step(&state, request, move |delta| {
+        app.emit("ai-chat-delta", delta).map_err(|_| "AI 界面无法接收回复".to_owned())
+    }).await
+}
+
+#[tauri::command]
+async fn agent_exec(
+    app: AppHandle, state: State<'_, PtyState>, executions: State<'_, agent_exec::AgentExecState>,
+    request: agent_exec::ExecRequest,
+) -> Result<agent_exec::ExecResult, String> {
+    // Registration and target lookup share the PTY-map lock. A concurrent
+    // close either prevents registration or cancels the newly registered job.
+    let (target, lease) = {
+        let entries = state.0.lock().map_err(|_| "会话状态不可用")?;
+        let entry = entries.get(&request.session_id).filter(|entry| entry.alive.load(Ordering::Acquire))
+            .ok_or("目标会话已退出或断开，请先重新连接")?;
+        let target = entry.exec.clone();
+        if matches!(target, agent_exec::Target::Unsupported) { return Err("该协议不支持 AI 运维命令，仅支持本地终端和 SSH".into()); }
+        let lease = executions.begin(&request)?;
+        if !entry.alive.load(Ordering::Acquire) {
+            lease.control.session_closed();
+            return Err("目标会话已退出或断开，请先重新连接".into());
+        }
+        (target, lease)
+    };
+    let sink: agent_exec::OutputSink = Arc::new(move |output| { let _ = app.emit("agent-exec-output", output); });
+    agent_exec::execute(target, request, lease.control.clone(), sink).await
+}
+
+#[tauri::command]
+fn agent_exec_cancel(executions: State<'_, agent_exec::AgentExecState>, request_id: String) -> bool {
+    executions.cancel(&request_id)
+}
+
+#[tauri::command]
 fn ai_cancel(state: State<'_, ai::AiState>, request_id: String) -> bool {
     state.cancel(&request_id)
 }
@@ -1111,6 +1167,7 @@ pub fn run() {
         .manage(TriggersState::default())
         .manage(LogState::default())
         .manage(ai::AiState::default())
+        .manage(agent_exec::AgentExecState::default())
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
@@ -1139,7 +1196,10 @@ pub fn run() {
             sessions_save,
             gist_request,
             ai_chat,
+            ai_agent_step,
             ai_cancel,
+            agent_exec,
+            agent_exec_cancel,
             ui_state_save,
             ui_state_load,
             complete_input,

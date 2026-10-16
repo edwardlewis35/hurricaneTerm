@@ -1,6 +1,6 @@
 [package]
 name = "hurricane-term"
-version = "0.7.17"
+version = "0.8.0"
 description = "hurricaneTerm — cross-platform Tauri 2 terminal (SSH/Telnet/serial/TCP + SFTP)"
 edition = "2021"
 
@@ -15,7 +15,7 @@ regex = "1"
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4"] }
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "net", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "net", "fs", "process"] }
 futures-util = "0.3"
 dirs = "6"
 russh-sftp = "3"

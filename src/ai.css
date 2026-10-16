@@ -12,6 +12,24 @@
 .ai-head-actions button:hover { color: var(--fg3); background: var(--surface-hover); }
 .ai-model-line { display: flex; align-items: center; gap: 6px; padding: 9px 16px; color: var(--fg2); font-size: 10px; flex: none; min-width: 0; }
 .ai-model-line > span:last-child { margin-left: auto; white-space: nowrap; }
+.ai-mode-row { display: flex; gap: 3px; padding: 0 14px 8px; flex: none; }
+.ai-mode-row button { border: 0; background: transparent; color: var(--fg2); font-size: 11px; padding: 5px 11px; border-radius: 5px; }
+.ai-mode-row button.on { color: var(--accent); background: var(--accent-bg); }
+#ai-agent-target { padding: 1px 16px 9px; font-size: 10px; color: var(--fg2); line-height: 1.6; flex: none; overflow-wrap: anywhere; }
+#ai-agent-target[hidden] { display: none; }
+.ai-agent-steps { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+.ai-agent-step { border: 1px solid var(--border); border-radius: 6px; background: var(--surface); overflow: hidden; }
+.ai-agent-step summary { cursor: pointer; padding: 8px 9px; font-size: 11px; color: var(--fg3); background: var(--surface-hover); }
+.ai-agent-step .ai-step-purpose { padding: 0 9px; font-size: 11px; color: var(--fg2); margin: 7px 0; }
+.ai-agent-step pre { margin: 0; padding: 8px 9px; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.6 var(--font-mono); max-height: 160px; overflow-y: auto; user-select: text; }
+.ai-step-command { color: var(--fg3); background: var(--input-bg); }
+.ai-step-output { color: var(--fg2); }
+.ai-agent-step small { display: block; padding: 4px 9px 7px; color: var(--fg2); font-size: 9px; }
+.ai-agent-approval { margin-top: 12px; padding: 10px; border: 1px solid var(--warn); border-radius: 6px; background: var(--surface); }
+.ai-agent-approval strong { font-size: 12px; color: var(--warn); }
+.ai-agent-approval p { font-size: 11px; }
+.ai-agent-approval pre { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--font-mono); }
+.ai-agent-approval button { font-size: 11px; margin: 4px 4px 0 0; padding: 5px 8px; }
 #ai-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
 #ai-config { display: flex; flex-direction: column; gap: 6px; padding: 8px 16px 16px; border-bottom: 1px solid var(--border); overflow-y: auto; max-height: 62%; flex-shrink: 0; }

@@ -30,7 +30,7 @@ use std::io;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::mpsc;
 use tokio::sync::Notify;
 use russh_sftp::client::{SftpSession, error::Error as SftpError};
@@ -54,6 +54,7 @@ impl Write for SshInput {
 
 /// 会话控制句柄（resize/stop/sftp 走通道）
 pub struct SshCtl {
+    pub alive: Arc<AtomicBool>,
     pub input: mpsc::UnboundedSender<Vec<u8>>,
     pub resize: mpsc::UnboundedSender<(u32, u32)>,
     pub stop: mpsc::UnboundedSender<()>,
@@ -96,6 +97,7 @@ impl TransferControl {
 }
 
 pub enum SftpReq {
+    AgentExec { request: crate::agent_exec::ExecRequest, control: Arc<crate::agent_exec::ExecControl>, sink: crate::agent_exec::OutputSink, reply: oneshot::Sender<Result<crate::agent_exec::ExecResult, String>> },
     List { path: String, reply: oneshot::Sender<Result<Vec<SftpEntry>, String>> },
     Download { remote: String, local: String, reply: oneshot::Sender<Result<(), String>> },
     Upload { local: String, remote: String, reply: oneshot::Sender<Result<(), String>> },
@@ -208,6 +210,8 @@ pub fn spawn_session(
     let (rz_tx, mut rz_rx) = mpsc::unbounded_channel::<(u32, u32)>();
     let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<()>();
     let (sftp_tx, sftp_rx) = mpsc::unbounded_channel::<SftpReq>();
+    let alive = Arc::new(AtomicBool::new(true));
+    let session_alive = alive.clone();
 
     let app2 = app.clone();
     let id2 = id.clone();
@@ -236,10 +240,12 @@ pub fn spawn_session(
         )) {
             eprintln!("[ssh] {e}");
         }
+        session_alive.store(false, Ordering::Release);
         let _ = app.emit("pty-exit", OutPayload { id, data: String::new() });
     });
 
     Ok(SshCtl {
+        alive,
         input: in_tx,
         resize: rz_tx,
         stop: stop_tx,
@@ -497,6 +503,9 @@ async fn open_sftp(h: &std::sync::Arc<client::Handle<WtHandler>>)
 
 async fn handle_sftp_request(h: &Arc<client::Handle<WtHandler>>, req: SftpReq, sink: &Sink, id: &str) {
     match req {
+        SftpReq::AgentExec { request, control, sink, reply } => {
+            let _ = reply.send(crate::agent_exec::execute_ssh(h, &request, control, sink).await);
+        }
         SftpReq::List { path, reply } => { let _ = reply.send(do_sftp_list(h, &path, sink, id).await); }
         SftpReq::Realpath { path, reply } => { let _ = reply.send(async {
             let s = open_sftp(h).await?;

@@ -55,6 +55,7 @@
     },
 
     status() {
+      window.AiPanel?.onSessionChange?.();
       const info = T.term.statusInfo();
       const set = (id, txt) => { const e = $(id); if (e) e.textContent = txt; };
       set('#st-mode', T.s.mode === 'Local' ? '本地模式' : '远程模式');

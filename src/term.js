@@ -245,6 +245,7 @@
       if (!tab || tab._closing || tab.exited || this.tabs[tab.id] !== tab || this.ptyId(tab) !== nativeId) return false;
       T.flushLogs(tab);
       tab.exited = true; tab.ptyId = null;
+      window.OpsAgent?.checkTarget?.();
       tab._connectionGeneration = (tab._connectionGeneration || 0) + 1;
       tab._resetInput?.();
       const text = this.canReconnect(tab) ? '[远程会话已退出或断开，按任意键重新连接]' : '[本地进程已退出，可新建标签重新打开]';
@@ -639,6 +640,7 @@
       t._closing = true;
       t._reconnectAttempt = null; t._reconnectPromise = null; t._reconnecting = false;
       t.ptyId = null; t.exited = true;
+      window.OpsAgent?.checkTarget?.();
       t._resetInput?.(); t._reconnectKey = null;
       for (const subscription of t._inputSubscriptions || []) subscription?.dispose?.();
       t._inputSubscriptions = [];
@@ -680,9 +682,9 @@
 
     // One xterm write at a time, coalescing short IPC bursts. Preserve order and
     // all output; callbacks from a closed tab can never re-enter its renderer.
-    receiveOutput(tab, data) {
+    receiveOutput(tab, data, options = {}) {
       if (tab._closing || this.tabs[tab.id] !== tab || !data) return;
-      (tab._outputParts ||= []).push(data);
+      (tab._outputParts ||= []).push(options.triggers === false ? { data, triggers: false } : data);
       if (!tab._outputWriting && !tab._outputTimer)
         tab._outputTimer = setTimeout(() => this.flushOutput(tab), 16);
     },
@@ -691,16 +693,21 @@
       if (tab._closing || this.tabs[tab.id] !== tab || tab._outputWriting) return;
       const parts = tab._outputParts || [];
       let index = tab._outputIndex || 0, length = 0;
-      const batch = [];
+      const batch = [], triggerParts = []; let hasTriggerData = false;
+      const append = (value, triggers) => {
+        batch.push(value);
+        if (triggers) { hasTriggerData = true; triggerParts.push(value); }
+        else triggerParts.push('\n'); // Keep genuine output on either side separate.
+      };
       while (index < parts.length && length < 65536) {
-        const part = parts[index], room = 65536 - length;
-        if (part.length <= room) { index++; batch.push(part); length += part.length; }
+        const entry = parts[index], part = typeof entry === 'string' ? entry : entry.data, triggers = typeof entry === 'string' || entry.triggers !== false, room = 65536 - length;
+        if (part.length <= room) { index++; append(part, triggers); length += part.length; }
         else {
           let take = room;
           // A UTF-16 emoji must not be cut between its surrogate code units.
           const lead = part.charCodeAt(take - 1), trail = part.charCodeAt(take);
           if (lead >= 0xd800 && lead <= 0xdbff && trail >= 0xdc00 && trail <= 0xdfff) take--;
-          if (take) { batch.push(part.slice(0, take)); parts[index] = part.slice(take); length += take; }
+          if (take) { append(part.slice(0, take), triggers); parts[index] = triggers ? part.slice(take) : { data: part.slice(take), triggers: false }; length += take; }
           break;
         }
       }
@@ -717,7 +724,7 @@
         if ((tab._outputParts || []).length > (tab._outputIndex || 0))
           tab._outputTimer = setTimeout(() => this.flushOutput(tab), 0);
       });
-      this.runTriggers(tab, data);
+      if (hasTriggerData) this.runTriggers(tab, triggerParts.join(''));
     },
 
     renderTabbar() {

@@ -1,5 +1,7 @@
 # AI 助手
 
+需要自动执行命令并按结果继续排查时，切换到[运维 Agent](OPS_AGENT.md)。以下说明默认的对话模式。
+
 右侧 AI 助手用于解释终端问题、整理排查步骤和提供命令建议。点击工具栏的 AI 按钮可以打开或关闭面板；终端和分屏会为面板让出空间。
 
 ## 连接模型服务
@@ -38,6 +40,6 @@
 
 用户点击发送后，问题、当前对话与主动附加的内容会发往所配置的模型服务；内容处理由该服务负责。关闭面板与退出软件是不同操作：需要清空当前对话时使用新建对话。
 
-网络请求由原生后端发送，因此不依赖浏览器 CORS 配置。AI 不继承 GitHub 专用代理，不跟随接口重定向；如服务返回跳转，请填写最终接口地址。当前只实现文本 Chat Completions，不包含自动执行工具、图像或原生 Anthropic/Responses 协议。
+网络请求由原生后端发送，因此不依赖浏览器 CORS 配置。AI 不继承 GitHub 专用代理，不跟随接口重定向；如服务返回跳转，请填写最终接口地址。对话模式使用文本 Chat Completions；运维模式使用同一接口的原生 function/tool calling。不包含图像或原生 Anthropic/Responses 协议。
 
 接口格式参考：[创建 Chat Completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[流式增量格式](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events)。兼容性仍取决于具体服务，本项目测试使用本地受控服务，不代表已连接所有厂商模型。

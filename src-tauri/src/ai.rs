@@ -3,7 +3,7 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -13,6 +13,8 @@ const MAX_PROMPT_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAX_TOOL_CALLS: usize = 4;
+const MAX_TOOL_ARGUMENTS_BYTES: usize = 64 * 1024;
 const MAX_CONCURRENT: usize = 4;
 const MAX_PRE_CANCELS: usize = 256;
 const PRE_CANCEL_TTL: Duration = Duration::from_secs(60);
@@ -44,6 +46,128 @@ fn optional_key<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Str
 #[derive(Serialize)]
 pub struct AiChatResponse {
     pub content: String,
+}
+
+/// IPC uses a small normalized shape. The wire conversion below is the only
+/// place that builds provider tool definitions and Chat Completions messages.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiAgentMessage {
+    pub role: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<AiToolCall>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiAgentRequest {
+    pub request_id: String,
+    pub endpoint: String,
+    pub model: String,
+    #[serde(default, deserialize_with = "optional_key")]
+    pub api_key: String,
+    pub messages: Vec<AiAgentMessage>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiAgentResponse {
+    pub content: String,
+    pub tool_calls: Vec<AiToolCall>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CommandArguments {
+    command: String,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+    purpose: String,
+}
+
+fn validate_tool(call: &AiToolCall) -> Result<(), String> {
+    if !valid_id(&call.id) || call.name != "run_command" {
+        return Err("AI 返回了无效或不支持的运维工具".into());
+    }
+    if call.arguments.len() > MAX_TOOL_ARGUMENTS_BYTES { return Err("AI 工具参数过长，请缩小任务范围".into()); }
+    let arguments: CommandArguments = serde_json::from_str(&call.arguments)
+        .map_err(|_| "AI 运维工具参数格式无效，请重试")?;
+    if arguments.command.trim().is_empty() || arguments.command.len() > 16 * 1024 || arguments.command.contains('\0')
+        || arguments.cwd.as_ref().is_some_and(|cwd| cwd.len() > 4096 || cwd.contains('\0'))
+        || arguments.timeout_seconds.is_some_and(|timeout| !(1..=300).contains(&timeout))
+        || arguments.purpose.trim().is_empty() || arguments.purpose.len() > 2048 || arguments.purpose.contains('\0') {
+        return Err("AI 运维命令、目录、超时或执行目的超出允许范围".into());
+    }
+    Ok(())
+}
+
+fn agent_messages(messages: &[AiAgentMessage]) -> Result<Vec<Value>, String> {
+    if messages.is_empty() || messages.len() > MAX_MESSAGES { return Err("AI 消息数量须在 1–64 条之间".into()); }
+    let mut pending = HashSet::new();
+    let mut used = HashSet::new();
+    let mut wire = Vec::with_capacity(messages.len());
+    let mut has_text = false;
+    for message in messages {
+        if message.role != "tool" && !pending.is_empty() { return Err("AI 工具历史缺少命令执行结果".into()); }
+        has_text |= message.content.as_ref().is_some_and(|content| !content.trim().is_empty());
+        let mut value = json!({"role": message.role, "content": message.content});
+        match message.role.as_str() {
+            "system" | "user" if message.tool_calls.is_empty() && message.tool_call_id.is_none() && message.content.is_some() => {}
+            "assistant" if message.tool_call_id.is_none() => {
+                if message.tool_calls.len() > MAX_TOOL_CALLS { return Err("AI 单轮最多执行 4 个工具调用".into()); }
+                if message.content.is_none() && message.tool_calls.is_empty() { return Err("AI 助手消息不能为空".into()); }
+                if !message.tool_calls.is_empty() {
+                    let mut calls = Vec::new();
+                    for call in &message.tool_calls {
+                        validate_tool(call)?;
+                        if !used.insert(call.id.clone()) { return Err("AI 工具历史存在重复调用编号".into()); }
+                        pending.insert(call.id.clone());
+                        calls.push(json!({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": call.arguments}}));
+                    }
+                    value["tool_calls"] = Value::Array(calls);
+                }
+            }
+            "tool" if message.tool_calls.is_empty() && message.content.is_some() => {
+                let id = message.tool_call_id.as_ref().ok_or("AI 工具结果缺少调用编号")?;
+                if !pending.remove(id) { return Err("AI 工具结果没有对应的待执行调用".into()); }
+                value["tool_call_id"] = json!(id);
+            }
+            _ => return Err("AI 消息角色或工具历史结构无效".into()),
+        }
+        wire.push(value);
+    }
+    if !pending.is_empty() { return Err("AI 工具历史缺少命令执行结果".into()); }
+    if !has_text { return Err("AI 消息不能为空".into()); }
+    let bytes = serde_json::to_vec(&wire).map_err(|_| "AI 消息无法序列化")?;
+    if bytes.len() > MAX_PROMPT_BYTES { return Err("AI 消息过长（最多 256 KiB），请减少历史或终端上下文".into()); }
+    Ok(wire)
+}
+
+fn command_tools() -> Value {
+    json!([{"type": "function", "function": {
+        "name": "run_command",
+        "description": "Run one shell command on the user-authorized, locked target machine. Inspect its real stdout, stderr and exit status before choosing a next step. Each command runs in an independent shell; use cwd explicitly. Never request interactive input, passwords or persistent daemons. Explain the purpose before each command.",
+        "parameters": {"type": "object", "additionalProperties": false, "properties": {
+            "command": {"type": "string", "description": "Non-interactive shell command, at most 16 KiB UTF-8."},
+            "cwd": {"type": "string", "description": "Optional working directory, at most 4096 UTF-8 bytes. cd does not persist between calls."},
+            "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300, "description": "Command time limit in seconds; default 60."},
+            "purpose": {"type": "string", "description": "Brief user-visible reason for this command."}
+        }, "required": ["command", "purpose"]}
+    }}])
 }
 
 #[derive(Clone, Serialize)]
@@ -130,15 +254,20 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_:.".contains(&c))
 }
 
-fn validate(request: &AiChatRequest) -> Result<reqwest::Url, String> {
-    if !valid_id(&request.request_id) {
+fn validate_connection(request_id: &str, model: &str, api_key: &str, endpoint_value: &str) -> Result<reqwest::Url, String> {
+    if !valid_id(request_id) {
         return Err("AI 请求编号无效".into());
     }
-    if request.model.trim().is_empty() || request.model.len() > 256 || request.model.chars().any(char::is_control) {
+    if model.trim().is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
         return Err("请填写有效的 AI 模型名称".into());
     }
-    let key = request.api_key.trim();
+    let key = api_key.trim();
     if key.len() > 4096 || key.chars().any(char::is_control) { return Err("AI API Key 格式无效".into()); }
+    endpoint(endpoint_value)
+}
+
+fn validate(request: &AiChatRequest) -> Result<reqwest::Url, String> {
+    let url = validate_connection(&request.request_id, &request.model, &request.api_key, &request.endpoint)?;
     if request.messages.is_empty() || request.messages.len() > MAX_MESSAGES { return Err("AI 消息数量须在 1–64 条之间".into()); }
     let mut bytes = 0usize;
     for message in &request.messages {
@@ -147,7 +276,7 @@ fn validate(request: &AiChatRequest) -> Result<reqwest::Url, String> {
         if bytes > MAX_PROMPT_BYTES { return Err("AI 消息过长（最多 256 KiB），请减少历史或终端上下文".into()); }
     }
     if !request.messages.iter().any(|message| !message.content.trim().is_empty()) { return Err("AI 消息不能为空".into()); }
-    endpoint(&request.endpoint)
+    Ok(url)
 }
 
 fn http_error(status: reqwest::StatusCode) -> String {
@@ -211,6 +340,66 @@ struct SseParser {
     done: bool,
     finished: bool,
     error_event: bool,
+    agent: bool,
+    tool_calls: BTreeMap<usize, ToolParts>,
+    finish_reason: Option<String>,
+}
+
+#[derive(Default)]
+struct ToolParts {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn append_tool_part(target: &mut String, value: Option<&Value>, limit: usize) -> Result<(), String> {
+    if let Some(value) = value.filter(|value| !value.is_null()) {
+        let delta = value.as_str().ok_or("AI 工具增量格式无效")?;
+        if target.len().saturating_add(delta.len()) > limit { return Err("AI 工具参数或编号过长，请缩小任务范围".into()); }
+        target.push_str(delta);
+    }
+    Ok(())
+}
+
+fn tool_deltas(calls: &Value, target: &mut BTreeMap<usize, ToolParts>, streaming: bool) -> Result<(), String> {
+    if calls.is_null() { return Ok(()); }
+    let calls = calls.as_array().ok_or("AI 工具调用列表格式无效")?;
+    if calls.len() > MAX_TOOL_CALLS { return Err("AI 单轮最多执行 4 个工具调用".into()); }
+    for (ordinal, call) in calls.iter().enumerate() {
+        let index = if streaming {
+            let index = call.get("index").and_then(Value::as_u64).ok_or("AI 工具增量缺少有效序号")?;
+            if index >= MAX_TOOL_CALLS as u64 { return Err("AI 单轮最多执行 4 个工具调用".into()); }
+            index as usize
+        } else { ordinal };
+        if index >= MAX_TOOL_CALLS { return Err("AI 单轮最多执行 4 个工具调用".into()); }
+        if let Some(kind) = call.get("type").filter(|kind| !kind.is_null()) {
+            if kind.as_str() != Some("function") { return Err("AI 返回了不支持的工具类型".into()); }
+        }
+        let parts = target.entry(index).or_default();
+        append_tool_part(&mut parts.id, call.get("id"), 128)?;
+        if let Some(function) = call.get("function").filter(|function| !function.is_null()) {
+            if !function.is_object() { return Err("AI 工具函数格式无效".into()); }
+            append_tool_part(&mut parts.name, function.get("name"), 64)?;
+            append_tool_part(&mut parts.arguments, function.get("arguments"), MAX_TOOL_ARGUMENTS_BYTES)?;
+        }
+    }
+    Ok(())
+}
+
+fn finish_tools(parts: BTreeMap<usize, ToolParts>, finish_reason: Option<&str>) -> Result<Vec<AiToolCall>, String> {
+    if !parts.is_empty() && finish_reason.is_some_and(|reason| !matches!(reason, "tool_calls" | "stop")) {
+        return Err("AI 工具调用未完整生成，已阻止执行，请重试".into());
+    }
+    let mut used = HashSet::new();
+    let mut calls = Vec::with_capacity(parts.len());
+    for (ordinal, (index, parts)) in parts.into_iter().enumerate() {
+        if ordinal != index { return Err("AI 工具调用序号不连续".into()); }
+        let call = AiToolCall { id: parts.id, name: parts.name, arguments: parts.arguments };
+        validate_tool(&call)?;
+        if !used.insert(call.id.clone()) { return Err("AI 返回了重复的工具调用编号".into()); }
+        calls.push(call);
+    }
+    Ok(calls)
 }
 
 impl SseParser {
@@ -243,7 +432,13 @@ impl SseParser {
         let Some(choice) = choices.first() else { return Ok(()); };
         let delta = choice.get("delta").ok_or("AI 流式回复缺少 delta 数据")?;
         if let Some(content) = delta.get("content") { collector.append(&text_content(content)?)?; }
-        if choice.get("finish_reason").and_then(Value::as_str).is_some_and(|reason| !reason.is_empty()) { self.finished = true; }
+        if self.agent {
+            if let Some(calls) = delta.get("tool_calls") { tool_deltas(calls, &mut self.tool_calls, true)?; }
+        }
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str).filter(|reason| !reason.is_empty()) {
+            self.finished = true;
+            self.finish_reason = Some(reason.into());
+        }
         Ok(())
     }
 
@@ -272,15 +467,15 @@ impl SseParser {
     }
 }
 
-async fn chat_http<F: FnMut(AiChatDelta) -> Result<(), String>>(
-    request: &AiChatRequest, url: reqwest::Url, emit: &mut F,
-) -> Result<AiChatResponse, String> {
+async fn completion_http<F: FnMut(AiChatDelta) -> Result<(), String>>(
+    request_id: &str, api_key: &str, url: reqwest::Url, body_value: Value, agent: bool, emit: &mut F,
+) -> Result<AiAgentResponse, String> {
     let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(15)).timeout(TOTAL_TIMEOUT).pool_max_idle_per_host(0)
         .user_agent("hurricaneTerm-user-chat").build().map_err(|_| "无法初始化 AI HTTPS 客户端")?;
     let mut call = client.post(url).header("Accept", "text/event-stream, application/json")
-        .json(&json!({ "model": request.model.trim(), "messages": request.messages, "stream": true }));
-    if !request.api_key.trim().is_empty() { call = call.bearer_auth(request.api_key.trim()); }
+        .json(&body_value);
+    if !api_key.trim().is_empty() { call = call.bearer_auth(api_key.trim()); }
     let response = call.send().await.map_err(|_| "无法连接 AI 服务，请检查端点、网络与服务状态")?;
     if !response.status().is_success() { return Err(http_error(response.status())); }
     if response.content_length().unwrap_or(0) > MAX_RESPONSE_BYTES as u64 { return Err("AI 服务响应过大（最多 8 MiB），请求已停止".into()); }
@@ -289,8 +484,8 @@ async fn chat_http<F: FnMut(AiChatDelta) -> Result<(), String>>(
     let mut stream = response.bytes_stream();
     let mut total = 0usize;
     let mut body = Vec::new();
-    let mut parser = SseParser::default();
-    let mut collector = Collector { id: &request.request_id, content: String::new(), emit };
+    let mut parser = SseParser { agent, ..SseParser::default() };
+    let mut collector = Collector { id: request_id, content: String::new(), emit };
     while let Some(chunk) = tokio::time::timeout(IDLE_TIMEOUT, stream.next()).await
         .map_err(|_| "AI 服务长时间没有返回数据，请重试")? {
         let chunk = chunk.map_err(|_| "AI 回复读取中断，请检查连接后重试")?;
@@ -305,12 +500,26 @@ async fn chat_http<F: FnMut(AiChatDelta) -> Result<(), String>>(
     else {
         let value: Value = serde_json::from_slice(&body).map_err(|_| "AI 服务未返回有效的 Chat Completions JSON/SSE 回复")?;
         if value.get("error").is_some() { return Err("AI 服务返回错误，请检查模型或服务状态".into()); }
-        let message = value["choices"][0].get("message").ok_or("AI 回复缺少 message 数据")?;
-        let content = message.get("content").ok_or("AI 回复缺少文本内容")?;
-        collector.append(&text_content(content)?)?;
+        let choice = &value["choices"][0];
+        let message = choice.get("message").ok_or("AI 回复缺少 message 数据")?;
+        if let Some(content) = message.get("content") { collector.append(&text_content(content)?)?; }
+        else if !agent { return Err("AI 回复缺少文本内容".into()); }
+        if agent {
+            if let Some(calls) = message.get("tool_calls") { tool_deltas(calls, &mut parser.tool_calls, false)?; }
+            parser.finish_reason = choice.get("finish_reason").and_then(Value::as_str).map(str::to_owned);
+        }
     }
-    if collector.content.is_empty() { return Err("AI 服务未返回文本回复，请检查模型是否支持聊天".into()); }
-    Ok(AiChatResponse { content: collector.content })
+    let calls = finish_tools(parser.tool_calls, parser.finish_reason.as_deref())?;
+    if collector.content.is_empty() && calls.is_empty() { return Err("AI 服务未返回文本或工具调用，请检查模型是否支持此功能".into()); }
+    Ok(AiAgentResponse { content: collector.content, tool_calls: calls })
+}
+
+async fn chat_http<F: FnMut(AiChatDelta) -> Result<(), String>>(
+    request: &AiChatRequest, url: reqwest::Url, emit: &mut F,
+) -> Result<AiChatResponse, String> {
+    let response = completion_http(&request.request_id, &request.api_key, url,
+        json!({ "model": request.model.trim(), "messages": request.messages, "stream": true }), false, emit).await?;
+    Ok(AiChatResponse { content: response.content })
 }
 
 pub async fn chat<F: FnMut(AiChatDelta) -> Result<(), String>>(
@@ -322,6 +531,30 @@ pub async fn chat<F: FnMut(AiChatDelta) -> Result<(), String>>(
         biased;
         _ = cancelled(&mut cancel) => return Err(CANCELLED.into()),
         result = tokio::time::timeout(TOTAL_TIMEOUT, chat_http(&request, url, &mut emit)) => {
+            result.map_err(|_| "AI 请求超时，请重试或检查模型服务")??
+        }
+    };
+    if *cancel.borrow() { return Err(CANCELLED.into()); }
+    emit(AiChatDelta { request_id: request.request_id, delta: String::new(), done: true })
+        .map_err(|_| "AI 界面无法接收回复，请重新打开后重试".to_owned())?;
+    Ok(response)
+}
+
+pub async fn agent_step<F: FnMut(AiChatDelta) -> Result<(), String>>(
+    state: &AiState, request: AiAgentRequest, mut emit: F,
+) -> Result<AiAgentResponse, String> {
+    let url = validate_connection(&request.request_id, &request.model, &request.api_key, &request.endpoint)?;
+    let messages = agent_messages(&request.messages)?;
+    // Do not accept caller-supplied tools or function schemas. No compatibility
+    // retry: replaying a failed request could yield a second set of actions.
+    let body = json!({ "model": request.model.trim(), "messages": messages, "stream": true,
+        "tools": command_tools(), "tool_choice": "auto" });
+    let (_guard, mut cancel) = state.begin(&request.request_id)?;
+    let response = tokio::select! {
+        biased;
+        _ = cancelled(&mut cancel) => return Err(CANCELLED.into()),
+        result = tokio::time::timeout(TOTAL_TIMEOUT,
+            completion_http(&request.request_id, &request.api_key, url, body, true, &mut emit)) => {
             result.map_err(|_| "AI 请求超时，请重试或检查模型服务")??
         }
     };
@@ -547,5 +780,260 @@ mod tests {
         let server = mock(reply("text/event-stream", format!("{}data: [DONE]\n\n", frame("answer")).as_bytes())); let state = AiState::default();
         let error = chat(&state, request(&server.base), |_| Err("fixture-key-not-real".into())).await.err().unwrap();
         assert!(error.contains("界面")); assert!(!error.contains("fixture-key-not-real")); assert!(state.requests.lock().unwrap().pending.is_empty()); server.handle.join().unwrap();
+    }
+
+    fn agent_request(base: &str) -> AiAgentRequest {
+        let r = request(base);
+        AiAgentRequest { request_id: r.request_id, endpoint: r.endpoint, model: r.model, api_key: r.api_key,
+            messages: vec![agent_message("user", Some("Inspect this machine"), Vec::new(), None)] }
+    }
+
+    fn agent_message(role: &str, content: Option<&str>, tool_calls: Vec<AiToolCall>, tool_call_id: Option<&str>) -> AiAgentMessage {
+        AiAgentMessage { role: role.into(), content: content.map(str::to_owned), tool_calls, tool_call_id: tool_call_id.map(str::to_owned) }
+    }
+
+    fn command(id: &str) -> AiToolCall {
+        AiToolCall { id: id.into(), name: "run_command".into(),
+            arguments: json!({"command": "printf 'healthy\\n'", "cwd": "/tmp", "timeoutSeconds": 60, "purpose": "Inspect service health"}).to_string() }
+    }
+
+    fn wire_call(call: &AiToolCall) -> Value {
+        json!({"id": call.id, "type": "function", "function": {"name": call.name, "arguments": call.arguments}})
+    }
+
+    fn tool_frame(calls: Value, finish: Value) -> String {
+        format!("data: {}\n\n", json!({"choices": [{"delta": {"tool_calls": calls}, "finish_reason": finish}]}))
+    }
+
+    #[test]
+    fn agent_ipc_contract_optional_key_roles_and_closed_fields() {
+        let base = json!({"requestId": "agent", "endpoint": "http://localhost/v1", "model": "fixture",
+            "messages": [{"role": "user", "content": "Inspect services"}]});
+        for key in [None, Some(Value::Null), Some(json!(""))] {
+            let mut value = base.clone(); if let Some(key) = key { value["apiKey"] = key; }
+            let r: AiAgentRequest = serde_json::from_value(value).unwrap();
+            assert!(r.api_key.is_empty()); assert!(agent_messages(&r.messages).is_ok());
+        }
+        let mut custom = base.clone(); custom["tools"] = json!([{"name": "arbitrary"}]);
+        assert!(serde_json::from_value::<AiAgentRequest>(custom).is_err());
+        let mut custom = base; custom["messages"][0]["tool_call_id"] = json!("not-camel-case");
+        assert!(serde_json::from_value::<AiAgentRequest>(custom).is_err());
+        for role in ["developer", "function", "admin", ""] {
+            assert!(agent_messages(&[agent_message(role, Some("text"), vec![], None)]).is_err());
+        }
+        let serialized = serde_json::to_value(AiAgentResponse { content: String::new(), tool_calls: vec![command("call-1")] }).unwrap();
+        assert_eq!(serialized["toolCalls"][0]["name"], "run_command");
+    }
+
+    #[tokio::test]
+    async fn agent_http_sends_fixed_schema_and_complete_tool_history() {
+        let call = command("call-1");
+        let server = mock(reply("application/json", br#"{"choices":[{"message":{"content":"Service is healthy"},"finish_reason":"stop"}]}"#));
+        let mut r = agent_request(&server.base);
+        r.messages.insert(0, agent_message("system", Some("Act as an operations assistant"), vec![], None));
+        r.messages.push(agent_message("assistant", None, vec![call.clone()], None));
+        r.messages.push(agent_message("tool", Some(r#"{"stdout":"healthy","stderr":"","exitCode":0}"#), vec![], Some("call-1")));
+        let result = agent_step(&AiState::default(), r, |_| Ok(())).await.unwrap();
+        assert_eq!(result.content, "Service is healthy"); assert!(result.tool_calls.is_empty());
+        server.handle.join().unwrap();
+        let recorded = server.request.lock().unwrap(); let body = &recorded.2;
+        assert_eq!(body["messages"][2]["content"], Value::Null);
+        assert_eq!(body["messages"][2]["tool_calls"][0], wire_call(&call));
+        assert_eq!(body["messages"][3]["tool_call_id"], "call-1");
+        assert_eq!(body["messages"][3]["content"], r#"{"stdout":"healthy","stderr":"","exitCode":0}"#);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(body["tools"][0]["function"]["name"], "run_command");
+        assert_eq!(body["tools"][0]["function"]["parameters"]["additionalProperties"], false);
+        assert_eq!(body["tools"][0]["function"]["parameters"]["properties"]["timeoutSeconds"]["maximum"], 300);
+        assert_eq!(body["tool_choice"], "auto"); assert!(body.get("parallel_tool_calls").is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_stream_aggregates_split_ids_names_arguments_and_interleaved_calls() {
+        let first = json!({"command": "printf '健康🙂'", "purpose": "Inspect host"}).to_string();
+        let second = command("call-2");
+        let cut = first.char_indices().nth(12).unwrap().0;
+        let data = format!("{}{}{}{}{}data: [DONE]\n\n", frame("Inspecting host. "),
+            tool_frame(json!([{"index":0,"id":"call-","type":"function","function":{"name":"run_","arguments":&first[..cut]}},
+                {"index":1,"id":second.id,"type":"function","function":{"name":second.name,"arguments":""}}]), Value::Null),
+            tool_frame(json!([{"index":1,"id":null,"type":null,"function":{"name":null,"arguments":second.arguments}}]), Value::Null),
+            tool_frame(json!([{"index":0,"id":"1","function":{"name":"command","arguments":&first[cut..]}}]), Value::Null),
+            tool_frame(json!([]), json!("tool_calls")));
+        let mut plan = reply("text/event-stream", &[]); plan.chunks = data.as_bytes().chunks(1).map(|part| part.to_vec()).collect();
+        let server = mock(plan); let mut events = Vec::new();
+        let answer = agent_step(&AiState::default(), agent_request(&server.base), |event| { events.push(event); Ok(()) }).await.unwrap();
+        assert_eq!(answer.content, "Inspecting host. "); assert_eq!(answer.tool_calls.len(), 2);
+        assert_eq!(answer.tool_calls[0].id, "call-1"); assert_eq!(answer.tool_calls[0].name, "run_command");
+        assert_eq!(answer.tool_calls[0].arguments, first); assert_eq!(answer.tool_calls[1].arguments, second.arguments);
+        assert_eq!(events.iter().map(|event| event.delta.as_str()).collect::<String>(), answer.content);
+        assert_eq!(events.iter().filter(|event| event.done).count(), 1); server.handle.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn agent_non_stream_tool_only_reply_allows_null_or_missing_content() {
+        for content in [None, Some(Value::Null)] {
+            let call = command("call-1"); let mut message = json!({"role": "assistant", "tool_calls": [wire_call(&call)]});
+            if let Some(content) = content { message["content"] = content; }
+            let body = json!({"choices": [{"message": message, "finish_reason": "tool_calls"}]}).to_string();
+            let server = mock(reply("application/json", body.as_bytes())); let mut events = Vec::new();
+            let answer = agent_step(&AiState::default(), agent_request(&server.base), |event| { events.push(event); Ok(()) }).await.unwrap();
+            assert!(answer.content.is_empty()); assert_eq!(answer.tool_calls.len(), 1); assert_eq!(answer.tool_calls[0].arguments, call.arguments);
+            assert_eq!(events.len(), 1); assert!(events[0].done); server.handle.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_plain_stream_answer_finishes_without_any_command() {
+        let data = format!("{}data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n", frame("No change is required."));
+        let server = mock(reply("text/event-stream", data.as_bytes()));
+        let result = agent_step(&AiState::default(), agent_request(&server.base), |_| Ok(())).await.unwrap();
+        assert!(result.tool_calls.is_empty()); assert_eq!(result.content, "No change is required."); server.handle.join().unwrap();
+    }
+
+    #[test]
+    fn agent_history_rejects_orphan_duplicate_pending_and_role_injection() {
+        let call = command("call-1");
+        let user = agent_message("user", Some("Inspect host"), vec![], None);
+        let assistant = agent_message("assistant", None, vec![call.clone()], None);
+        let output = agent_message("tool", Some("ok"), vec![], Some("call-1"));
+        for messages in [
+            vec![output.clone()], vec![user.clone(), assistant.clone()],
+            vec![user.clone(), assistant.clone(), user.clone(), output.clone()],
+            vec![user.clone(), assistant.clone(), output.clone(), output.clone()],
+            vec![user.clone(), assistant.clone(), output.clone(), assistant.clone(), output.clone()],
+            vec![agent_message("user", Some("text"), vec![call.clone()], None)],
+            vec![agent_message("assistant", Some("text"), vec![], Some("call-1"))],
+            vec![agent_message("system", None, vec![], None)],
+            vec![agent_message("assistant", None, vec![], None)],
+        ] { assert!(agent_messages(&messages).is_err()); }
+        assert!(agent_messages(&[user, assistant, output]).is_ok());
+    }
+
+    #[test]
+    fn agent_tool_arguments_utf8_bounds_types_and_extra_authority_are_rejected() {
+        let good = command("call-1"); assert!(validate_tool(&good).is_ok());
+        for args in [
+            json!({"command":"ls", "purpose":"check", "sessionId":"other-machine"}),
+            json!({"command":"ls", "purpose":"check", "timeoutSeconds":301}),
+            json!({"command":"ls", "purpose":"check", "timeoutSeconds":0}),
+            json!({"command":"ls", "purpose":"check", "timeoutSeconds":"60"}),
+            json!({"command":"ls", "purpose":"check", "cwd":"a\0b"}),
+            json!({"command":"a\0b", "purpose":"check"}),
+            json!({"command":" ", "purpose":"check"}),
+            json!({"command":"ls", "purpose":""}),
+            json!({"command":"机".repeat(5462), "purpose":"check"}),
+            json!({"command":"ls", "purpose":"check", "cwd":"x".repeat(4097)}),
+            json!({"command":"ls", "purpose":"x".repeat(2049)}),
+            json!([]), json!("command"), Value::Null,
+        ] {
+            let mut call = good.clone(); call.arguments = args.to_string(); assert!(validate_tool(&call).is_err());
+        }
+        for invalid in ["{\"command\":", "fixture-key-not-real", "x"] {
+            let mut call = good.clone(); call.arguments = invalid.into();
+            assert!(!validate_tool(&call).err().unwrap().contains("fixture-key-not-real"));
+        }
+        let mut call = good; call.arguments = "x".repeat(MAX_TOOL_ARGUMENTS_BYTES + 1); assert!(validate_tool(&call).is_err());
+    }
+
+    #[test]
+    fn agent_prompt_bound_counts_tool_arguments_results_and_json_overhead() {
+        let call = command("call-1");
+        let mut messages = vec![agent_message("user", Some("Inspect"), vec![], None),
+            agent_message("assistant", None, vec![call], None),
+            agent_message("tool", Some(&"x".repeat(MAX_PROMPT_BYTES)), vec![], Some("call-1"))];
+        assert!(agent_messages(&messages).err().unwrap().contains("256 KiB"));
+        messages[2].content = Some("ok".into()); assert!(agent_messages(&messages).is_ok());
+        messages = vec![agent_message("user", Some("x"), vec![], None); MAX_MESSAGES + 1]; assert!(agent_messages(&messages).is_err());
+        messages = vec![agent_message("user", Some(&"\n".repeat(MAX_PROMPT_BYTES / 2)), vec![], None)];
+        assert!(agent_messages(&messages).is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_http_invalid_tool_calls_fail_without_done_or_raw_provider_data() {
+        let call = command("call-1"); let mut unknown = wire_call(&call); unknown["function"]["name"] = json!("fixture-key-not-real");
+        let mut extra = wire_call(&call); extra["function"]["arguments"] = json!(r#"{"command":"ls","purpose":"check","authorized":true}"#);
+        let mut broken = wire_call(&call); broken["function"]["arguments"] = json!("{\"command\":");
+        let mut wrong = wire_call(&call); wrong["type"] = json!("custom");
+        let mut no_id = wire_call(&call); no_id["id"] = Value::Null;
+        for calls in [json!([unknown]), json!([extra]), json!([broken]), json!([wrong]), json!([no_id]),
+            json!([wire_call(&call), wire_call(&call)]), Value::Array(vec![wire_call(&call); 5]), json!({"not":"array"})] {
+            let body = json!({"choices":[{"message":{"tool_calls":calls},"finish_reason":"tool_calls"}]}).to_string();
+            let server = mock(reply("application/json", body.as_bytes())); let state = AiState::default(); let mut events = Vec::new();
+            let error = agent_step(&state, agent_request(&server.base), |event| { events.push(event); Ok(()) }).await.err().unwrap();
+            assert!(!error.contains("fixture-key-not-real")); assert!(!events.iter().any(|event| event.done));
+            assert!(state.requests.lock().unwrap().pending.is_empty()); server.handle.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_stream_incomplete_or_length_limited_tool_call_never_returns_actions() {
+        for finish in [None, Some("length"), Some("content_filter")] {
+            let call = command("call-1");
+            let mut wire = wire_call(&call); wire["index"] = json!(0);
+            let mut data = tool_frame(json!([wire]), Value::Null);
+            if let Some(finish) = finish { data.push_str(&tool_frame(json!([]), json!(finish))); data.push_str("data: [DONE]\n\n"); }
+            let server = mock(reply("text/event-stream", data.as_bytes())); let mut events = Vec::new();
+            assert!(agent_step(&AiState::default(), agent_request(&server.base), |event| { events.push(event); Ok(()) }).await.is_err());
+            assert!(!events.iter().any(|event| event.done)); server.handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn agent_stream_tool_index_count_and_fragment_memory_limits_are_bounded() {
+        for calls in [json!([{"index":4}]), json!([{"index":u64::MAX}]), json!([{"index":-1}]),
+            json!([{"id":"no-index"}]), json!([{"index":0,"function":{"arguments":42}}]),
+            json!([{"index":0,"function":{"arguments":"x".repeat(MAX_TOOL_ARGUMENTS_BYTES + 1)}}]),
+            json!([{"index":0,"id":"x".repeat(129)}]), json!([{"index":0,"function":{"name":"x".repeat(65)}}])] {
+            assert!(tool_deltas(&calls, &mut BTreeMap::new(), true).is_err());
+        }
+        let mut parts = BTreeMap::new();
+        tool_deltas(&json!([{"index":0,"function":{"arguments":"x".repeat(MAX_TOOL_ARGUMENTS_BYTES)}}]), &mut parts, true).unwrap();
+        assert!(tool_deltas(&json!([{"index":0,"function":{"arguments":"y"}}]), &mut parts, true).is_err());
+        let mut parts = BTreeMap::new(); let mut call = wire_call(&command("call-1")); call["index"] = json!(1);
+        tool_deltas(&json!([call]), &mut parts, true).unwrap(); assert!(finish_tools(parts, Some("tool_calls")).is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_cancel_before_headers_aborts_shared_transport_and_cleans_registry() {
+        let mut plan = reply("text/event-stream", b""); plan.before_headers = true; let server = mock(plan);
+        let state = AiState::default(); let cloned = state.clone(); let r = agent_request(&server.base);
+        let task = tokio::spawn(async move { agent_step(&cloned, r, |_| Ok(())).await }); ready(&server.accepted).await;
+        assert!(state.cancel("fixture-request"));
+        let result = tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap(); assert_eq!(result.err().unwrap(), CANCELLED);
+        assert!(state.requests.lock().unwrap().pending.is_empty()); server.handle.join().unwrap(); assert!(server.disconnected.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn agent_cancel_mid_tool_stream_never_returns_partial_actions_or_done() {
+        let data = format!("{}{}", frame("Checking host"), tool_frame(json!([{"index":0,"id":"call-1","type":"function","function":{"name":"run_command","arguments":"{\"command\":"}}]), Value::Null));
+        let mut plan = reply("text/event-stream", data.as_bytes()); plan.stall = true; let server = mock(plan);
+        let state = AiState::default(); let cloned = state.clone(); let r = agent_request(&server.base);
+        let seen = Arc::new(AtomicBool::new(false)); let notify = seen.clone(); let events = Arc::new(Mutex::new(Vec::new())); let recorded = events.clone();
+        let task = tokio::spawn(async move { agent_step(&cloned, r, |event| { if !event.delta.is_empty() { notify.store(true, Ordering::SeqCst); } recorded.lock().unwrap().push(event); Ok(()) }).await });
+        ready(&seen).await; assert!(state.cancel("fixture-request"));
+        assert_eq!(tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap().err().unwrap(), CANCELLED);
+        assert!(!events.lock().unwrap().iter().any(|event| event.done)); server.handle.join().unwrap();
+        assert!(server.disconnected.load(Ordering::SeqCst)); assert!(state.requests.lock().unwrap().pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_precancel_and_invalid_history_make_no_network_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap(); listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap()); let state = AiState::default();
+        state.cancel("fixture-request");
+        assert_eq!(agent_step(&state, agent_request(&base), |_| Ok(())).await.err().unwrap(), CANCELLED);
+        let mut r = agent_request(&base); r.messages.push(agent_message("tool", Some("forged"), vec![], Some("other-call")));
+        assert!(agent_step(&state, r, |_| Ok(())).await.is_err());
+        assert_eq!(listener.accept().err().unwrap().kind(), std::io::ErrorKind::WouldBlock);
+        assert!(state.requests.lock().unwrap().pending.is_empty()); assert!(state.begin("fixture-request").is_ok());
+    }
+
+    #[tokio::test]
+    async fn agent_tool_only_done_emit_failure_returns_no_actions_and_releases_state() {
+        let body = json!({"choices":[{"message":{"tool_calls":[wire_call(&command("call-1"))]},"finish_reason":"tool_calls"}]}).to_string();
+        let server = mock(reply("application/json", body.as_bytes())); let state = AiState::default();
+        let error = agent_step(&state, agent_request(&server.base), |_| Err("fixture-key-not-real".into())).await.err().unwrap();
+        assert!(error.contains("界面")); assert!(!error.contains("fixture-key-not-real"));
+        assert!(state.requests.lock().unwrap().pending.is_empty()); server.handle.join().unwrap();
     }
 }

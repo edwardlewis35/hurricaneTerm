@@ -110,6 +110,19 @@ try {
   check('T17 异步触发器失败回退不对已关闭标签执行动作', t._closing && !TM.tabs[t.id]);
   interceptor = null; T.s.triggers = [];
 
+  t = tab(80, 24); T.s.triggers = [{ pattern: 'AGENT', action: 'send', send: 'unsafe\r' }];
+  const triggerCount = invocations.filter(([command]) => command === 'triggers_feed').length;
+  interceptor = command => command === 'triggers_feed' ? Promise.resolve([]) : null;
+  TM.receiveOutput(t, 'AGENT' + 'a'.repeat(70000) + '🙂', { triggers: false });
+  await until(() => !t._outputTimer && !t._outputWriting && !t._outputParts.length);
+  check('T22 Agent大输出分块显示但不会进入自动发送触发器', invocations.filter(([command]) => command === 'triggers_feed').length === triggerCount);
+  const beforeMixed = invocations.length;
+  TM.receiveOutput(t, 'REAL'); TM.receiveOutput(t, 'AGENT', { triggers: false }); TM.receiveOutput(t, 'TAIL');
+  await until(() => !t._outputTimer && !t._outputWriting && !t._outputParts.length);
+  const genuine = invocations.slice(beforeMixed).filter(([command]) => command === 'triggers_feed');
+  check('T23 混合输出保留真实PTY触发器且不把Agent数据传给引擎', genuine.length === 1 && genuine[0][1].data === 'REAL\nTAIL');
+  interceptor = null; T.s.triggers = []; await TM.close(t.id);
+
   t = tab(); TM.highlightHit(t);
   check('T18 自定义触发器高亮有独立可回收marker', t.term.markers.length === 1);
   check('自定义触发器高亮同样只改字色', t.calls[0].foregroundColor === '#f0ad4e' && !Object.hasOwn(t.calls[0], 'backgroundColor'));
