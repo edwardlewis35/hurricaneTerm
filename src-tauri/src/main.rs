@@ -17,6 +17,8 @@ mod gist_sync;
 mod ai;
 mod agent_exec;
 mod connection_error;
+mod credentials;
+mod mac_text_input;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -1166,9 +1168,28 @@ fn ai_cancel(state: State<'_, ai::AiState>, request_id: String) -> bool {
     state.cancel(&request_id)
 }
 
+#[tauri::command]
+async fn ai_key_read(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<Option<String>, String> {
+    state.read(endpoint).await
+}
+
+#[tauri::command]
+async fn ai_key_write(state: State<'_, credentials::Credentials>, endpoint: String, api_key: String) -> Result<(), String> {
+    state.write(endpoint, api_key).await
+}
+
+#[tauri::command]
+async fn ai_key_delete(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<(), String> {
+    state.delete(endpoint).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    mac_text_input::configure();
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(mac_text_input::init());
+    builder
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PtyState::default())
         .manage(TransferState::default())
@@ -1176,6 +1197,7 @@ pub fn run() {
         .manage(LogState::default())
         .manage(ai::AiState::default())
         .manage(agent_exec::AgentExecState::default())
+        .manage(credentials::Credentials::default())
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
@@ -1206,6 +1228,9 @@ pub fn run() {
             ai_chat,
             ai_agent_step,
             ai_cancel,
+            ai_key_read,
+            ai_key_write,
+            ai_key_delete,
             agent_exec,
             agent_exec_cancel,
             ui_state_save,

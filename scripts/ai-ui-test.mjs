@@ -7,6 +7,9 @@ import assert from 'node:assert/strict';
 
 const source = fileURLToPath(new URL('../src/', import.meta.url));
 const errors = [], checks = [], calls = [], saved = [], clipboard = [], listeners = new Map(), pending = new Map();
+const credentials = new Map(); let credentialFailure = false;
+let holdCredentialWrite = false, releaseCredentialWrite, summaryMode = 'auto';
+const heldSummaries = [];
 const vc = new VirtualConsole(); vc.on('jsdomError', error => errors.push(error.message));
 const dom = new JSDOM(readFileSync(source + 'index.html', 'utf8'), {
   runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://tauri.localhost/', virtualConsole: vc,
@@ -19,6 +22,7 @@ const T = w.WT = {
   s: { theme: 'dige-black', fontSize: 13, sync: true, triggers: [], sessions: [], tooltips: false,
     ai: { endpoint: '', model: '', width: 380 } },
   persistSettings() { saved.push(JSON.parse(JSON.stringify(this.s))); },
+  copyText: async text => { clipboard.push(text); return true; },
   listen(name, callback) {
     if (!listeners.has(name)) listeners.set(name, new Set());
     listeners.get(name).add(callback);
@@ -26,6 +30,18 @@ const T = w.WT = {
   },
   invoke(command, args = {}) {
     calls.push([command, args]);
+    if (command.startsWith('ai_key_')) {
+      if (credentialFailure) return Promise.reject(new Error('fixture-key-do-not-persist'));
+      if (command === 'ai_key_write' && holdCredentialWrite) return new Promise(resolve => { releaseCredentialWrite = () => { credentials.set(args.endpoint, args.apiKey); resolve(null); }; });
+      if (command === 'ai_key_write') credentials.set(args.endpoint, args.apiKey);
+      if (command === 'ai_key_delete') credentials.delete(args.endpoint);
+      return Promise.resolve(command === 'ai_key_read' ? credentials.get(args.endpoint) || null : null);
+    }
+    if (command === 'ai_chat' && args.request.messages[0]?.content.includes('摘要器')) {
+      if (summaryMode === 'hold') return new Promise((resolve, reject) => heldSummaries.push({ request: args.request, resolve, reject }));
+      if (summaryMode === 'fail') return Promise.reject(new Error('private credential details must stay hidden'));
+      return Promise.resolve({ content: '先前记录摘要：已完成大段回复，保留用户目标和待办。' });
+    }
     if (command === 'ai_chat') return new Promise((resolve, reject) => pending.set(args.request.requestId, { resolve, reject, request: args.request }));
     if (command === 'ai_cancel') return Promise.resolve(true);
     if (command === 'write' && holdWrite) return new Promise(resolve => { releaseWrite = resolve; });
@@ -67,10 +83,41 @@ const answer = async (request, content) => { pending.get(request.requestId).reso
 let panel = q('#ai-panel');
 if (!panel) { panel = d.createElement('aside'); panel.id = 'ai-panel'; panel.hidden = true; q('#workspace').append(panel); }
 for (const file of ['ai.css']) { const style = d.createElement('style'); style.textContent = readFileSync(source + file, 'utf8'); style.dataset.file = file; d.head.append(style); }
-w.eval(readFileSync(source + 'ai.js', 'utf8'));
+w.TextEncoder = TextEncoder;
+for (const file of ['ai-context.js', 'ai.js']) w.eval(readFileSync(source + file, 'utf8'));
 const A = w.AiPanel;
 const send = async value => { input('#ai-input', value); await click('#ai-send'); return chats().at(-1); };
 const text = () => q('#ai-messages').textContent;
+async function restartPanel(settings, { holdRead = false, holdWrite = false } = {}) {
+  // A separate window and freshly evaluated module simulate process restart;
+  // only nonsecret settings and the controlled native credential map survive.
+  const fresh = new JSDOM('<!doctype html><body><aside id="ai-panel" hidden></aside></body>', { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://tauri.localhost/', virtualConsole: vc });
+  const fw = fresh.window, fd = fw.document, requests = [], ipc = [], snapshots = [], reads = [], writes = [];
+  fw.TextEncoder = TextEncoder;
+  fw.WT = { s: { ai: JSON.parse(JSON.stringify(settings)) }, ui: { fitAll() {}, closeDock() {} }, term: { activeTab: () => null, isLive: () => false },
+    persistSettings() { snapshots.push(JSON.parse(JSON.stringify(this.s))); }, copyText: async () => true,
+    listen: async () => () => {}, invoke: async (command, args = {}) => {
+      ipc.push([command, JSON.parse(JSON.stringify(args))]);
+      if (command === 'ai_key_read') {
+        const value = credentials.get(args.endpoint) || null;
+        return holdRead ? new Promise(resolve => reads.push(() => resolve(value))) : value;
+      }
+      if (command === 'ai_key_write') {
+        if (holdWrite) return new Promise(resolve => writes.push(() => { credentials.set(args.endpoint, args.apiKey); resolve(null); }));
+        credentials.set(args.endpoint, args.apiKey); return null;
+      }
+      if (command === 'ai_key_delete') { credentials.delete(args.endpoint); return null; }
+      if (command === 'ai_chat') { requests.push(args.request); return { content: 'Restart fixture completed' }; }
+      return null;
+    } };
+  for (const file of ['icons.js', 'ai-context.js', 'ai.js']) fw.eval(readFileSync(source + file, 'utf8'));
+  const api = fw.AiPanel; api.mount(fd.querySelector('#ai-panel')); api.open(); await settle();
+  return { w: fw, d: fd, api, requests, ipc, snapshots,
+    async send(value) { fd.querySelector('#ai-input').value = value; await api.send(); await settle(); return requests.at(-1); },
+    releaseRead() { assert.ok(reads.length, 'Credential read must be pending'); reads.shift()(); },
+    releaseWrite() { assert.ok(writes.length, 'Credential write must be pending'); writes.shift()(); },
+    close() { api.stop(); fw.close(); } };
+}
 try {
   A.mount(panel); await settle();
   check('A01 Mount leaves assistant closed and starts no provider or terminal read', !A.isOpen() && chats().length === 0 && selectionReads === 0 && outputReads === 0);
@@ -79,7 +126,8 @@ try {
   check('A03 API key field is masked and marked against ordinary autocomplete', q('#ai-key').type === 'password' && q('#ai-key').autocomplete === 'new-password');
   input('#ai-endpoint', 'https://model.example/v1'); input('#ai-model', 'fixture-chat'); input('#ai-key', 'fixture-key-do-not-persist');
   await click('#ai-save');
-  check('A04 Save retains only endpoint, model and width in persistent AI settings', Object.keys(T.s.ai).sort().join(',') === 'endpoint,model,width' && T.s.ai.endpoint === 'https://model.example/v1' && T.s.ai.model === 'fixture-chat');
+  const settingKeys = 'autoCompact,confirmCommands,contextWindow,endpoint,model,rememberKey,width';
+  check('A04 Save persists nonsecret context preferences and writes the key only to credentials', Object.keys(T.s.ai).sort().join(',') === settingKeys && T.s.ai.endpoint === 'https://model.example/v1' && T.s.ai.model === 'fixture-chat' && credentials.get(T.s.ai.endpoint) === 'fixture-key-do-not-persist');
   check('A05 Persistent settings contain neither API key nor conversation state', saved.length === 1 && !JSON.stringify(saved).includes('fixture-key-do-not-persist') && !('messages' in T.s.ai));
   check('A06 Saving configuration focuses composer and closes configuration form', q('#ai-config').hidden && d.activeElement === q('#ai-input'));
   const fitBefore = fits; A.toggle();
@@ -117,6 +165,8 @@ try {
   const contextCalls = chats().length;
   await click('#ai-context-selection');
   check('A24 Selection is read only on explicit attach and is previewed before sending', selectionReads === 1 && q('[data-ai-context-preview]').textContent === 'explicit selection context' && chats().length === contextCalls);
+  check('A53 Attachment preview and its remove button are above the textarea in the composer', q('#ai-context').parentElement.classList.contains('ai-compose') && !!q('#ai-context [data-ai-context-remove]')
+    && !!(q('#ai-context').compareDocumentPosition(q('#ai-input')) & w.Node.DOCUMENT_POSITION_FOLLOWING));
   await click('[data-ai-context-remove]');
   check('A25 Removing context clears its preview without a provider request', q('#ai-context').hidden && !q('[data-ai-context-preview]') && chats().length === contextCalls);
   await click('#ai-context-output');
@@ -154,7 +204,7 @@ try {
   check('A40 Local HTTP full endpoint is supported and optional key uses IPC-compatible empty string', noKey.endpoint === 'http://127.0.0.1:11434/v1/chat/completions' && noKey.apiKey === '');
   await answer(noKey, 'Local service response');
   const saveCount = saved.length; A.setWidth(999); A.setWidth(1);
-  check('A41 Width persists inside supported bounds without adding secret fields', T.s.ai.width === 300 && saved.length === saveCount + 2 && Object.keys(T.s.ai).sort().join(',') === 'endpoint,model,width');
+  check('A41 Width persists inside supported bounds without adding secret fields', T.s.ai.width === 300 && saved.length === saveCount + 2 && Object.keys(T.s.ai).sort().join(',') === settingKeys);
   const grip = q('#ai-resize'); grip.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
   check('A42 Keyboard width adjustment updates the panel and does not reach terminal input', T.s.ai.width === 320 && panel.style.getPropertyValue('--ai-width') === '320px' && writes().length === 2);
   const savedJSON = JSON.stringify(saved);
@@ -164,8 +214,8 @@ try {
   await answer(huge, '中文'.repeat(50000));
   const budgeted = await send('Small follow-up after oversized history');
   const requestBytes = new w.Blob(budgeted.messages.map(message => message.content)).size;
-  check('A44 UTF-8 budget removes whole oversized exchanges and keeps the new question usable', requestBytes <= 224 * 1024 && budgeted.messages.length === 2 && budgeted.messages.at(-1).content === 'Small follow-up after oversized history');
-  check('A45 History trimming is disclosed while generating', q('#ai-status').textContent.includes('较早对话未附加'));
+  check('A44 Oversized history is summarized before the next question without losing it', requestBytes <= 224 * 1024 && budgeted.messages.length === 3 && budgeted.messages[1].content.includes('先前对话与执行记录摘要') && budgeted.messages.at(-1).content === 'Small follow-up after oversized history');
+  check('A45 Compaction uses a real summary request and keeps the original visible transcript', chats().some(request => request.messages[0].content.includes('摘要器')) && text().includes('中文'.repeat(20)) && q('#ai-context-size').textContent.includes('tokens'));
   await answer(budgeted, '```python\nprint("hello")\n```\n\n```bash\nprintf safe\n```');
   check('A46 Single-line non-shell code remains copyable without a terminal insert control', qa('[data-ai-copy-code]').length === 2 && qa('[data-ai-insert]').length === 1);
   const beforeKey = chats().length;
@@ -188,10 +238,132 @@ try {
   cw.WT.s.ai = {endpoint:'http://localhost:11434/v1',model:'fixture-chat',width:380,apiKey:'secret-should-not-save',messages:['private question'],attachment:'private terminal output'};
   cw.WT.persistSettings();
   const persisted = nativeSaved.find(item=>item.name==='settings').value, parsed = JSON.parse(persisted);
-  check('A50 Production core persistence allowlist excludes injected secret and conversation fields', Object.keys(parsed.ai).sort().join(',')==='endpoint,model,width' && !['secret-should-not-save','private question','private terminal output'].some(value=>persisted.includes(value)));
+  check('A50 Production core persistence allowlist excludes injected secret and conversation fields', Object.keys(parsed.ai).sort().join(',')===settingKeys && !['secret-should-not-save','private question','private terminal output'].some(value=>persisted.includes(value)));
   coreDom.window.close();
+
+  {
+    const initialSettings = { ...T.s.ai, endpoint: 'https://model.example/v1', model: 'fixture-chat', rememberKey: true };
+    const restarted = await restartPanel(initialSettings);
+    const request = await restarted.send('Restart retrieves this endpoint credential');
+    check('A54 A fresh panel restores its API key from the native credential store without resaving configuration', request.apiKey === 'fixture-key-do-not-persist' && restarted.ipc.some(([command, args]) => command === 'ai_key_read' && args.endpoint === initialSettings.endpoint) && restarted.snapshots.length === 0);
+    const foreign = await restartPanel({ ...initialSettings, endpoint: 'https://different-provider.example/v1' });
+    const foreignRequest = await foreign.send('Different provider must not reuse the previous key');
+    check('A55 Different endpoints never receive another endpoint stored key', foreignRequest.apiKey === '' && foreign.ipc.filter(([command]) => command === 'ai_key_read').every(([, args]) => args.endpoint === 'https://different-provider.example/v1'));
+    restarted.api.fillConfig(); restarted.d.querySelector('#ai-forget-key').click(); await settle();
+    check('A56 Delete credential removes it from the native store and clears the masked field', !credentials.has(initialSettings.endpoint) && restarted.d.querySelector('#ai-key').value === '' && restarted.ipc.some(([command, args]) => command === 'ai_key_delete' && args.endpoint === initialSettings.endpoint));
+    const afterDelete = await restarted.send('Deleted key must not remain in the runtime credential');
+    check('A57 Deleting a key also prevents its use in the next request', afterDelete.apiKey === '');
+    const deletedRestart = await restartPanel(initialSettings), deletedRequest = await deletedRestart.send('Deleted key stays deleted after restart');
+    check('A58 A subsequent fresh panel cannot recover a deleted key', deletedRequest.apiKey === '');
+    restarted.close(); foreign.close(); deletedRestart.close();
+  }
+  {
+    A.newChat(); const beforeSave = await send('CONFIG_SAVE_EXISTING_HISTORY'); await answer(beforeSave, 'Existing conversation must not be cleared while saving');
+    await click('#ai-settings'); input('#ai-endpoint', 'https://save-failure.example/v1'); input('#ai-key', 'PRIVATE_FAILED_KEY');
+    const previous = JSON.stringify(T.s.ai), saveCount = saved.length;
+    credentialFailure = true; await click('#ai-save'); credentialFailure = false;
+    check('A59 Native credential write failure does not persist settings or report success', JSON.stringify(T.s.ai) === previous && saved.length === saveCount && !q('#ai-config').hidden && q('#ai-status').textContent.includes('配置尚未保存') && !q('#ai-save').disabled);
+    check('A60 Credential failures do not reveal native errors or keys in visible output or settings', !q('#ai-status').textContent.includes('fixture-key-do-not-persist') && !text().includes('PRIVATE_FAILED_KEY') && !JSON.stringify(saved).includes('PRIVATE_FAILED_KEY'));
+    input('#ai-endpoint', 'https://save-pending.example/v1'); input('#ai-key', 'PRIVATE_PENDING_KEY'); input('#ai-input', 'draft preserved while configuration saves');
+    const visible = text(), count = chats().length;
+    holdCredentialWrite = true; q('#ai-save').click(); await settle();
+    check('A61 Asynchronous credential save disables send, new conversation, modes and configuration inputs', q('#ai-send').disabled && q('#ai-new').disabled && qa('button[data-ai-mode]').every(button => button.disabled) && qa('#ai-config input').every(node => node.disabled));
+    const modeChanged = A.setMode('agent'); A.newChat(); await A.send(); A.onSessionChange();
+    check('A62 Direct API calls cannot send, reset history or change mode while configuration is saving', modeChanged === false && chats().length === count && text() === visible && q('#ai-input').value === 'draft preserved while configuration saves' && panel.dataset.aiMode === 'chat' && q('#ai-send').disabled);
+    check('A63 Saving also blocks context compaction to prevent old-provider history from returning', q('#ai-compact').disabled);
+    holdCredentialWrite = false; releaseCredentialWrite(); await settle();
+    check('A64 Finishing the credential save unlocks the panel and starts a clean provider conversation', !q('#ai-send').disabled && !q('#ai-new').disabled && T.s.ai.endpoint === 'https://save-pending.example/v1' && credentials.get(T.s.ai.endpoint) === 'PRIVATE_PENDING_KEY' && qa('[data-ai-message]').length === 0 && q('#ai-status').textContent.includes('配置已保存'));
+    check('A65 A successful native key write still never stores the key in synchronized settings', !JSON.stringify(saved).includes('PRIVATE_PENDING_KEY'));
+  }
+  {
+    A.newChat();
+    for (let i = 0; i < 4; i++) { const request = await send('MANUAL_HISTORY_' + i); await answer(request, 'MANUAL_VERIFIED_' + i + ' ' + 'evidence '.repeat(100)); }
+    const visible = text(); await click('#ai-compact');
+    check('A66 Manual compression performs model summarization and retains the visible transcript', text() === visible && q('#ai-status').textContent.includes('上下文已压缩') && q('#ai-context-size').title.includes('已压缩 1 次'));
+    const compacted = await send('Check manually compacted history');
+    check('A67 A follow-up uses the model summary and complete recent exchanges', compacted.messages[1].content.includes('先前对话与执行记录摘要') && compacted.messages.some(message => message.content === 'MANUAL_HISTORY_3') && !compacted.messages.some(message => message.content === 'MANUAL_HISTORY_0'));
+    await answer(compacted, 'Verified after manual compression');
+    const expectedPrefix = [...compacted.messages, { role: 'assistant', content: 'Verified after manual compression' }], beforeCancel = text();
+    summaryMode = 'hold'; await click('#ai-compact'); const summary = heldSummaries.at(-1);
+    check('A68 Manual compression exposes Stop and disables concurrent sending', !!summary && q('#ai-send').disabled && !q('#ai-stop').hidden);
+    await click('#ai-stop'); summaryMode = 'auto'; summary.resolve({ content: 'LATE_CANCELLED_SUMMARY_MUST_NOT_REPLACE_HISTORY' }); await settle();
+    check('A69 Stop cancels the exact active summary request and ignores its late response', calls.some(([command, args]) => command === 'ai_cancel' && args.requestId === summary.request.requestId) && text() === beforeCancel && !q('#ai-send').disabled);
+    const afterCancel = await send('After manual summary cancellation');
+    check('A70 Cancelled compaction preserves the complete previous model context without hidden truncation', JSON.stringify(afterCancel.messages.slice(0, -1)) === JSON.stringify(expectedPrefix));
+    await answer(afterCancel, 'Verified after cancelled compression');
+    const expectedFailurePrefix = [...afterCancel.messages, { role: 'assistant', content: 'Verified after cancelled compression' }];
+    summaryMode = 'fail'; await click('#ai-compact'); summaryMode = 'auto';
+    check('A71 Manual summary errors explain that original history remains and do not echo provider data', q('#ai-status').textContent.includes('原上下文已保留') && !q('#ai-status').textContent.includes('private credential'));
+    const afterFailure = await send('After failed manual compression');
+    check('A72 Failed compaction leaves the next request original context intact', JSON.stringify(afterFailure.messages.slice(0, -1)) === JSON.stringify(expectedFailurePrefix));
+    await answer(afterFailure, 'Final controlled fixture result');
+    check('A73 Neither context summaries nor task records or API keys enter persisted settings', !['MANUAL_HISTORY_', 'MANUAL_VERIFIED_', '先前记录摘要', 'PRIVATE_FAILED_KEY', 'PRIVATE_PENDING_KEY'].some(value => JSON.stringify(saved).includes(value)));
+  }
+  {
+    const endpoint = 'https://deleted-read-race.example/v1'; credentials.set(endpoint, 'FIXTURE_DELETED_READ_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true });
+    fresh.d.querySelector('#ai-settings').click(); fresh.d.querySelector('#ai-forget-key').click(); await settle();
+    fresh.releaseRead(); await settle(); const request = await fresh.send('Verify deleted credential cannot be restored by an older read');
+    check('A74 A delayed startup credential read cannot resurrect a successfully deleted key', !credentials.has(endpoint) && request.apiKey === '' && fresh.d.querySelector('#ai-key').value === '' && fresh.d.querySelector('#ai-status').textContent.includes('回答完成'));
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://old-awaiting-read.example/v1'; credentials.set(endpoint, 'FIXTURE_OLD_READ_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true, holdWrite: true });
+    fresh.d.querySelector('#ai-input').value = 'Send that is still waiting for credential restore'; const waitingSend = fresh.api.send();
+    fresh.d.querySelector('#ai-settings').click();
+    const set = (id, value) => { const input = fresh.d.querySelector(id); input.value = value; input.dispatchEvent(new fresh.w.Event('input', { bubbles: true })); };
+    set('#ai-endpoint', 'https://new-credential-provider.example/v1'); set('#ai-key', 'FIXTURE_NEW_PROVIDER_KEY'); fresh.d.querySelector('#ai-save').click(); await settle();
+    fresh.releaseRead(); await waitingSend;
+    check('A75 Send awaiting a prior key read cannot start after asynchronous configuration saving begins', fresh.requests.length === 0 && fresh.d.querySelector('#ai-send').disabled && fresh.snapshots.length === 0);
+    fresh.releaseWrite(); await settle(); const request = await fresh.send('Send only to the newly saved provider');
+    check('A76 After the save finishes only the new endpoint and its own key are used', request.endpoint === 'https://new-credential-provider.example/v1' && request.apiKey === 'FIXTURE_NEW_PROVIDER_KEY' && fresh.requests.length === 1 && !JSON.stringify(fresh.snapshots).includes('FIXTURE_NEW_PROVIDER_KEY'));
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://remember-disabled.example/v1'; credentials.set(endpoint, 'FIXTURE_KEY_THAT_MUST_NOT_RESTORE');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: false });
+    const request = await fresh.send('Remember-key disabled must not restore a saved credential');
+    check('A77 Disabling credential persistence also disables native key restoration in a fresh panel', request.apiKey === '' && !fresh.ipc.some(([command]) => command === 'ai_key_read'));
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://closed-awaiting-read.example/v1'; credentials.set(endpoint, 'FIXTURE_CLOSE_PENDING_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true });
+    fresh.d.querySelector('#ai-input').value = 'Do not send after closing the assistant'; const waitingSend = fresh.api.send();
+    fresh.api.close(); fresh.releaseRead(); await waitingSend; await settle();
+    check('A78 Closing while a credential read is pending cancels the not-yet-started send', fresh.requests.length === 0 && fresh.d.querySelector('#ai-panel').hidden && fresh.d.querySelector('#ai-input').value === 'Do not send after closing the assistant');
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://mode-awaiting-read.example/v1'; credentials.set(endpoint, 'FIXTURE_MODE_PENDING_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true });
+    const tasks = [], target = { id: 'fixture-target', ptyId: 'fixture-native', session: { protocol: 'local' }, term: { focus() {} } };
+    fresh.w.WT.term = { activeTab: () => target, isLive: tab => tab === target, ptyId: tab => tab.ptyId };
+    fresh.w.OpsAgent = { run: async options => { tasks.push(options.goal); return { status: 'complete', summary: 'Controlled task fixture', commands: 0 }; }, stop() {} };
+    fresh.d.querySelector('#ai-input').value = 'This was submitted as a chat question'; const waitingSend = fresh.api.send();
+    fresh.api.setMode('agent'); fresh.releaseRead(); await waitingSend; await settle();
+    check('A79 Switching modes while a credential read is pending cannot turn a chat send into an operations task', tasks.length === 0);
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://settings-awaiting-read.example/v1'; credentials.set(endpoint, 'FIXTURE_SETTINGS_PENDING_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true });
+    fresh.d.querySelector('#ai-input').value = 'Keep the draft while checking provider settings'; const waitingSend = fresh.api.send();
+    fresh.d.querySelector('#ai-settings').click(); fresh.releaseRead(); await waitingSend; await settle();
+    check('A80 Opening configuration invalidates an earlier send still waiting for key restoration', fresh.requests.length === 0 && !fresh.d.querySelector('#ai-config').hidden && fresh.d.querySelector('#ai-input').value === 'Keep the draft while checking provider settings');
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://new-chat-awaiting-read.example/v1'; credentials.set(endpoint, 'FIXTURE_NEW_CHAT_PENDING_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true });
+    fresh.d.querySelector('#ai-input').value = 'The previous conversation draft must be discarded'; const waitingSend = fresh.api.send();
+    fresh.api.newChat(); fresh.releaseRead(); await waitingSend; await settle();
+    check('A81 A new conversation cannot receive a send delayed by the previous conversation key read', fresh.requests.length === 0 && fresh.d.querySelectorAll('[data-ai-message]').length === 0 && fresh.d.querySelector('#ai-input').value === '');
+    fresh.close();
+  }
   check('A51 Complete integration has no JavaScript or DOM errors', errors.length === 0);
   console.log(`\nRESULT ${checks.length} passed, ${errors.length} JavaScript errors`);
 } finally {
-  A.stop(); for (const value of pending.values()) value.resolve({ content: 'test cleanup' }); await settle(); dom.window.close();
+  A.stop(); for (const value of pending.values()) value.resolve({ content: 'test cleanup' }); for (const value of heldSummaries) value.resolve({ content: 'test cleanup summary' }); await settle(); dom.window.close();
 }

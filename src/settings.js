@@ -121,7 +121,7 @@
       + row('会话输出落盘（PuTTY Logging）', '新会话的终端输出写入 配置目录/logs/session-*.log；仅对新开会话生效', toggle('sessionLog', !!T.s.sessionLog))
     );
     h += card('输出高亮',
-      row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中关键词短暂着色，6秒后消退', toggle('builtinHighlight', T.s.builtinHighlight !== false))
+      row('内置关键字高亮', 'error/warn/ok/地址 四类规则，命中关键词持续着色，直到对应输出被清除', toggle('builtinHighlight', T.s.builtinHighlight !== false))
       + `<div class="st-row"><div class="st-l"><i>
           <span class="wt-hl-err" style="padding:0 6px;border-radius:3px">error / failed / fatal</span>
           <span class="wt-hl-warn" style="padding:0 6px;border-radius:3px">warn / timeout</span>

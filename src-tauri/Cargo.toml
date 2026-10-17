@@ -1,6 +1,6 @@
 [package]
 name = "hurricane-term"
-version = "0.8.1"
+version = "0.8.2"
 description = "hurricaneTerm — cross-platform Tauri 2 terminal (SSH/Telnet/serial/TCP + SFTP)"
 edition = "2021"
 
@@ -31,6 +31,7 @@ md5 = "0.8"
 scrypt = "0.11"
 rand = "0.8"
 serde_yaml = "0.9"
+sha2 = "=0.10.9"
 
 [profile.release]
 opt-level = 2
@@ -41,3 +42,13 @@ strip = true
 [target.'cfg(unix)'.dependencies]
 termios = "0.3"
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSUserDefaults", "NSString", "NSObject"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"] }

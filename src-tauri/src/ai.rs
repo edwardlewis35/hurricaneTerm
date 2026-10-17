@@ -1,5 +1,6 @@
 //! User-triggered OpenAI-compatible chat transport. No model discovery,
-//! credentials persistence, environment proxy, or background network work.
+//! environment proxy, or background network work. Credential storage is isolated
+//! in credentials.rs; requests receive a key only when the frontend supplies it.
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -233,7 +234,7 @@ impl AiState {
     }
 }
 
-fn endpoint(value: &str) -> Result<reqwest::Url, String> {
+pub(crate) fn endpoint(value: &str) -> Result<reqwest::Url, String> {
     if value.len() > 4096 { return Err("AI 端点地址过长".into()); }
     let mut url = reqwest::Url::parse(value.trim()).map_err(|_| "AI 端点地址无效，请填写 HTTP 或 HTTPS 地址")?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()

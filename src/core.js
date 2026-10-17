@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.8.1';
+  const VERSION = '0.8.2';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -100,7 +100,9 @@ window.WT = (function () {
       const o = {};
       for (const k of keys) o[k] = WT.s[k];
       // Explicit allowlist: never serialize API keys, conversations or attachments.
-      if (WT.s.ai) o.ai = { endpoint: WT.s.ai.endpoint || '', model: WT.s.ai.model || '', width: WT.s.ai.width || 380 };
+      if (WT.s.ai) o.ai = { endpoint: WT.s.ai.endpoint || '', model: WT.s.ai.model || '', width: WT.s.ai.width || 380,
+        contextWindow: WT.s.ai.contextWindow || 32768, autoCompact: WT.s.ai.autoCompact !== false,
+        confirmCommands: WT.s.ai.confirmCommands !== false, rememberKey: WT.s.ai.rememberKey !== false };
       WT.invoke('ui_state_save', { name: 'settings', value: JSON.stringify(o) }).catch(() => {});
       // 触发器变更同步到后端语义引擎（re/triggers.rs）
       WT.invoke('triggers_reload', { triggers: JSON.stringify(WT.s.triggers || []) }).catch(() => {});
@@ -206,6 +208,16 @@ window.WT = (function () {
 
   async function boot() {
     await WT.init();
+    // Apply to every editor, including dynamically created WebKit controls and
+    // xterm's hidden textarea, without changing macOS-wide user preferences.
+    const exactInput = node => {
+      if (!node?.matches?.('input,textarea,[contenteditable="true"]')) return;
+      node.setAttribute('autocapitalize', 'none'); node.setAttribute('autocorrect', 'off'); node.setAttribute('spellcheck', 'false');
+    };
+    document.documentElement.setAttribute('autocapitalize', 'none');
+    document.body.setAttribute('autocorrect', 'off');
+    document.querySelectorAll('input,textarea,[contenteditable="true"]').forEach(exactInput);
+    document.addEventListener('focusin', event => exactInput(event.target), true);
     // 启动时把已保存的触发器载入后端引擎（re/triggers.rs）
     WT.invoke('triggers_reload', { triggers: JSON.stringify(WT.s.triggers || []) }).catch(() => {});
 

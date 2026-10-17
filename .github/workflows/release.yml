@@ -119,6 +119,8 @@ jobs:
           npm run test:ai
           npm run test:ai-agent
           npm run test:ai-ops
+          npm run test:ai-context
+          npm run test:text-input
           npm run test:connections
           npm run test:connection-feedback
 
@@ -127,6 +129,8 @@ jobs:
           npm run prepare-dist
           cargo test --manifest-path src-tauri/Cargo.toml gist_sync::tests
           cargo test --manifest-path src-tauri/Cargo.toml ai::tests
+          cargo test --manifest-path src-tauri/Cargo.toml credentials::tests
+          cargo test --manifest-path src-tauri/Cargo.toml mac_text_input::tests
           cargo test --manifest-path src-tauri/Cargo.toml agent_exec::tests
           cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests
           cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests

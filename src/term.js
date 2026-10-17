@@ -992,7 +992,7 @@
         d.onRender((el) => el.classList.add('wt-hit'));
         const entry = { d, m };
         (tab._hitHighlights ||= new Set()).add(entry);
-        entry.timer = setTimeout(() => { d.dispose(); m.dispose(); tab._hitHighlights.delete(entry); }, 4000);
+        m.onDispose?.(() => { d.dispose(); tab._hitHighlights?.delete(entry); });
       } catch (e) {}
     },
 
@@ -1029,19 +1029,12 @@
     },
     expireHighlights(tab) {
       clearTimeout(tab._highlightTimer);
-      const now = Date.now();
       tab._highlightEntries = (tab._highlightEntries || []).filter((entry) => {
         if (entry.anchor.isDisposed) { this.disposeHighlight(entry); return false; }
-        if (entry.expires <= now && entry.decorations.length) {
-          for (const d of entry.decorations) { d.dispose(); d.marker.dispose(); }
-          entry.decorations = [];
-        }
-        return true; // retain visible row identity so faded text cannot relight
+        return true; // Keep colors until the underlying scrollback row is removed.
       });
       tab._hls = tab._highlightEntries.flatMap(e => e.decorations);
-      const pending = tab._highlightEntries.filter(e => e.decorations.length);
-      tab._highlightTimer = pending.length && !tab._closing
-        ? setTimeout(() => this.expireHighlights(tab), Math.max(1, Math.min(...pending.map(e => e.expires)) - now)) : null;
+      tab._highlightTimer = null;
     },
     runHighlights(tab) {
       if (tab._closing || T.s.builtinHighlight === false) { this.clearHighlights(tab); return; }
@@ -1055,10 +1048,7 @@
       const last = Math.min(buffer.length - 1, buffer.baseY + (term.rows || 24) - 1);
       let first = Math.max(buffer.baseY, last - 119);
       while (first > 0 && last - first < 119 && buffer.getLine(first)?.isWrapped) first--;
-      tab._highlightEntries = tab._highlightEntries.filter(entry => {
-        if (entry.anchor.line >= first && entry.anchor.line <= last) return true;
-        this.disposeHighlight(entry); return false;
-      });
+      const byLine = new Map(tab._highlightEntries.map(entry => [entry.anchor.line, entry]));
       for (let row = first; row <= last;) {
         const start = row, lines = []; let text = '';
         do {
@@ -1068,7 +1058,7 @@
           lines.push({ row, line, value }); text += value; row++;
         } while (row <= last && buffer.getLine(row)?.isWrapped);
         if (row === start) break;
-        const old = tab._highlightEntries.find(e => e.anchor.line === start);
+        const old = byLine.get(start);
         if (old?.text === text) continue;
         if (old) { this.disposeHighlight(old); tab._highlightEntries.splice(tab._highlightEntries.indexOf(old), 1); }
         const rule = this.HIGHLIGHT_RULES.find(r => r.re.test(text));
@@ -1091,11 +1081,9 @@
           }
           if (x >= 0) { const d = this.highlightLine(tab, rule.cls, item.row - cursor, x, end - x); if (d) decorations.push(d); }
         }
-        if (decorations.length) tab._highlightEntries.push({ anchor, text, decorations, expires: Date.now() + 6000 });
+        if (decorations.length) tab._highlightEntries.push({ anchor, text, decorations });
         else anchor.dispose();
       }
-      while (tab._highlightEntries.reduce((n, e) => n + e.decorations.length, 0) > 240)
-        this.disposeHighlight(tab._highlightEntries.shift());
       this.expireHighlights(tab);
     },
 

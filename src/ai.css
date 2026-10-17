@@ -20,6 +20,7 @@
 .ai-agent-steps { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
 .ai-agent-step { border: 1px solid var(--border); border-radius: 6px; background: var(--surface); overflow: hidden; }
 .ai-agent-step summary { cursor: pointer; padding: 8px 9px; font-size: 11px; color: var(--fg3); background: var(--surface-hover); }
+.ai-agent-step summary code { display: block; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--font-mono); color: var(--accent); }
 .ai-agent-step .ai-step-purpose { padding: 0 9px; font-size: 11px; color: var(--fg2); margin: 7px 0; }
 .ai-agent-step pre { margin: 0; padding: 8px 9px; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.6 var(--font-mono); max-height: 160px; overflow-y: auto; user-select: text; }
 .ai-step-command { color: var(--fg3); background: var(--input-bg); }
@@ -38,9 +39,14 @@
 #ai-config label { font-size: 11px; margin-top: 6px; color: var(--fg3); }
 #ai-config label span { color: var(--fg2); font-weight: normal; margin-left: 3px; }
 #ai-config input { min-width: 0; width: 100%; background: var(--input-bg); }
+.ai-check { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--fg2); line-height: 1.6; }
+#ai-config .ai-check input, .ai-check input { width: 13px; height: 13px; flex: none; margin: 0; accent-color: var(--accent); }
+.ai-step-confirm { margin-bottom: 5px; }
+#ai-panel[data-ai-mode="chat"] .ai-step-confirm { display: none; }
+#ai-forget-key { align-self: flex-start; font-size: 10px; }
 #ai-config small { font-size: 10px; line-height: 1.5; color: var(--fg2); }
 #ai-panel:has(#ai-config:not([hidden])) #ai-config { flex: 1; max-height: none; min-height: 0; }
-#ai-panel:has(#ai-config:not([hidden])) :is(#ai-messages, #ai-context, .ai-compose) { display: none; }
+#ai-panel:has(#ai-config:not([hidden])) :is(#ai-messages, #ai-context, .ai-compose, .ai-context-usage) { display: none; }
 #ai-save { align-self: flex-end; margin-top: 8px; }
 #ai-messages { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 70px; padding: 0 16px 12px; scroll-behavior: auto; }
 .ai-welcome { display: flex; flex-direction: column; align-items: flex-start; padding: 30px 0 16px; gap: 12px; }
@@ -68,18 +74,24 @@
 .ai-sent-context { font-size: 10px; color: var(--fg2); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; margin: 7px 0; }
 .ai-sent-context summary { cursor: pointer; }
 .ai-sent-context pre { max-height: 120px; overflow: auto; margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.6 var(--font-mono); }
-#ai-context { flex: 0 1 auto; min-height: 0; margin: 0 12px 8px; padding: 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: 10px; max-height: 150px; overflow: auto; }
+#ai-context { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 32px; margin: 0 0 7px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); font-size: 10px; max-height: 150px; overflow: hidden; }
+#ai-context details { flex: 1; min-height: 0; max-height: 112px; overflow: auto; }
+.ai-context-head { flex: none; display: flex; justify-content: flex-end; margin-bottom: 2px; }
+.ai-context-head button { font-size: 10px; padding: 2px 7px; color: var(--danger); }
+.ai-context-usage { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 7px 14px; font-size: 9px; color: var(--fg2); }
+.ai-context-usage button { margin-left: auto; padding: 3px 6px; font-size: 10px; }
+#ai-context-meter { width: 100%; height: 4px; accent-color: var(--accent); }
 #ai-context[hidden] { display: none; }
 #ai-context summary { cursor: pointer; overflow-wrap: anywhere; }
 #ai-context pre { margin: 8px 0; color: var(--fg2); font: 10px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-#ai-context > button { padding: 2px 6px; font-size: 10px; margin-top: 6px; }
-.ai-compose { flex: none; margin: 0 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--input-bg); }
+.ai-compose { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; max-height: 48%; overflow: hidden; margin: 0 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--input-bg); }
+.ai-compose > :not(#ai-context):not(#ai-input) { flex: none; }
 .ai-compose:focus-within { border-color: var(--accent); }
 .ai-context-actions { display: flex; gap: 8px; margin-bottom: 6px; }
 .ai-context-actions button { display: flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--fg2); font-size: 10px; padding: 2px 0; }
 .ai-context-actions button:hover { color: var(--fg3); }
 .ai-context-actions .ico { width: 12px; height: 12px; }
-#ai-input { display: block; width: 100%; min-height: 55px; max-height: 150px; resize: vertical; border: 0; background: transparent; outline: none; padding: 2px 0; box-shadow: none; font-size: 12px; color: var(--fg); }
+#ai-input { display: block; flex-shrink: 1; width: 100%; min-height: 55px; max-height: 150px; resize: vertical; border: 0; background: transparent; outline: none; padding: 2px 0; box-shadow: none; font-size: 12px; color: var(--fg); }
 .ai-compose-bottom { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .ai-compose-bottom > span { color: var(--fg2); font-size: 9px; margin-right: auto; }
 .ai-compose-bottom button { font-size: 11px; padding: 4px 8px; display: flex; align-items: center; gap: 4px; }
@@ -89,8 +101,12 @@
 @media (max-width: 760px) { #ai-panel { position: absolute; right: 0; top: 0; bottom: 0; width: min(var(--ai-width, 380px), 100%); max-width: 100%; min-width: min(300px, 100%); z-index: 18; background: var(--bg2); box-shadow: var(--shadow); } }
 @media (max-height: 550px) {
   .ai-head { height: 38px; }
+  .ai-model-line { padding-top: 5px; padding-bottom: 5px; }
+  .ai-mode-row { padding-bottom: 4px; }
+  #ai-agent-target { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-bottom: 5px; }
   #ai-messages { min-height: 0; padding-bottom: 5px; }
   #ai-context { max-height: 80px; }
+  #ai-context details { max-height: 44px; }
   #ai-input { min-height: 38px; max-height: 65px; }
   .ai-welcome { padding-top: 10px; }
   #ai-status { padding-top: 5px; padding-bottom: 5px; }

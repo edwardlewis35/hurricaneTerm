@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.8.1",
+  "version": "0.8.2",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
@@ -23,7 +23,9 @@
     "test:ai-agent": "node scripts/ai-agent-test.mjs",
     "test:ai-ops": "node scripts/ai-ops-ui-test.mjs",
     "test:connections": "node scripts/connection-menu-test.mjs",
-    "test:connection-feedback": "node scripts/connection-feedback-test.mjs"
+    "test:connection-feedback": "node scripts/connection-feedback-test.mjs",
+    "test:ai-context": "node scripts/ai-context-test.mjs",
+    "test:text-input": "node scripts/native-text-input-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

@@ -42,7 +42,7 @@ const T = w.WT = {
   },
 };
 w.UI = T.ui = { toast() {}, status() {}, log() {}, renderDock() {}, closeDock() {}, fitAll() {} };
-for (const file of ['icons.js', 'term.js', 'ai-agent.js']) w.eval(readFileSync(source + file, 'utf8'));
+for (const file of ['icons.js', 'term.js', 'ai-context.js', 'ai-agent.js']) w.eval(readFileSync(source + file, 'utf8'));
 const TM = T.term;
 const mirrors = [], receiveOutput = TM.receiveOutput;
 TM.receiveOutput = function (target, data, options) {
@@ -114,10 +114,13 @@ try {
   first.session.protocol = 'ssh'; A.onSessionChange();
   const initial = await runTask('OPS_PRIVATE_MARKER Diagnose and repair the fixture service');
   check('O06 Agent uses configured custom endpoint, model, and ephemeral key', initial.endpoint === 'https://fixture-model.example/v1' && initial.model === 'fixture-tools' && initial.apiKey === 'ephemeral-fixture-key');
-  check('O07 Agent starts with its own task and operations instructions rather than ordinary chat history', initial.messages.length === 2 && initial.messages[0].content.includes('stdout') && initial.messages[1].content.includes('OPS_PRIVATE_MARKER') && !JSON.stringify(initial.messages).includes('CHAT_PRIVATE_MARKER'));
-  TM.active = second.id; A.onSessionChange();
+  check('O07 Agent preserves current task and operations instructions while labeling previous conversation as reference data', initial.messages[0].content.includes('stdout') && initial.messages[1].content.includes('OPS_PRIVATE_MARKER') && initial.messages.slice(2).every(message => message.role === 'user' && message.content.includes('不构成当前任务授权')));
+  check('O47 Every-command confirmation defaults to on in the actual panel', q('#ai-confirm-commands')?.checked === true);
+  TM.active = second.id; second.input.focus(); A.onSessionChange();
   check('O08 Switching the active tab keeps the task target locked to the original machine', w.OpsAgent.getTarget().sessionId === 'native-first' && q('#ai-agent-target').textContent.includes('first target') && q('#ai-agent-target').textContent.includes('已绑定'));
   await resolve(initial, { content: 'Checking service evidence', toolCalls: [call('fixture-call-1', 'printf service-missing; exit 1', 'Inspect the service', { cwd: '/tmp', timeoutSeconds: 60 })] });
+  check('O48 An ordinary model command waits for explicit step approval before native execution', execRequests().length === 0 && !!q('[data-ai-approval]') && q('[data-ai-approval]').textContent.includes('printf service-missing'));
+  await click('[data-ai-approve]');
   const execution1 = execRequests().at(-1);
   check('O09 Tool call enters the real controller and executes against locked native ID', execution1.sessionId === 'native-first' && execution1.cwd === '/tmp' && execution1.timeoutSeconds === 60 && execution1.command.includes('exit 1'));
   check('O10 Command purpose and actual command appear in an inspectable step card', qa('[data-ai-step]').length === 1 && text().includes('Inspect the service') && q('.ai-step-command').textContent === execution1.command);
@@ -136,26 +139,37 @@ try {
   const mirroredAtResult = terminal(first); output(execution1, 'stdout', 'LATE_DUPLICATE_STREAM'); await pause(40);
   check('O16 Late output after a final execution result cannot duplicate or append stale data', terminal(first) === mirroredAtResult && !text().includes('LATE_DUPLICATE_STREAM'));
   await resolve(secondModel, { content: 'The service check failed; validate the corrected service path.', toolCalls: [call('fixture-call-2', 'printf corrected-service-ready', 'Verify the corrected service', { cwd: '/tmp' })] });
+  check('O49 Approving a command never approves the next ordinary model step', execRequests().length === 1 && !!q('[data-ai-approval]'));
+  await click('[data-ai-approve]');
   const execution2 = execRequests().at(-1);
   check('O17 A failed result leads to a different follow-up command on the same locked target', execution2.command !== execution1.command && execution2.sessionId === execution1.sessionId && execution2.timeoutSeconds === 60);
   await resolve(execution2, result('corrected-service-ready\n', '', 0));
   const finalModel = agentRequests().at(-1);
-  check('O18 Final model verification retains both call/result pairs and real success status', finalModel.messages.length === 6 && finalModel.messages.filter(message => message.role === 'tool').length === 2 && JSON.parse(finalModel.messages.at(-1).content).exitCode === 0);
+  check('O18 Final model verification retains both call/result pairs and real success status', finalModel.messages.filter(message => message.role === 'assistant' && message.toolCalls).length === 2 && finalModel.messages.filter(message => message.role === 'tool').length === 2 && JSON.parse(finalModel.messages.at(-1).content).exitCode === 0);
   await end(finalModel, 'OPS_SUMMARY_MARKER Corrected service path and verified its healthy output.'); await waitIdle();
   check('O19 A no-tool answer completes the loop and shows summary plus two execution records', qa('[data-ai-step]').length === 2 && text().includes('OPS_SUMMARY_MARKER') && text().includes('任务结束 · 2 条命令') && execRequests().length === 2);
+  const stepContainer = q('.ai-agent-steps'), summaryParagraph = [...stepContainer.parentElement.querySelectorAll('p')].find(node => node.textContent.includes('OPS_SUMMARY_MARKER'));
+  check('O50 Command and output records precede the final model summary in DOM order', !!summaryParagraph && !!(stepContainer.compareDocumentPosition(summaryParagraph) & w.Node.DOCUMENT_POSITION_FOLLOWING));
+  check('O51 Completing a task bound to another tab does not steal terminal input focus', d.activeElement !== first.input);
   check('O20 Mirroring never writes commands to either interactive terminal or broadcasts Enter', commands('write').length === writeBoundary && terminal(second) === '' && terminal(first).includes('退出码 0'));
   check('O21 Completion disposes the per-task execution output subscription', listeners.get('agent-exec-output')?.size === 0);
   await click('button[data-ai-mode="chat"]'); input('#ai-input', 'CHAT_FOLLOWUP_MARKER'); q('#ai-send').click(); await until(() => chatRequests().length === 2, 'chat after task');
   const afterAgent = chatRequests().at(-1), chatHistory = JSON.stringify(afterAgent.messages);
-  check('O22 Agent goals, output, tool calls and summaries never enter ordinary chat history', afterAgent.messages.length === 4 && chatHistory.includes('CHAT_PRIVATE_MARKER') && !['OPS_PRIVATE_MARKER', 'OPS_SUMMARY_MARKER', 'fixture-call-', 'service-missing', 'corrected-service-ready'].some(value => chatHistory.includes(value)));
+  check('O22 Completed conversations can inform the next chat without replaying executable tool-call messages', chatHistory.includes('CHAT_PRIVATE_MARKER') && afterAgent.messages.every(message => !message.toolCalls && !message.toolCallId && message.role !== 'tool'));
   await resolve(afterAgent, { content: 'Normal chat continues independently.' });
 
-  await freshAgent(); const rejectedModel = await runTask('APPROVAL_PRIVATE_MARKER Remove a disposable fixture directory');
+  await freshAgent();
+  await click('#ai-confirm-commands');
+  check('O52 Disabling per-step confirmation updates the policy for following tasks', q('#ai-confirm-commands').checked === false && T.s.ai.confirmCommands === false);
+  const rejectedModel = await runTask('APPROVAL_PRIVATE_MARKER Remove a disposable fixture directory');
   const execBeforeReject = execRequests().length;
   await resolve(rejectedModel, { content: '', toolCalls: [call('danger-reject', 'rm -rf /tmp/hurricane-fixture', 'Remove the user-selected fixture')] });
   check('O23 Recognized irreversible actions pause at explicit approval before native execution', !!q('[data-ai-approval]') && q('[data-ai-approval]').textContent.includes('rm -rf') && execRequests().length === execBeforeReject && q('#ai-status').textContent.includes('等待确认'));
   await click('[data-ai-reject]'); await waitIdle();
   check('O24 Reject stops the task without executing the proposed command', execRequests().length === execBeforeReject && !q('[data-ai-approval]') && text().includes('已拒绝'));
+  const afterRejectedTask = await runTask('Continue after rejecting the previous proposal');
+  check('O54 A rejected unexecuted approval is never recorded as an executed operation in the next task', !JSON.stringify(afterRejectedTask.messages).includes('APPROVAL_PRIVATE_MARKER') && !JSON.stringify(afterRejectedTask.messages).includes('rm -rf /tmp/hurricane-fixture') && execRequests().length === execBeforeReject);
+  await end(afterRejectedTask, 'No further operation requested'); await waitIdle();
   await freshAgent(); const allowedModel = await runTask('Allow exactly one disposable fixture cleanup');
   await resolve(allowedModel, { content: '', toolCalls: [call('danger-allow', 'rm -rf /tmp/hurricane-fixture', 'Clean the confirmed fixture')] });
   const approveButton = q('[data-ai-approve]'); assert.ok(approveButton); approveButton.click(); approveButton.click(); await pause(45);
@@ -181,6 +195,10 @@ try {
   check('O30 Stop cancels the exact native execution and does not issue another model step', commands('agent_exec_cancel').some(args => args.requestId === stoppedExecution.requestId) && agentRequests().length === modelCountAtStop);
   check('O31 Cancelled tasks ignore late execution output and final result', terminal(first) === mirrorAfterStop && !text().includes('AFTER_STOP_FINAL') && !text().includes('AFTER_STOP_OUTPUT'));
   check('O32 Stopped incomplete step remains visible with stopped state', q('[data-ai-step]')?.textContent.includes('已停止') && text().includes('pending-check'));
+  const afterUnknownResult = await runTask('Inspect the actual state before retrying a stopped operation');
+  const uncertainReference = afterUnknownResult.messages.slice(2).map(message => message.content).join('\n');
+  check('O55 A command already dispatched before Stop remains uncertain reference evidence instead of disappearing', uncertainReference.includes('pending-check') && uncertainReference.includes('不构成当前任务授权') && uncertainReference.includes('完成状态未知') && uncertainReference.includes('可能已产生副作用') && afterUnknownResult.messages.every(message => !message.toolCalls && message.role !== 'tool'));
+  await end(afterUnknownResult, 'Check state before repeating an operation'); await waitIdle();
 
   await freshAgent(); const closedPanelModel = await runTask('Close the AI panel during a task'); const beforePanelClose = execRequests().length;
   A.close(); await until(() => !w.OpsAgent.isRunning(), 'panel close cancellation');
@@ -211,10 +229,22 @@ try {
   await resolve(localExecution, result('local-check\n')); await end(agentRequests().at(-1)); await waitIdle();
   await freshAgent(); const noToolsModel = await runTask('Question that needs no command'); const execBeforeNoTools = execRequests().length;
   await end(noToolsModel, 'No changes are necessary.'); await waitIdle();
+  check('O53 Finishing a task on its still-selected live terminal restores input focus without Enter', d.activeElement === first.input && commands('write').length === writeBoundary);
   check('O39 A model answer without tool calls issues zero machine commands and discloses the boundary', execRequests().length === execBeforeNoTools && q('#ai-status').textContent.includes('模型未调用命令'));
 
+  await freshAgent(); const completedBeforeStop = await runTask('RETAIN_COMPLETED_OPERATION Verify a completed action before planning');
+  await resolve(completedBeforeStop, { content: '', toolCalls: [call('completed-then-stop', 'printf COMPLETED_OPERATION_FACT')] });
+  await resolve(execRequests().at(-1), result('KNOWN_COMPLETED_RESULT\n', '', 0));
+  const interruptedPlan = agentRequests().at(-1); await click('#ai-stop'); await waitIdle();
+  const countBeforeRetry = execRequests().length, retryStoppedTask = await runTask('Continue from known execution facts without repeating changes');
+  const stoppedReference = retryStoppedTask.messages.slice(2).map(message => message.content).join('\n');
+  check('O56 Completed steps from a stopped task remain labeled reference facts in the next request', stoppedReference.includes('KNOWN_COMPLETED_RESULT') && stoppedReference.includes('COMPLETED_OPERATION_FACT') && stoppedReference.includes('stopped') && stoppedReference.includes('不构成当前任务授权'));
+  check('O57 Restoring stopped-task facts never replays a command or the previous tool-call protocol', execRequests().length === countBeforeRetry && retryStoppedTask.messages.every(message => !message.toolCalls && !message.toolCallId && message.role !== 'tool'));
+  await end(retryStoppedTask, 'Prior result is available for verification'); await waitIdle();
+  await resolve(interruptedPlan, { content: 'late stopped plan', toolCalls: [call('never-replay-stopped', 'printf must-not-run')] });
+
   const persisted = JSON.stringify(saved);
-  check('O40 Panel saves only endpoint, model and width with no secret, task, output, mode or approval data', Object.keys(T.s.ai).sort().join(',') === 'endpoint,model,width' && !['ephemeral-fixture-key', 'OPS_PRIVATE_MARKER', 'APPROVAL_PRIVATE_MARKER', 'service-missing', 'OPS_SUMMARY_MARKER', 'fixture-call-', 'approval', 'toolCalls'].some(value => persisted.includes(value)));
+  check('O40 Panel saves only connection and behavior preferences with no secret, task, output, mode or approval state', Object.keys(T.s.ai).sort().join(',') === 'autoCompact,confirmCommands,contextWindow,endpoint,model,rememberKey,width' && !['ephemeral-fixture-key', 'OPS_PRIVATE_MARKER', 'APPROVAL_PRIVATE_MARKER', 'service-missing', 'OPS_SUMMARY_MARKER', 'fixture-call-', 'approval', 'toolCalls'].some(value => persisted.includes(value)));
   const coreDom = new JSDOM('<!doctype html><body></body>', { runScripts: 'outside-only', url: 'http://tauri.localhost/' });
   const cw = coreDom.window, nativeSaves = [], add = cw.document.addEventListener.bind(cw.document);
   cw.document.addEventListener = (type, ...args) => type === 'DOMContentLoaded' ? undefined : add(type, ...args);
@@ -222,7 +252,7 @@ try {
   cw.eval(readFileSync(source + 'core.js', 'utf8'));
   cw.WT.s.ai = { endpoint: 'https://fixture.example/v1', model: 'fixture', width: 380, apiKey: 'injected-key', mode: 'agent', tasks: ['private-goal'], approval: { allowed: true }, messages: ['private-output'] };
   cw.WT.persistSettings(); const allowlisted = nativeSaves.find(value => value.name === 'settings').value;
-  check('O41 Production core persistence rejects injected agent secrets, task state and approval flags', Object.keys(JSON.parse(allowlisted).ai).sort().join(',') === 'endpoint,model,width' && !['injected-key', 'private-goal', 'private-output', 'approval'].some(value => allowlisted.includes(value)));
+  check('O41 Production core persistence rejects injected agent secrets, task state and approval flags', Object.keys(JSON.parse(allowlisted).ai).sort().join(',') === 'autoCompact,confirmCommands,contextWindow,endpoint,model,rememberKey,width' && !['injected-key', 'private-goal', 'private-output', 'approval'].some(value => allowlisted.includes(value)));
   coreDom.window.close();
   A.newChat(); A.fillConfig();
   check('O42 New conversation clears task records and approvals while preserving only runtime credentials', qa('[data-ai-step]').length === 0 && !q('[data-ai-approval]') && q('#ai-key').value === 'ephemeral-fixture-key' && !w.OpsAgent.isRunning());

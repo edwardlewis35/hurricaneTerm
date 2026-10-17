@@ -123,7 +123,7 @@
         <div class="ht-pm-left">
           <div class="ht-pm-head"><span class="ht-pm-count">机器管理</span><button class="ht-pm-x icon" title="关闭（Esc）" aria-label="关闭机器管理">${window.Icons.svg('x')}</button></div>
           <div class="ht-pm-tools">
-            <input class="ht-pm-q" type="text" placeholder="搜索机器…" aria-label="搜索机器">
+            <input class="ht-pm-q" type="text" placeholder="搜索机器…" aria-label="搜索机器" autocapitalize="none" autocorrect="off" spellcheck="false">
             <div class="ht-pm-btns">
               <button data-act="add">${window.Icons.svg('plus')} 添加</button>
               <button data-act="dup" title="复制选中的机器">${window.Icons.svg('copy')} 复制</button>
@@ -261,7 +261,7 @@
   const sect = (t) => `<div class="ht-pm-sect">${t}</div>`;
   const hint = (t) => `<div class="ht-pm-hint">${t}</div>`;
   function fld(label, key, val, ph, type) {
-    return `<div class="ht-pm-field"><span>${label}</span><input aria-label="${esc(label)}" data-k="${key}" type="${type || 'text'}" value="${esc(val == null || val === 0 ? '' : val)}" placeholder="${esc(ph || '')}" autocomplete="off"></div>`;
+    return `<div class="ht-pm-field"><span>${label}</span><input aria-label="${esc(label)}" data-k="${key}" type="${type || 'text'}" value="${esc(val == null || val === 0 ? '' : val)}" placeholder="${esc(ph || '')}" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"></div>`;
   }
   function sel(label, key, opts, val) {
     const cur = String(val == null ? '' : val);
