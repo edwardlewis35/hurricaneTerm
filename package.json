@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.8.2",
+  "version": "0.8.3",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",

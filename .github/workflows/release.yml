@@ -22,6 +22,12 @@ on:
 permissions:
   contents: write
 
+# Explicit bash uses -e -o pipefail on every runner, including Windows.
+# A failed native command must stop its step before a later success masks it.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     strategy:

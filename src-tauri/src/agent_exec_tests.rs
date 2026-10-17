@@ -6,7 +6,7 @@ fn request(command: &str) -> ExecRequest {
 }
 fn no_output() -> OutputSink { Arc::new(|_| {}) }
 async fn local(request: ExecRequest) -> ExecResult {
-    let control = Arc::new(ExecControl::new(Duration::from_secs(request.timeout_seconds.unwrap_or(60))));
+    let control = Arc::new(ExecControl::new(Duration::from_secs(request.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT))));
     execute(Target::Local { cwd: None }, request, control, no_output()).await.unwrap()
 }
 struct Scratch(PathBuf);
@@ -86,7 +86,14 @@ async fn local_command_has_separate_stdout_stderr_and_exit_status() {
 #[cfg(windows)]
 #[tokio::test]
 async fn local_powershell_has_separate_stdout_stderr_and_exit_status() {
-    let result = local(request("[Console]::Out.Write('hello'); [Console]::Error.Write('error details'); exit 7")).await;
+    let mut req = request("[Console]::Out.Write('hello'); [Console]::Error.Write('error details'); exit 7");
+    // This checks output and exit status, not cold PowerShell startup speed.
+    // Use the production default instead of the fixtures' short 5s deadline;
+    // explicit timeout and cancellation tests keep their independent budgets.
+    req.timeout_seconds = None;
+    let result = local(req).await;
+    assert!(!result.timed_out && !result.cancelled && !result.truncated,
+        "PowerShell must finish normally before checking its output: {result:?}");
     assert_eq!(result.stdout, "hello"); assert_eq!(result.stderr, "error details"); assert_eq!(result.exit_code, Some(7));
 }
 
