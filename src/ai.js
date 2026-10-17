@@ -10,14 +10,24 @@
   let conversation = [], compactions = 0, activeContext = null, keyEndpoint = '', keyReady = Promise.resolve(), keyRevision = 0;
   let keyDraftDirty = false;
   let dialogueGeneration = 0;
-  let savingConfig = false;
+  let savingConfig = false, conversationOrigin = null;
   const $ = selector => el?.querySelector(selector);
   const icon = name => window.Icons?.svg(name) || '';
   const textNode = (tag, text, cls) => { const node = document.createElement(tag); node.textContent = text; if (cls) node.className = cls; return node; };
   const clean = text => String(text || '').replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '').slice(-LIMIT).replace(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/g, '');
   const current = () => T.term?.activeTab?.();
   const nativeId = tab => T.term?.ptyId?.(tab);
-  const canOperate = tab => !!tab && T.term?.isLive?.(tab) && ['', 'local', 'ssh'].includes(String(tab.session?.protocol || '').toLowerCase());
+  function memoryTab(tab) {
+    const source = tab?._connectionIdentity || tab?.session || {}, protocol = String(source.protocol || 'local').toLowerCase();
+    return { title: tab?.title || source.name || '本地机器', session: { protocol,
+      host: protocol === 'serial' ? String(source.target || source.host || '').trim() : String(source.host || (protocol === 'tcp' ? source.target : '') || '').trim().toLowerCase(), port: Number(source.port) || (protocol === 'ssh' ? 22 : protocol === 'telnet' ? 23 : 0), user: String(source.user || '') } };
+  }
+  const memoryIdentity = tab => JSON.stringify(memoryTab(tab).session);
+  function rememberConversationOrigin(tab) {
+    const origin = memoryIdentity(tab);
+    conversationOrigin = conversationOrigin === null ? origin : conversationOrigin === origin ? origin : 'mixed';
+  }
+  const canOperate = tab => !!tab && T.term?.isLive?.(tab) && ['', 'local', 'ssh'].includes(String((tab._connectionIdentity || tab.session)?.protocol || '').toLowerCase());
   function settings() {
     const saved = T.s.ai || {};
     return { endpoint: typeof saved.endpoint === 'string' ? saved.endpoint : '', model: typeof saved.model === 'string' ? saved.model : '', width: Math.max(300, Math.min(600, Number(saved.width) || 380)),
@@ -40,6 +50,7 @@
     $('#ai-config').querySelectorAll('input').forEach(input => { input.disabled = busy; });
     if ($('#ai-forget-key')) $('#ai-forget-key').disabled = !!pending || savingConfig;
     $('#ai-settings').disabled = busy;
+    if ($('#ai-memory-toggle')) $('#ai-memory-toggle').disabled = busy;
     $('#ai-context-selection').disabled = busy;
     $('#ai-context-output').disabled = busy;
     if ($('#ai-compact')) $('#ai-compact').disabled = busy || !conversation.length;
@@ -81,15 +92,26 @@
   async function compactConversation(manual = false) {
     if (savingConfig) return false;
     if (!window.AiContext || !conversation.length) { if (manual) status('当前上下文较短，无需压缩'); return false; }
+    const compactTab = current(), compactNative = nativeId(compactTab), compactGeneration = compactTab?._connectionGeneration || 0;
     const cfg = settings(), request = { kind: 'compact', id: 'compact-' + (window.crypto?.randomUUID?.() || Date.now()), stopped: false };
     if (pending) return false;
+    const compactAlive = () => pending === request && !request.stopped && (!window.AiMemory?.isEnabled?.()
+      || (current() === compactTab && nativeId(compactTab) === compactNative && (compactTab?._connectionGeneration || 0) === compactGeneration));
     pending = request; sync(); status('正在压缩较早上下文，最近对话会保留…');
     try {
       await keyReady;
+      if (window.AiMemoryFlush && conversationOrigin === memoryIdentity(compactTab)) {
+        await AiMemoryFlush.flush({ messages: conversation, tab: memoryTab(compactTab), ...cfg, apiKey: key,
+          requestId: request.id + '-memory', shouldContinue: compactAlive,
+          onRequest: id => { request.nativeRequest = id; }, onStatus: message => status(message) });
+        if (!compactAlive()) { status('机器连接已变化，已停止整理与压缩，原历史保留', true); return false; }
+      }
+      if (!compactAlive()) return false;
+      if (window.AiMemory?.settings?.().flushBeforeCompact && conversationOrigin !== memoryIdentity(compactTab)) window.AiMemory.reportStatus?.('本轮包含不同机器或未标记的历史，仅压缩对话；请确认归属后手动保存记忆');
       const result = await AiContext.compact({ messages: [{ role: 'system', content: SYSTEM }, ...conversation], ...cfg, apiKey: key,
-        requestId: request.id, keepStart: 1, keepRecent: 4, shouldContinue: () => pending === request && !request.stopped,
+        requestId: request.id, keepStart: 1, keepRecent: 4, shouldContinue: compactAlive,
         onRequest: id => { request.nativeRequest = id; } });
-      if (pending !== request || request.stopped) return false;
+      if (!compactAlive()) return false;
       if (result.summary) { conversation = result.messages.slice(1); compactions++; status('上下文已压缩：约 ' + result.beforeTokens + ' → ' + result.afterTokens + ' tokens；对话记录保留'); }
       else if (manual) status('当前上下文较短，无需压缩');
       return !!result.summary;
@@ -142,6 +164,29 @@
     if (await T.term.writeTo(tab, command)) { status('已插入终端，请检查后按 Enter 执行'); if (current() === tab && T.term.isLive(tab) && document.activeElement === originFocus) tab.term.focus(); }
     else status('终端连接已断开，未插入命令', true);
   }
+  function renderMemory(reference, host) {
+    if (!reference) return;
+    const hits = reference.hits || [], details = document.createElement('details'); details.className = 'ai-memory-sources';
+    const mode = reference.mode === 'hybrid' ? '混合检索' : reference.mode === 'vector' ? '向量检索' : reference.mode === 'source' ? '原文读取' : reference.mode === 'unavailable' ? '暂不可用' : '关键词检索';
+    details.append(textNode('summary', '记忆 · ' + hits.length + ' 条 · ' + mode + (reference.attached === false ? ' · 未附加' : '')));
+    if (reference.warning) details.append(textNode('p', reference.warning));
+    for (const hit of hits) {
+      const row = document.createElement('div');
+      row.append(textNode('code', (hit.scope === 'global' ? '全局/' : '当前机器/') + hit.path + ':' + hit.startLine + '-' + hit.endLine));
+      row.append(textNode('pre', hit.snippet || hit.content || ''));
+      const read = textNode('button', '查看原文'); read.type = 'button'; read.dataset.aiMemorySource = '';
+      read.onclick = async () => {
+        read.disabled = true;
+        try {
+          const source = await window.AiMemory.get({ scope: hit.scope, path: hit.path, fromLine: hit.startLine, lines: Math.min(200, Math.max(1, hit.endLine - hit.startLine + 1)) });
+          if (row.isConnected) row.querySelector('pre').textContent = source.content;
+        } catch (_) { if (row.isConnected) row.append(textNode('p', '记忆原文读取失败，请在记忆管理中刷新文件')); }
+        finally { if (read.isConnected) read.disabled = false; }
+      };
+      row.append(read); details.append(row);
+    }
+    host.append(details);
+  }
   function renderMessage(message, host) {
     const article = document.createElement('article'); article.className = 'ai-message ai-' + message.role;
     article.dataset.aiMessage = message.role;
@@ -149,9 +194,14 @@
     if (message.role === 'assistant' && message.content) {
       const button = textNode('button', '复制', 'ai-copy-message'); button.type = 'button'; button.dataset.aiCopy = '';
       button.onclick = () => copy(message.content); head.append(button);
+      if (window.AiMemory && message.complete) {
+        const save = textNode('button', '保存为记忆', 'ai-copy-message'); save.type = 'button'; save.dataset.aiSaveMemory = '';
+        save.onclick = () => window.AiMemory.openSave({ content: message.content, tab: message.memoryTab }); head.append(save);
+      }
     }
     article.append(head);
     const content = document.createElement('div'); content.className = 'ai-message-content';
+    renderMemory(message.memory, content);
     if (message.steps) renderSteps(message, content);
     const display = message.displayContent ?? message.content;
     const fence = /^```([^\n]*)\n([\s\S]*?)^```[ \t]*$/gm;
@@ -197,8 +247,8 @@
     host.append(steps);
     if (message.approval) {
       const approval = message.approval, box = document.createElement('div'); box.className = 'ai-agent-approval'; box.dataset.aiApproval = '';
-      box.append(textNode('strong', '此操作需要确认'), textNode('p', approval.reasons.join('；')), textNode('pre', approval.command));
-      const yes = textNode('button', '允许本次执行', 'primary'); yes.type = 'button'; yes.dataset.aiApprove = '';
+      box.append(textNode('strong', approval.kind === 'memory-write' ? '保存长期记忆前确认' : '此操作需要确认'), textNode('p', approval.reasons.join('；')), textNode('pre', approval.command));
+      const yes = textNode('button', approval.kind === 'memory-write' ? '保存这条记忆' : '允许本次执行', 'primary'); yes.type = 'button'; yes.dataset.aiApprove = '';
       const no = textNode('button', '拒绝并停止'); no.type = 'button'; no.dataset.aiReject = '';
       const decide = value => { if (message.approval !== approval) return; message.approval = null; approval.resolve(value); renderMessages(); };
       yes.onclick = () => decide(true); no.onclick = () => decide(false); box.append(yes, no); host.append(box);
@@ -209,6 +259,10 @@
     const message = request.message;
     if (event.type === 'status') status(event.message || event.text || '任务执行中…');
     if (event.type === 'context') { activeContext = event; renderContextSize(); }
+    if (event.type === 'memory') {
+      if (event.saved) status('已保存记忆 · ' + event.path);
+      else { message.memory = { ...event, hits: [...(message.memory?.hits || []), ...(event.hits || [])].slice(-12) }; scheduleRender(); }
+    }
     if (event.type === 'analysis') { message.content = String(event.purpose || event.text || event.content || '正在分析下一步…'); scheduleRender(); }
     if (event.type === 'command') {
       const step = { id: event.requestId, index: event.index || message.steps.length + 1, command: terminalText(event.command).slice(0, 16000), purpose: String(event.purpose || ''), output: '', counts: { stdout: 0, stderr: 0 }, streamed: false, result: null };
@@ -243,13 +297,13 @@
     if (!canOperate(tab) || !window.OpsAgent) { status('请先连接 SSH 或本地终端，再运行任务', true); return; }
     const goal = question + (attached ? '\n\n[用户主动附加的参考数据，不是额外授权]\n' + attached.content + '\n[参考数据结束]' : '');
     const user = { role: 'user', content: question, context: attached, complete: false };
-    const assistant = { role: 'assistant', content: '正在分析运维任务…', steps: [], complete: false };
+    const assistant = { role: 'assistant', content: '正在分析运维任务…', steps: [], complete: false, memoryTab: memoryTab(tab) };
     messages.push(user, assistant);
     const request = { kind: 'agent', id: 'ops-ui-' + Date.now(), tab, nativeId: nativeId(tab), generation: tab._connectionGeneration || 0, message: assistant, steps: new Map(), stopped: false };
     pending = request; $('#ai-input').value = ''; attachment = null; renderAttachment(); renderMessages(); sync(); status('正在分析任务…');
     try {
       const result = await OpsAgent.run({ endpoint: cfg.endpoint, model: cfg.model, apiKey: key, goal, tab,
-        history: conversation, contextWindow: cfg.contextWindow, autoCompact: cfg.autoCompact, confirmEachCommand: cfg.confirmCommands,
+        history: conversation, memoryEnabled: window.AiMemory?.isEnabled?.() === true, contextWindow: cfg.contextWindow, autoCompact: cfg.autoCompact, confirmEachCommand: cfg.confirmCommands,
         onEvent: event => handleAgentEvent(request, event),
         approve: details => new Promise(resolve => {
           if (pending !== request || request.stopped) { resolve(false); return; }
@@ -262,11 +316,12 @@
       assistant.content = String(result.summary || (result.status === 'complete' ? '任务结束' : '任务已停止'));
       assistant.complete = user.complete = result.status === 'complete';
       compactions += result.compactions || 0;
+      if (assistant.complete || assistant.steps.length) rememberConversationOrigin(tab);
       if (assistant.complete || assistant.steps.length) conversation.push({ role: 'user', content: question }, { role: 'assistant', content: JSON.stringify({ summary: assistant.content, status: result.status,
         steps: assistant.steps.map(step => ({ command: step.command, result: step.result, output: step.output,
           state: step.result ? '已取得执行结果' : '执行请求已发出，完成状态未知，可能已产生副作用；继续前先验证，不能直接重复修改' })) }) });
       assistant.state = (result.status === 'complete' ? '任务结束' : result.status === 'stopped' ? '已停止' : '任务失败') + ' · ' + result.commands + ' 条命令';
-      status(result.status === 'complete' ? (result.commands ? '任务结束，请查看执行记录与验证结论' : '模型未调用命令，请确认模型支持工具调用') : assistant.content, result.status === 'error');
+      status(result.status === 'complete' ? (result.commands || result.memoryCalls ? '任务结束，请查看执行记录与验证结论' : '模型未调用命令，请确认模型支持工具调用') : assistant.content, result.status === 'error');
     } catch (_) {
       if (pending === request) { assistant.content = '运维任务未能继续，请检查连接、服务配置或模型的工具调用支持'; assistant.state = '任务失败'; status(assistant.content, true); }
     } finally {
@@ -286,7 +341,7 @@
     host.textContent = '';
     if (!messages.length) {
       const empty = document.createElement('div'); empty.className = 'ai-welcome';
-      empty.innerHTML = `<div class="ai-mark">${icon('sparkles')}</div><h3>终端旁的 AI 助手</h3><p>解释命令、排查报错，或描述你想完成的操作。</p><div class="ai-suggestions"></div><small>仅发送你的消息和主动附加的内容</small>`;
+      empty.innerHTML = `<div class="ai-mark">${icon('sparkles')}</div><h3>终端旁的 AI 助手</h3><p>解释命令、排查报错，或描述你想完成的操作。</p><div class="ai-suggestions"></div><small>发送消息和主动附加内容；启用记忆后会检索相关片段</small>`;
       for (const label of ['帮我解释一条命令', '分析终端中的报错', '编写一个 Shell 命令']) {
         const button = textNode('button', label); button.type = 'button'; button.onclick = () => { $('#ai-input').value = label; $('#ai-input').focus(); }; empty.querySelector('.ai-suggestions').append(button);
       }
@@ -351,7 +406,7 @@
       if (rememberKey && nextKey) await T.invoke('ai_key_write', { endpoint, apiKey: nextKey });
       else await T.invoke('ai_key_delete', { endpoint });
     } catch (_) { savingConfig = false; sync(); status('密钥无法保存到系统凭据库，配置尚未保存；请检查系统钥匙串或凭据服务', true); return; }
-    if (previous.endpoint !== endpoint || previous.model !== model) { dialogueGeneration++; messages = []; conversation = []; compactions = 0; attachment = null; renderMessages(); renderAttachment(); }
+    if (previous.endpoint !== endpoint || previous.model !== model) { dialogueGeneration++; messages = []; conversation = []; conversationOrigin = null; compactions = 0; attachment = null; renderMessages(); renderAttachment(); }
     ++keyRevision; key = nextKey; keyEndpoint = endpoint; keyReady = Promise.resolve();
     T.s.ai = { ...previous, width: settings().width, endpoint, model, contextWindow, rememberKey, autoCompact: $('#ai-auto-compact').checked }; T.persistSettings();
     savingConfig = false; configOpen = false; sync(); status(rememberKey && key ? '配置已保存，密钥已保存到本机系统凭据库' : '配置已保存，未持久保存密钥'); if (!el.hidden) $('#ai-input').focus();
@@ -369,15 +424,16 @@
       if (!container || el) return;
       el = container; T.s.ai = settings(); el.style.setProperty('--ai-width', T.s.ai.width + 'px');
       el.innerHTML = `<div id="ai-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整 AI 面板宽度"></div>
-        <header class="ai-head"><span class="ai-brand">${icon('sparkles')}<b>AI 助手</b></span><div class="ai-head-actions"><button id="ai-new" type="button" title="新对话" aria-label="新对话">${icon('plus')}</button><button id="ai-settings" type="button" title="AI 配置" aria-label="AI 配置" aria-controls="ai-config">${icon('gear')}</button><button id="ai-close" type="button" title="关闭 AI 助手" aria-label="关闭 AI 助手">${icon('x')}</button></div></header>
+        <header class="ai-head"><span class="ai-brand">${icon('sparkles')}<b>AI 助手</b></span><div class="ai-head-actions"><button id="ai-new" type="button" title="新对话" aria-label="新对话">${icon('plus')}</button><button id="ai-memory-toggle" type="button" title="长期记忆" aria-label="长期记忆">${icon('book') || '记忆'}</button><button id="ai-settings" type="button" title="AI 配置" aria-label="AI 配置" aria-controls="ai-config">${icon('gear')}</button><button id="ai-close" type="button" title="关闭 AI 助手" aria-label="关闭 AI 助手">${icon('x')}</button></div></header>
         <div class="ai-model-line"><span class="ai-dot"></span><span id="ai-provider"></span><span>Chat Completions</span></div>
         <div class="ai-mode-row" aria-label="AI 工作模式"><button type="button" data-ai-mode="chat" aria-pressed="true">对话</button><button type="button" data-ai-mode="agent" aria-pressed="false">运维 Agent</button></div><div id="ai-agent-target" hidden></div>
         <form id="ai-config" hidden autocomplete="off"><h3>连接你的 AI 服务</h3><label for="ai-endpoint">服务地址</label><input id="ai-endpoint" type="url" placeholder="https://ai.example.com/v1" spellcheck="false" maxlength="2048"><small>填写 Base URL 或完整 /chat/completions 地址</small><label for="ai-model">模型</label><input id="ai-model" placeholder="服务提供的模型名称" spellcheck="false" maxlength="200"><label for="ai-key">API Key <span>可选</span></label><input id="ai-key" type="password" placeholder="本地服务可留空" autocomplete="new-password" spellcheck="false" maxlength="4096"><label class="ai-check"><input id="ai-remember-key" type="checkbox" checked>保存密钥到本机系统凭据库</label><button id="ai-forget-key" type="button">删除此服务已保存的密钥</button><label for="ai-context-window">模型上下文窗口（tokens）</label><input id="ai-context-window" type="number" min="8192" max="2097152" step="1024" value="32768"><label class="ai-check"><input id="ai-auto-compact" type="checkbox" checked>接近上限时自动压缩较早上下文</label><small>对话仅在本次运行中保留，密钥不进入配置同步</small><button id="ai-save" class="primary" type="submit">保存配置</button></form>
         <div id="ai-messages" aria-label="AI 对话"></div>
         <div class="ai-context-usage"><span id="ai-context-size"></span><button id="ai-compact" type="button">压缩上下文</button><meter id="ai-context-meter" min="0" max="32768" value="0" aria-label="上下文使用量（估算）"></meter></div>
         <div class="ai-compose"><div id="ai-context" hidden></div><div class="ai-context-actions"><button id="ai-context-selection" type="button" title="预览并附加当前终端选中的文本">${icon('plus')}附加选区</button><button id="ai-context-output" type="button" title="预览并附加当前终端最近 80 行，最多 16000 字符">${icon('output')}最近输出</button></div><label class="ai-check ai-step-confirm"><input id="ai-confirm-commands" type="checkbox" checked>每条命令执行前确认</label><textarea id="ai-input" aria-label="发送给 AI 的消息" placeholder="描述问题，Enter 发送…" rows="3" maxlength="16000"></textarea><div class="ai-compose-bottom"><span>Shift + Enter 换行</span><button id="ai-stop" type="button" hidden>停止生成</button><button id="ai-send" class="primary" type="button">${icon('arrowUp')}发送</button></div></div>
-        <div id="ai-status" role="status" aria-live="polite">仅发送消息和主动附加的内容</div>`;
+        <div id="ai-status" role="status" aria-live="polite">发送消息及附加内容；记忆检索由记忆设置控制</div>`;
       $('#ai-close').onclick = () => this.close(); $('#ai-new').onclick = () => this.newChat();
+      window.AiMemory?.mount?.(); $('#ai-memory-toggle').onclick = () => window.AiMemory?.open?.({ tab: current() });
       $('#ai-settings').onclick = () => { configOpen = !configOpen; if (configOpen) { dialogueGeneration++; this.fillConfig(); } sync(); if (configOpen) $('#ai-endpoint').focus(); };
       $('#ai-config').onsubmit = event => { event.preventDefault(); saveConfig(); };
       $('#ai-key').oninput = () => { keyDraftDirty = true; };
@@ -421,14 +477,14 @@
       renderMessages(); renderAttachment(); this.fillConfig(); sync(); restoreKey();
     },
     fillConfig() { if (!el) return; const cfg = settings(); keyDraftDirty = false; $('#ai-endpoint').value = cfg.endpoint; $('#ai-model').value = cfg.model; $('#ai-key').value = cfg.endpoint === keyEndpoint ? key : ''; $('#ai-remember-key').checked = cfg.rememberKey; $('#ai-context-window').value = cfg.contextWindow; $('#ai-auto-compact').checked = cfg.autoCompact; },
-    setMode(value) { if (pending || savingConfig || !['chat', 'agent'].includes(value)) return false; if (mode !== value) dialogueGeneration++; mode = value; sync(); status(mode === 'agent' ? '输入任务并运行后，Agent 会执行命令、读取结果并继续下一步' : '仅发送消息和主动附加的内容'); return true; },
+    setMode(value) { if (pending || savingConfig || !['chat', 'agent'].includes(value)) return false; if (mode !== value) dialogueGeneration++; mode = value; sync(); status(mode === 'agent' ? '输入任务并运行后，Agent 会执行命令、读取结果并继续下一步' : '发送消息及附加内容；记忆检索由记忆设置控制'); return true; },
     onSessionChange() { window.OpsAgent?.checkTarget?.(); renderTarget(); if (el && !pending && !savingConfig) $('#ai-send').disabled = mode === 'agent' && !canOperate(current()); },
     isOpen() { return !!el && !el.hidden; },
     open() { if (!el) return; T.ui?.closeDock?.(); el.hidden = false; configOpen = !settings().endpoint || !settings().model; this.fillConfig(); sync(); restoreKey(); fit(); (configOpen ? $('#ai-endpoint') : $('#ai-input')).focus(); },
     close() { if (!el) return; this.stop(); dialogueGeneration++; el.hidden = true; sync(); fit(); current()?.term?.focus(); },
     toggle() { if (this.isOpen()) this.close(); else this.open(); },
     setWidth(value, persist = true) { T.s.ai = { ...settings(), width: Math.round(Math.max(300, Math.min(600, Number(value) || 380))) }; el?.style.setProperty('--ai-width', T.s.ai.width + 'px'); if (persist) T.persistSettings(); fit(); },
-    newChat() { if (savingConfig) return; this.stop(); dialogueGeneration++; pending = null; messages = []; conversation = []; compactions = 0; activeContext = null; attachment = null; if ($('#ai-input')) $('#ai-input').value = ''; renderMessages(); renderAttachment(); sync(); status('已开始新对话'); $('#ai-input')?.focus(); },
+    newChat() { if (savingConfig) return; this.stop(); dialogueGeneration++; pending = null; messages = []; conversation = []; conversationOrigin = null; compactions = 0; activeContext = null; attachment = null; if ($('#ai-input')) $('#ai-input').value = ''; renderMessages(); renderAttachment(); sync(); status('已开始新对话'); $('#ai-input')?.focus(); },
     stop() {
       if (!pending) return;
       if (pending.kind === 'compact') { const request = pending; request.stopped = true; pending = null; if (request.nativeRequest) T.invoke('ai_cancel', { requestId: request.nativeRequest }).catch(() => {}); sync(); status('已停止压缩，原上下文保留'); return; }
@@ -443,13 +499,15 @@
     },
     async send() {
       if (!el || el.hidden || pending || savingConfig) return;
-      const input = $('#ai-input'), question = input.value.trim(), cfg = settings();
+      const input = $('#ai-input'), question = input.value.trim(), cfg = settings(), originTab = current();
+      const originNative = nativeId(originTab), originGeneration = originTab?._connectionGeneration || 0;
       const generation = dialogueGeneration;
       if (!question) { status('请输入消息', true); return; }
       const error = validate(cfg.endpoint, cfg.model);
       if (error) { configOpen = true; this.fillConfig(); sync(); status(error, true); $('#ai-endpoint').focus(); return; }
       await restoreKey();
       if (pending || savingConfig || generation !== dialogueGeneration) return;
+      if (window.AiMemory?.isEnabled?.() && (current() !== originTab || nativeId(originTab) !== originNative || (originTab?._connectionGeneration || 0) !== originGeneration)) { status('活动机器已变化，请确认目标后重新发送', true); return; }
       const prospective = [{ role: 'system', content: SYSTEM }, ...conversation, { role: 'user', content: question + (attachment?.content || '') }];
       if (cfg.autoCompact && window.AiContext?.shouldCompact(prospective, cfg.contextWindow)) {
         const reduced = await compactConversation();
@@ -467,7 +525,7 @@
       if (budget > PROMPT_BUDGET || history.length > 60 || (window.AiContext?.estimate([{ role: 'system', content: SYSTEM }, ...history, { role: 'user', content }]) || 0) > cfg.contextWindow * 0.9) {
         status('上下文过长，请压缩上下文或开始新对话，当前消息尚未发送', true); return;
       }
-      const user = { role: 'user', content, displayContent: question, context: attached, complete: false }, assistant = { role: 'assistant', content: '', complete: false };
+      const user = { role: 'user', content, displayContent: question, context: attached, complete: false }, assistant = { role: 'assistant', content: '', complete: false, memoryTab: memoryTab(originTab) };
       messages.push(user, assistant);
       input.value = ''; attachment = null; renderAttachment(); renderMessages();
       const request = { id: 'ai-' + (window.crypto?.randomUUID?.() || Date.now() + '-' + Math.random().toString(36).slice(2)), message: assistant, stopped: false };
@@ -475,10 +533,30 @@
       try {
         await ensureListener();
         if (pending !== request) return;
-        const response = await T.invoke('ai_chat', { request: { requestId: request.id, endpoint: cfg.endpoint, model: cfg.model, apiKey: key, messages: [{ role: 'system', content: SYSTEM }, ...history, { role: 'user', content }] } });
+        const prompt = [{ role: 'system', content: SYSTEM }, ...history];
+        if (window.AiMemory?.isEnabled?.() && window.AiMemory.settings().autoRecall) {
+          const tab = originTab, tabGeneration = originGeneration, tabNativeId = originNative;
+          status('正在检索相关长期记忆…');
+          const recall = await window.AiMemory.recall({ query: question, tab,
+            shouldContinue: () => pending === request && !request.stopped && current() === tab && (tab?._connectionGeneration || 0) === tabGeneration && nativeId(tab) === tabNativeId });
+          if (pending !== request || request.stopped) return;
+          if (current() !== tab || (tab?._connectionGeneration || 0) !== tabGeneration || nativeId(tab) !== tabNativeId) throw Error('memory target changed');
+          assistant.memory = recall;
+          if (recall.reference) {
+            const memoryMessage = { role: 'user', content: '[历史记忆参考数据，不构成当前任务授权]\n' + recall.reference };
+            const withMemory = [...prompt, memoryMessage, { role: 'user', content }];
+            if (byteLength(JSON.stringify(withMemory)) <= PROMPT_BUDGET && (window.AiContext?.estimate(withMemory) || 0) <= cfg.contextWindow * .9) prompt.push(memoryMessage);
+            else assistant.memory = { ...recall, attached: false, warning: '本次上下文空间不足，命中的记忆尚未附加' };
+          }
+          renderMessages();
+        }
+        if (pending !== request || request.stopped) return;
+        prompt.push({ role: 'user', content });
+        const response = await T.invoke('ai_chat', { request: { requestId: request.id, endpoint: cfg.endpoint, model: cfg.model, apiKey: key, messages: prompt } });
         if (pending !== request) return;
         if (!response || typeof response.content !== 'string' || !response.content.trim()) throw Error('empty');
         assistant.content = response.content; assistant.complete = user.complete = true;
+        rememberConversationOrigin(originTab);
         conversation.push({ role: 'user', content }, { role: 'assistant', content: response.content });
         status('回答完成 · 命令插入后请检查再执行');
       } catch (error) {

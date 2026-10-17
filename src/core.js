@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.8.3';
+  const VERSION = '0.9.0';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -103,6 +103,11 @@ window.WT = (function () {
       if (WT.s.ai) o.ai = { endpoint: WT.s.ai.endpoint || '', model: WT.s.ai.model || '', width: WT.s.ai.width || 380,
         contextWindow: WT.s.ai.contextWindow || 32768, autoCompact: WT.s.ai.autoCompact !== false,
         confirmCommands: WT.s.ai.confirmCommands !== false, rememberKey: WT.s.ai.rememberKey !== false };
+      if (WT.s.aiMemory) o.aiMemory = { enabled: WT.s.aiMemory.enabled === true, endpoint: WT.s.aiMemory.endpoint || '',
+        model: WT.s.aiMemory.model || '', rememberKey: WT.s.aiMemory.rememberKey !== false, autoRecall: WT.s.aiMemory.autoRecall !== false,
+        flushBeforeCompact: WT.s.aiMemory.flushBeforeCompact === true, includeGlobal: WT.s.aiMemory.includeGlobal !== false,
+        maxResults: Math.max(1, Math.min(12, Number(WT.s.aiMemory.maxResults) || 6)),
+        minScore: Number.isFinite(Number(WT.s.aiMemory.minScore)) ? Math.max(0, Math.min(1, Number(WT.s.aiMemory.minScore))) : .35 };
       WT.invoke('ui_state_save', { name: 'settings', value: JSON.stringify(o) }).catch(() => {});
       // 触发器变更同步到后端语义引擎（re/triggers.rs）
       WT.invoke('triggers_reload', { triggers: JSON.stringify(WT.s.triggers || []) }).catch(() => {});

@@ -19,6 +19,7 @@ mod agent_exec;
 mod connection_error;
 mod credentials;
 mod mac_text_input;
+mod memory;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -1183,6 +1184,29 @@ async fn ai_key_delete(state: State<'_, credentials::Credentials>, endpoint: Str
     state.delete(endpoint).await
 }
 
+#[tauri::command]
+async fn memory_list(state: State<'_, memory::MemoryState>, scope: String) -> Result<Vec<memory::MemoryDoc>, String> { state.list(scope).await }
+#[tauri::command]
+async fn memory_get(state: State<'_, memory::MemoryState>, scope: String, path: String, from_line: Option<usize>, lines: Option<usize>) -> Result<memory::MemoryFile, String> { state.get(scope, path, from_line, lines).await }
+#[tauri::command]
+async fn memory_write(state: State<'_, memory::MemoryState>, request: memory::MemoryWriteRequest) -> Result<memory::MemoryDoc, String> { state.write(request).await }
+#[tauri::command]
+async fn memory_delete(state: State<'_, memory::MemoryState>, request: memory::MemoryDeleteRequest) -> Result<memory::MemoryDeleteResponse, String> { state.delete(request).await }
+#[tauri::command]
+async fn memory_search(state: State<'_, memory::MemoryState>, request: memory::MemorySearchRequest) -> Result<memory::MemorySearchResponse, String> { state.search(request).await }
+#[tauri::command]
+async fn memory_reindex(state: State<'_, memory::MemoryState>, request: memory::MemoryReindexRequest) -> Result<memory::MemoryStatus, String> { state.reindex(request).await }
+#[tauri::command]
+async fn memory_status(state: State<'_, memory::MemoryState>, scope: String) -> Result<memory::MemoryStatus, String> { state.status(scope).await }
+#[tauri::command]
+async fn memory_embedding_test(state: State<'_, memory::MemoryState>, embedding: memory::EmbeddingConfig) -> Result<memory::EmbeddingTestResponse, String> { state.embedding_test(embedding).await }
+#[tauri::command]
+async fn memory_key_read(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<Option<String>, String> { state.read_embedding(endpoint).await }
+#[tauri::command]
+async fn memory_key_write(state: State<'_, credentials::Credentials>, endpoint: String, api_key: String) -> Result<(), String> { state.write_embedding(endpoint, api_key).await }
+#[tauri::command]
+async fn memory_key_delete(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<(), String> { state.delete_embedding(endpoint).await }
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     mac_text_input::configure();
@@ -1198,6 +1222,10 @@ pub fn run() {
         .manage(ai::AiState::default())
         .manage(agent_exec::AgentExecState::default())
         .manage(credentials::Credentials::default())
+        .setup(|app| {
+            app.manage(memory::MemoryState::new(app.path().app_config_dir()?.join("ai-memory")));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
@@ -1231,6 +1259,17 @@ pub fn run() {
             ai_key_read,
             ai_key_write,
             ai_key_delete,
+            memory_list,
+            memory_get,
+            memory_write,
+            memory_delete,
+            memory_search,
+            memory_reindex,
+            memory_status,
+            memory_embedding_test,
+            memory_key_read,
+            memory_key_write,
+            memory_key_delete,
             agent_exec,
             agent_exec_cancel,
             ui_state_save,

@@ -28,6 +28,8 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 [AI 助手](docs/AI_ASSISTANT.md) 位于终端右侧，工具栏按钮可开合，宽度可拖动。支持自定义 Chat Completions 兼容服务地址、模型和可选 API Key，包括本地服务；提供流式回答、停止生成、新对话、主动附加选区/最近输出预览。密钥可保存在本机系统凭据库，聊天只在当前运行中保留。上下文显示估算占用，支持手动与自动模型摘要压缩。运维模式默认逐命令确认，可关闭普通命令确认；危险操作仍强制确认。命令和输出先于最终总结，完成后返回原目标终端输入；任务持续运行到完成或停止，不再固定思考轮数。
 
+[AI 长期记忆](docs/AI_MEMORY.md) 参考 OpenClaw，提供当前机器/全局 Markdown 记忆、SQLite 混合检索、文件与行号来源、自定义独立 Embedding 地址/模型/系统凭据密钥。记忆默认关闭；开启后可自动召回，接口异常明确显示关键词降级。回复可先生成记忆草稿，Agent 写记忆始终逐次确认；压缩前自动整理并追加当日记忆需单独开启。跨机器隔离，记忆库不随 Gist 机器同步上传。
+
 [运维 Agent](docs/OPS_AGENT.md) 在右侧面板切换启用，支持 SSH 和本地机器。描述任务后，模型通过 `run_command` 调用独立执行通道，读取真实输出、退出码与超时状态，再决定修正、继续检查或总结。目标锁定到启动时的连接，切换标签不会改变目标；支持逐步记录、停止和已知高影响命令的单次确认。模型服务需支持原生工具调用；每条命令是独立 Shell，使用连接用户权限，不继承交互终端的 `cd` 或环境变量。
 
 | 模块 | 状态 |
@@ -43,6 +45,7 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 | GitHub Gist 机器配置同步、加密与 Tabby 配置格式互通 | ✅ |
 | 右侧 AI 助手：自定义端点/模型/密钥、流式对话、主动附加终端上下文 | ✅ |
 | AI 运维 Agent：工具执行、结果观察、失败修正、目标锁定、停止与步骤记录 | ✅ |
+| AI 长期记忆：Markdown 原文、独立 Embedding、混合检索、来源与确认写入 | ✅ |
 | 主题 6 套（tabby-dark / tabby-light + 4 套内置深浅色方案） | ✅ |
 | 命令面板（Ctrl+Shift+P，分组 + 图标）+ 浮动搜索卡 | ✅ |
 | 触发器引擎（后端 `re/triggers.rs`；前端映射高亮 / 响铃 / 发送文本） | ✅ |
@@ -87,6 +90,8 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 连接菜单与报错/复制回归：`npm run test:connections`、`npm run test:connection-feedback`；原生错误与SSH失败场景：`cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests`、`cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests`。
 
 AI 前端回归：`npm run test:ai`、`npm run test:ai-agent`、`npm run test:ai-ops`；原生命令测试：`cargo test --manifest-path src-tauri/Cargo.toml agent_exec::tests`；原生传输测试：`cargo test --manifest-path src-tauri/Cargo.toml ai::tests`。后者使用真实本地 HTTP mock，不访问用户模型账号。
+
+长期记忆回归：`npm run test:ai-memory`、`npm run test:ai-memory-integration`；原生记忆测试：`cargo test --manifest-path src-tauri/Cargo.toml memory::tests`。测试使用临时记忆库和受控传输，不访问用户真实记忆或模型账号；实际端点与系统凭据库仍需按[验证范围](docs/AI_MEMORY.md#验证范围)验收。
 
 ## 构建
 

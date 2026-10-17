@@ -61,6 +61,15 @@ fn account(endpoint: &str) -> Result<String, String> {
     Ok(format!("endpoint-v1:{digest:x}"))
 }
 
+// Embedding credentials never share the chat account namespace, even when a
+// provider hosts both APIs at the same origin/base path.
+fn embedding_account(endpoint: &str) -> Result<String, String> {
+    let mut url = crate::memory::embedding_endpoint(endpoint)?;
+    url.set_query(None);
+    let digest = Sha256::digest(url.as_str().as_bytes());
+    Ok(format!("memory-embedding-v1:{digest:x}"))
+}
+
 fn valid_key(key: &str) -> Result<&str, String> {
     let key = key.trim();
     if key.is_empty() || key.len() > 4096 || key.chars().any(char::is_control) {
@@ -78,6 +87,15 @@ impl Credentials {
     pub async fn read(&self, endpoint: String) -> Result<Option<String>, String> {
         supported_platform()?;
         let account = account(&endpoint)?;
+        self.read_account(account).await
+    }
+
+    pub async fn read_embedding(&self, endpoint: String) -> Result<Option<String>, String> {
+        supported_platform()?;
+        self.read_account(embedding_account(&endpoint)?).await
+    }
+
+    async fn read_account(&self, account: String) -> Result<Option<String>, String> {
         let gate = self.gate.clone().lock_owned().await;
         let store = self.store.clone();
         let key = tokio::task::spawn_blocking(move || {
@@ -93,6 +111,15 @@ impl Credentials {
     pub async fn write(&self, endpoint: String, api_key: String) -> Result<(), String> {
         supported_platform()?;
         let account = account(&endpoint)?;
+        self.write_account(account, api_key).await
+    }
+
+    pub async fn write_embedding(&self, endpoint: String, api_key: String) -> Result<(), String> {
+        supported_platform()?;
+        self.write_account(embedding_account(&endpoint)?, api_key).await
+    }
+
+    async fn write_account(&self, account: String, api_key: String) -> Result<(), String> {
         let key = valid_key(&api_key)?.to_string();
         let gate = self.gate.clone().lock_owned().await;
         let store = self.store.clone();
@@ -105,6 +132,15 @@ impl Credentials {
     pub async fn delete(&self, endpoint: String) -> Result<(), String> {
         supported_platform()?;
         let account = account(&endpoint)?;
+        self.delete_account(account).await
+    }
+
+    pub async fn delete_embedding(&self, endpoint: String) -> Result<(), String> {
+        supported_platform()?;
+        self.delete_account(embedding_account(&endpoint)?).await
+    }
+
+    async fn delete_account(&self, account: String) -> Result<(), String> {
         let gate = self.gate.clone().lock_owned().await;
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || {
@@ -175,6 +211,20 @@ mod tests {
         let store = Arc::new(FakeStore::default()); let endpoint = "https://one.example/v1".to_string();
         store.keys.lock().unwrap().insert(account(&endpoint).unwrap(), "fixture\nsecret".into());
         let error = state(store).read(endpoint).await.unwrap_err(); assert!(!error.contains("fixture"));
+    }
+
+    #[tokio::test]
+    async fn embedding_and_chat_keys_are_separate_and_equivalent_embedding_urls_share_only_embedding_entry() {
+        let store = Arc::new(FakeStore::default()); let credentials = state(store.clone());
+        let endpoint = "https://one.example/v1".to_string();
+        credentials.write(endpoint.clone(), "chat-secret".into()).await.unwrap();
+        credentials.write_embedding(endpoint.clone(), "embedding-secret".into()).await.unwrap();
+        assert_eq!(credentials.read(endpoint.clone()).await.unwrap().as_deref(), Some("chat-secret"));
+        assert_eq!(credentials.read_embedding("https://one.example/v1/embeddings?api-version=1".into()).await.unwrap().as_deref(), Some("embedding-secret"));
+        credentials.delete_embedding(endpoint.clone()).await.unwrap();
+        assert_eq!(credentials.read_embedding(endpoint.clone()).await.unwrap(), None);
+        assert_eq!(credentials.read(endpoint).await.unwrap().as_deref(), Some("chat-secret"));
+        assert_eq!(store.keys.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

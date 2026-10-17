@@ -182,6 +182,56 @@ try {
   const beforeLateFallback = writes().length; rejectTrigger(new Error('previous backend disconnected')); await frame();
   check('R38 Old trigger failures cannot fall back into sending commands on the replacement connection', writes().length === beforeLateFallback);
   interceptor = null; T.s.triggers = []; await TM.close(triggered.id);
+  // The management page edits saved profiles in place. Exercise that real
+  // object-sharing path while native connection promises are unresolved.
+  const mutableProfile = { ...ssh, host: 'original.invalid', user: 'OriginalUser', port: 2201 };
+  let resolveIdentity;
+  interceptor = command => command === 'connect_ssh' ? new Promise(resolve => { resolveIdentity = resolve; }) : null;
+  const creatingIdentity = TM.create(mutableProfile);
+  const originalRequest = calls.filter(([command]) => command === 'connect_ssh').at(-1)[1];
+  Object.assign(mutableProfile, { host: 'edited-during-create.invalid', user: 'EditedUser', port: 2202, password: 'new-fixture-secret' });
+  resolveIdentity('identity-initial');
+  const identityTab = await creatingIdentity; interceptor = null;
+  const initialIdentity = identityTab._connectionIdentity;
+  check('R39 Initial connection binds a frozen public identity to the actual request despite profile edits during authentication',
+    identityTab.session === mutableProfile && Object.isFrozen(initialIdentity)
+    && initialIdentity.host === originalRequest.host && initialIdentity.host === 'original.invalid'
+    && initialIdentity.user === originalRequest.user && initialIdentity.user === 'OriginalUser'
+    && initialIdentity.port === originalRequest.port && initialIdentity.port === 2201
+    && Object.keys(initialIdentity).sort().join(',') === 'host,port,protocol,user'
+    && !JSON.stringify(initialIdentity).includes('fixture') && !JSON.stringify(initialIdentity).includes('key'));
+  Object.assign(mutableProfile, { host: 'next-request.invalid', user: 'NextUser', port: 2203 });
+  check('R40 Editing the saved profile of a live tab cannot relabel the current PTY identity',
+    identityTab._connectionIdentity === initialIdentity && identityTab._connectionIdentity.host === 'original.invalid'
+    && identityTab.ptyId === 'identity-initial' && identityTab.session.host === 'next-request.invalid');
+  exit(identityTab);
+  const previousGeneration = identityTab._connectionGeneration;
+  interceptor = command => command === 'connect_ssh' ? new Promise(resolve => { resolveIdentity = resolve; }) : null;
+  const reconnectingIdentity = TM.reconnect(identityTab);
+  const replacementRequest = calls.filter(([command]) => command === 'connect_ssh').at(-1)[1];
+  Object.assign(mutableProfile, { host: 'edited-during-retry.invalid', user: 'LaterUser', port: 2204 });
+  check('R41 Pending reconnect keeps the previous bound identity until the new native request succeeds',
+    identityTab._connectionIdentity === initialIdentity && replacementRequest.host === 'next-request.invalid'
+    && replacementRequest.user === 'NextUser' && replacementRequest.port === 2203);
+  resolveIdentity('identity-replacement'); await reconnectingIdentity; interceptor = null;
+  const replacementIdentity = identityTab._connectionIdentity;
+  check('R42 Successful reconnect binds a new frozen identity matching its request rather than later profile edits',
+    identityTab.session === mutableProfile && replacementIdentity !== initialIdentity && Object.isFrozen(replacementIdentity)
+    && replacementIdentity.host === replacementRequest.host && replacementIdentity.user === replacementRequest.user
+    && replacementIdentity.port === replacementRequest.port && identityTab.ptyId === 'identity-replacement'
+    && identityTab._connectionGeneration === previousGeneration + 1 && mutableProfile.host === 'edited-during-retry.invalid');
+  exit(identityTab);
+  interceptor = command => command === 'connect_ssh' ? Promise.reject(new Error('fixture rejected replacement')) : null;
+  await TM.reconnect(identityTab); interceptor = null;
+  check('R43 Failed reconnect cannot publish an unconnected profile identity',
+    identityTab.exited && identityTab.ptyId === null && identityTab._connectionIdentity === replacementIdentity);
+  await TM.close(identityTab.id);
+  const identityLocal = await TM.create(null);
+  check('R44 Local PTY identity is public and explicit without inheriting remote credentials',
+    Object.isFrozen(identityLocal._connectionIdentity) && identityLocal._connectionIdentity.protocol === 'local'
+    && identityLocal._connectionIdentity.host === '' && identityLocal._connectionIdentity.user === ''
+    && identityLocal._connectionIdentity.port === 0 && Object.keys(identityLocal._connectionIdentity).length === 4);
+  await TM.close(identityLocal.id);
   check('R29 No JavaScript errors or duplicate core subscriptions after repeated reconnects', errors.length === 0 && listenCount === initialListeners);
   console.log(`\nRESULT ${checks.length} passed, ${errors.length} JavaScript errors`);
 } catch (error) { console.error('FAIL ' + (error.stack || error)); process.exitCode = 1; }

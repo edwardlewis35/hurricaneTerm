@@ -298,13 +298,18 @@
         let nativeId;
         this.beginConnection();
         try {
-          nativeId = await this.connectSession(tab.session, tab.term);
+          // Capture the request and its public identity together. The profile
+          // may be edited while native authentication is still in progress.
+          const connectionSession = tab.session ? { ...tab.session } : null;
+          const connectionIdentity = this.connectionIdentity(connectionSession);
+          nativeId = await this.connectSession(connectionSession, tab.term);
           if (typeof nativeId !== 'string' || !nativeId) throw new Error('连接未返回有效会话');
           if (tab._closing || this.tabs[tab.id] !== tab || tab._reconnectAttempt !== attempt) {
             await T.invoke('kill', { id: nativeId }).catch(() => {});
             return null;
           }
-          tab.ptyId = nativeId; tab.exited = false; tab._reconnecting = false;
+          tab.ptyId = nativeId; tab._connectionIdentity = connectionIdentity;
+          tab.exited = false; tab._reconnecting = false;
           tab._connectionGeneration = (tab._connectionGeneration || 0) + 1;
           tab.cwd = null;
           tab.connectionError = null;
@@ -345,6 +350,15 @@
       const base = (T.s.fontFamily || '').trim();
       const fallback = '"Source Code Pro", "JetBrains Mono", "Noto Sans Mono CJK SC", ui-monospace, monospace';
       return base ? `${base}, ${fallback}` : fallback;
+    },
+
+    // A live connection's public identity belongs to that PTY, not to the
+    // mutable saved profile. Never copy credentials into this metadata.
+    connectionIdentity(session) {
+      const protocol = String(session?.protocol || 'local').toLowerCase();
+      return Object.freeze({ protocol, host: String(protocol === 'serial' ? session?.target || session?.host || '' : session?.host || (protocol === 'tcp' ? session?.target : '') || ''),
+        port: Number(session?.port) || (protocol === 'ssh' ? 22 : protocol === 'telnet' ? 23 : 0),
+        user: String(session?.user || '') });
     },
 
     // The same protocol contract is used for the initial connection and retry.
@@ -422,9 +436,11 @@
 
       const proto = ((session && session.protocol) || '').toLowerCase();
       let id;
+      const connectionSession = session ? { ...session } : null;
+      const connectionIdentity = this.connectionIdentity(connectionSession);
       this.beginConnection();
       try {
-        id = await this.connectSession(session, term);
+        id = await this.connectSession(connectionSession, term);
       } catch (e) {
         this.endConnection();
         term.dispose(); wrap.remove();
@@ -444,6 +460,7 @@
       const tab = {
         id, ptyId: id, workspaceId: workspaceId || id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
         term, fit, search, wrap, group: g, exited: false, outline: [], session: session || null,
+        _connectionIdentity: connectionIdentity,
         _inputSubscriptions: [], _connectionGeneration: 0,
         // Tabby 风格标签属性（tabbar.js 消费）
         color: (session && session.color) || null, pinned: false, notify: false, activity: false,
