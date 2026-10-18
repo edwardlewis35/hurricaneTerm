@@ -207,6 +207,7 @@
     canReconnect(tab) { return !!(tab?.session && ['ssh', 'telnet', 'tcp', 'serial'].includes(String(tab.session.protocol || '').toLowerCase())); },
     writeTo(tab, data) {
       if (!this.isLive(tab) || !data) return Promise.resolve(false);
+      if (window.ModemTransfer?.isBusy(tab)) return Promise.resolve(false);
       return T.invoke('write', { id: this.ptyId(tab), data }).then(() => true).catch(() => false);
     },
     beginConnection() { this._pendingConnections = (this._pendingConnections || 0) + 1; },
@@ -280,6 +281,7 @@
       this.receiveOutput(tab, '\r\n\x1b[0m\x1b[2m' + text + '\x1b[0m\r\n');
       this.renderTabbar();
       window.SftpPanel?.onConnectionChange?.(tab);
+      window.ModemTransfer?.onConnectionChange?.(tab);
       UI.status();
       // The backend's exit signal does not carry a cause. Do not call it a
       // timeout, and release the old entry without ever translating its ID.
@@ -319,6 +321,7 @@
           if (tab.session) { tab.session.lastUsed = Date.now(); T.persistSessions(); }
           if (String(tab.session?.protocol).toLowerCase() === 'ssh') window.UI?.onSshConnected?.(tab);
           window.SftpPanel?.onConnectionChange?.(tab);
+          window.ModemTransfer?.onConnectionChange?.(tab);
           this.renderPaneControls(); this.renderTabbar(); UI.status();
           if (this.active === tab.id) tab.term.focus();
           return tab;
@@ -497,6 +500,7 @@
         if (tab._closing || this.tabs[tab.id] !== tab) return;
         if (tab.exited || tab._reconnecting) { if (!tab._reconnecting) this.reconnect(tab); return; }
         if (!this.isLive(tab)) return;
+        if (window.ModemTransfer?.isBusy(tab)) return;
         let submitted = null;
         for (const ch of data) {
           if (ch === '\r') { submitted = inputLine; inputLine = ''; }
@@ -708,6 +712,7 @@
       t._closing = true;
       t._reconnectAttempt = null; t._reconnectPromise = null; t._reconnecting = false;
       t.ptyId = null; t.exited = true;
+      window.ModemTransfer?.onConnectionChange?.(t);
       window.OpsAgent?.checkTarget?.();
       t._resetInput?.(); t._reconnectKey = null;
       for (const subscription of t._inputSubscriptions || []) subscription?.dispose?.();

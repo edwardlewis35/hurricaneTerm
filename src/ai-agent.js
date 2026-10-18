@@ -317,6 +317,7 @@
       if (active) return { status: 'error', summary: '已有运维任务正在执行，请先停止', rounds: 0, commands: 0, target: active.target };
       const tab = options.tab;
       if (!tab || !T.term?.isLive?.(tab)) return { status: 'error', summary: '请先选择已连接的 SSH 或本地终端', rounds: 0, commands: 0, target: null };
+      if (window.ModemTransfer?.isBusy(tab)) return { status: 'error', summary: '此终端正在传输文件，请等待完成或取消后再运行运维任务', rounds: 0, commands: 0, target: null };
       const target = publicTarget(tab);
       if (!['ssh', 'local', ''].includes(target.protocol)) return { status: 'error', summary: '运维 Agent 仅支持 SSH 和本地终端', rounds: 0, commands: 0, target };
       const goal = String(options.goal || '').trim();

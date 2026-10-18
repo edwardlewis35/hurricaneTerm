@@ -1,0 +1,30 @@
+.modem-overlay { position:fixed; inset:0; z-index:1250; display:flex; align-items:center; justify-content:center; padding:20px; background:var(--overlay-bg); }
+.modem-dialog { width:min(640px,100%); max-height:calc(100vh - 40px); overflow:auto; color:var(--fg); background:var(--window-panel-bg,var(--bg2)); border:1px solid var(--border); border-radius:12px; box-shadow:var(--dialog-shadow); padding:20px; font:13px/1.5 var(--font-ui); }
+.modem-dialog header,.modem-dialog footer { display:flex; align-items:center; gap:10px; justify-content:space-between; }
+.modem-dialog h2 { font-size:16px; margin:0; font-weight:600; }
+.modem-dialog footer { justify-content:flex-end; padding-top:12px; }
+.modem-dialog button { min-height:32px; padding:5px 12px; border:1px solid var(--border); border-radius:6px; color:var(--fg); background:var(--bg3,var(--bg2)); cursor:pointer; }
+.modem-dialog button:hover { background:var(--surface-hover); }
+.modem-dialog button.primary { color:var(--accent); border-color:var(--accent); }
+.modem-dialog button:disabled { opacity:.45; cursor:default; }
+.modem-dialog label { display:flex; flex-direction:column; gap:5px; margin:10px 0; }
+.modem-dialog label:has(input[type=checkbox]) { flex-direction:row-reverse; justify-content:flex-end; align-items:center; }
+.modem-dialog input:not([type=checkbox]),.modem-dialog select,.modem-dialog textarea { width:100%; box-sizing:border-box; color:var(--fg); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; font:inherit; }
+.modem-dialog textarea { resize:vertical; min-height:74px; font-family:var(--font-mono,monospace); }
+.modem-dialog :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.modem-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.modem-hint { font-size:12px; color:var(--fg2); margin:10px 0; overflow-wrap:anywhere; }
+.modem-feedback { min-height:20px; margin:8px 0; color:var(--fg2); white-space:pre-wrap; overflow-wrap:anywhere; }
+.modem-feedback.error { color:var(--danger); }
+.modem-browser { border:1px solid var(--border); border-radius:7px; padding:8px; margin-top:10px; }
+.modem-folder-bar { display:flex; gap:6px; flex-wrap:wrap; }
+.modem-folder-bar input { flex:1; min-width:120px; }
+.modem-folder-bar button { padding:4px 8px; }
+.modem-files { max-height:200px; overflow:auto; margin-top:8px; }
+.modem-file-row { border-top:1px solid var(--border); padding:2px 0; }
+.modem-file-row button { text-align:left; width:100%; border:0; background:transparent; overflow-wrap:anywhere; }
+.modem-file-row label { margin:4px; padding:4px; overflow-wrap:anywhere; }
+.modem-file-row input { flex:none; }
+.modem-dialog [hidden],.modem-browser[hidden] { display:none !important; }
+.term-wrap.modem-busy::after { content:'文件传输中 · 普通键盘输入已暂停'; position:absolute; right:12px; bottom:10px; padding:5px 9px; border:1px solid var(--border); border-radius:6px; color:var(--fg); background:var(--bg2); font:12px var(--font-ui); pointer-events:none; z-index:4; }
+@media(max-width:560px) { .modem-overlay { padding:8px; } .modem-dialog { padding:14px; max-height:calc(100vh - 16px); } .modem-grid { gap:10px; } }

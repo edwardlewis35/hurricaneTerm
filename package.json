@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.9.1",
+  "version": "0.10.0",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
@@ -27,7 +27,9 @@
     "test:ai-context": "node scripts/ai-context-test.mjs",
     "test:text-input": "node scripts/native-text-input-test.mjs",
     "test:ai-memory": "node scripts/ai-memory-ui-test.mjs",
-    "test:ai-memory-integration": "node scripts/ai-memory-integration-test.mjs"
+    "test:ai-memory-integration": "node scripts/ai-memory-integration-test.mjs",
+    "test:modem": "node scripts/modem-ui-test.mjs",
+    "test:transfer-queue": "node scripts/transfer-queue-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

@@ -1,6 +1,6 @@
 // hurricaneTerm — Tauri 2 backend: local PTY sessions + fs/state services.
-// Original implementation (Apache-2.0, see LICENSE); every module in this repo is
-// written from scratch (PTY/SSH/Telnet/serial sessions, dock panes, statusbar, triggers).
+// Application implementation is Apache-2.0 (see LICENSE). The vendored ZMODEM
+// state machine retains its upstream MIT/Apache-2.0 licenses and patch notice.
 #![allow(unused)]
 
 mod re;
@@ -8,6 +8,8 @@ mod jump;
 mod files;
 mod pty_child;
 mod terminal_io;
+mod modem_transport;
+mod modem_live;
 mod ssh_live;
 mod ssh_relay;
 #[cfg(unix)]
@@ -35,6 +37,7 @@ type SessionWriter = Arc<tokio::sync::Mutex<BoxedWriter>>;
 type BoxedResize = Box<dyn Fn(u16, u16) -> Result<(), String> + Send>;
 
 struct Entry {
+    gate: Arc<modem_transport::SessionGate>,
     writer: SessionWriter,
     resize: BoxedResize,
     killer: Option<pty_child::Killer>,
@@ -49,6 +52,8 @@ struct PtyState(Mutex<HashMap<String, Entry>>);
 
 #[derive(Default)]
 struct TransferState(Mutex<HashMap<String, Arc<ssh_live::TransferControl>>>);
+#[derive(Default)]
+struct ModemPending(Mutex<std::collections::HashSet<(String,String)>>);
 
 #[derive(Clone, Serialize)]
 struct OutPayload {
@@ -191,6 +196,7 @@ fn spawn(
     let id = Uuid::new_v4().to_string();
     let output_stopped = Arc::new(AtomicBool::new(false));
     let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), cfg!(unix));
 
     {
         let id2 = id.clone();
@@ -203,6 +209,7 @@ fn spawn(
                 if stopped.load(Ordering::Acquire) { break; }
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        modem_transport::disconnect(&id2);
                         let data = decoder.finish();
                         if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
@@ -210,7 +217,7 @@ fn spawn(
                     }
                     Ok(n) => {
                         if stopped.load(Ordering::Acquire) { break; }
-                        let data = decoder.push(&buf[..n]);
+                        let data = modem_transport::decode(&id2, &mut decoder, &buf[..n]);
                         if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                     }
                 }
@@ -224,6 +231,7 @@ fn spawn(
     let child_alive = alive.clone();
     let killer = pty_child::monitor_child(child, move || {
         child_alive.store(false, Ordering::Release);
+        modem_transport::disconnect(&id3);
         executions.cancel_session(&id3);
         let _ = app3.emit("pty-exit", ExitPayload { id: id3 });
     });
@@ -235,6 +243,7 @@ fn spawn(
         .insert(
             id.clone(),
             Entry {
+                gate,
                 writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
                 resize,
                 killer: Some(killer),
@@ -265,6 +274,8 @@ fn connect_telnet(
     let writer = stream;
 
     let id = Uuid::new_v4().to_string();
+    let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), false);
     let mut nego = re::telnet::Negotiator::client_default();
 
     // initOptions 等价：对带 0x10 标志的选项发 WILL/DO
@@ -280,6 +291,7 @@ fn connect_telnet(
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        modem_transport::disconnect(&id2);
                         let data = decoder.finish();
                         if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
@@ -312,6 +324,7 @@ fn connect_telnet(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate,
             writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
             resize: Box::new(|_r, _c| Ok(())),
             killer: None,
@@ -320,7 +333,7 @@ fn connect_telnet(
             })),
             sftp: None,
             exec: agent_exec::Target::Unsupported,
-            alive: Arc::new(AtomicBool::new(true)),
+            alive,
         },
     );
     Ok(id)
@@ -412,6 +425,7 @@ fn connect_ssh(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate: modem_transport::SessionGate::new(id.clone(), ctl.alive.clone(), true),
             writer: Arc::new(tokio::sync::Mutex::new(Box::new(ssh_live::SshInput(ssh_in)))),
             resize: Box::new(move |r, c| {
                 rz.send((c as u32, r as u32)).map_err(|_| "closed".to_string())
@@ -467,6 +481,8 @@ fn connect_serial(
         opts.insert("serial.flowControl".into(), re::serial::OptVal::Str(v));
     }
     let id = Uuid::new_v4().to_string();
+    let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), true);
     let (host_label, ctl) =
         serial_live::spawn_session(app.clone(), id.clone(), target.trim(), &opts)
             .map_err(|e| connection_error::redact(&format!("串口打开或配置失败 {target}：{e}"), &[]))?;
@@ -475,12 +491,13 @@ fn connect_serial(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate,
             writer: Arc::new(tokio::sync::Mutex::new(Box::new(ctl.writer))), // Box<dyn SerialPort>: Write + Send
             resize: Box::new(|_r, _c| Ok(())), // 串口无窗口尺寸概念
             killer: None,
             sftp: None,
             exec: agent_exec::Target::Unsupported,
-            alive: Arc::new(AtomicBool::new(true)),
+            alive,
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
@@ -528,6 +545,8 @@ fn connect_tcp(
         proxy_env: String::new(),
     };
     let id = Uuid::new_v4().to_string();
+    let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), true);
     let connection_label = params.target.clone();
     let secrets = vec![params.proxy_password.clone(), params.proxy_command.clone()];
     let (_label, ctl) = tcp_live::spawn_session(app.clone(), id.clone(), params)
@@ -536,12 +555,13 @@ fn connect_tcp(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate,
             writer: Arc::new(tokio::sync::Mutex::new(writer)),
             resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义
             killer: None,
             sftp: None,
             exec: agent_exec::Target::Unsupported,
-            alive: Arc::new(AtomicBool::new(true)),
+            alive,
             closer: Some(Box::new(move || {
                 let _ = stop.send(()); // 通知 pump
                 killer(); // shutdown(Both)/kill child → 读线程退出 → detach 信号对
@@ -553,9 +573,10 @@ fn connect_tcp(
 
 #[tauri::command]
 async fn write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
-    let writer = {
+    let (writer, _write_lease) = {
         let map = state.0.lock().map_err(|e| e.to_string())?;
-        map.get(&id).ok_or("no such pty")?.writer.clone()
+        let entry = map.get(&id).ok_or("no such pty")?;
+        (entry.writer.clone(), entry.gate.begin_write()?)
     };
     // Only this session's writer is locked while IO can block. Other sessions,
     // close, resize and SFTP calls never wait on a global map lock held by IO.
@@ -621,6 +642,7 @@ fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<()
 async fn kill(state: State<'_, PtyState>, executions: State<'_, agent_exec::AgentExecState>, id: String) -> Result<(), String> {
     let entry = state.0.lock().map_err(|e| e.to_string())?.remove(&id);
     executions.cancel_session(&id);
+    modem_transport::disconnect(&id);
     // Removing the entry is idempotent; release the global map before any
     // signal, socket shutdown or destructor runs. None run on the UI thread.
     if let Some(mut entry) = entry {
@@ -735,6 +757,35 @@ async fn sftp_chmod(state: State<'_, PtyState>, id: String, path: String, mode: 
     sftp_call(&state, id, |reply| ssh_live::SftpReq::Chmod { path, mode, reply }).await
 }
 
+#[tauri::command]
+fn modem_capabilities(state: State<'_, PtyState>, session_id:String)->Result<serde_json::Value,String>{
+    let entries=state.0.lock().map_err(|_|"会话状态不可用")?;
+    let entry=entries.get(&session_id).ok_or("目标连接不存在")?;
+    let available=entry.gate.is_alive()&&entry.gate.binary_supported();
+    let reason=if !entry.gate.is_alive(){"目标连接已断开"}else if !entry.gate.binary_supported(){"此通道无法保证二进制保真；请使用 SSH、原始 TCP、Unix 本地终端或串口"}else{"X/Y/ZMODEM 已内置，请先在对端启动相应收发程序"};
+    Ok(serde_json::json!({"available":available,"reason":reason,"protocols":["xmodem","ymodem","zmodem"].iter().map(|p|serde_json::json!({"protocol":p,"available":available})).collect::<Vec<_>>()}))
+}
+#[tauri::command]
+async fn modem_transfer_start(app:AppHandle,state:State<'_,PtyState>,pending:State<'_,ModemPending>,request:modem_live::Request)->Result<modem_live::Outcome,String>{
+    modem_live::validate(&request)?;
+    let (writer,_lease,input,cancel)={
+        let entries=state.0.lock().map_err(|_|"会话状态不可用")?;
+        let entry=entries.get(&request.session_id).ok_or("目标连接不存在")?;
+        let mut cancelled=pending.0.lock().map_err(|_|"传输状态不可用")?;
+        if cancelled.remove(&(request.session_id.clone(),request.transfer_id.clone())) {return Err("传输在启动前已取消".into())}
+        let (lease,input,cancel)=entry.gate.begin_modem(request.transfer_id.clone())?;
+        (entry.writer.clone(),lease,input,cancel)
+    };
+    let sink:modem_live::Sink=Arc::new(move|progress|{let _=app.emit("modem-transfer-progress",progress);});
+    modem_live::run(request,input,cancel,writer,sink).await
+}
+#[tauri::command]
+fn modem_transfer_cancel(state:State<'_,PtyState>,pending:State<'_,ModemPending>,session_id:String,transfer_id:String)->Result<(),String>{
+    if transfer_id.is_empty()||transfer_id.len()>200{return Err("传输编号无效".into())}
+    let entries=state.0.lock().map_err(|_|"会话状态不可用")?;
+    let entry=entries.get(&session_id).ok_or("目标连接已关闭")?;
+    if !entry.gate.cancel(&transfer_id){let mut cancelled=pending.0.lock().map_err(|_|"传输状态不可用")?;if cancelled.len()>=256{cancelled.clear()}cancelled.insert((session_id,transfer_id));}Ok(())
+}
 #[tauri::command]
 async fn sftp_transfer_start(
     state: State<'_, PtyState>, transfers: State<'_, TransferState>,
@@ -1142,18 +1193,19 @@ async fn agent_exec(
 ) -> Result<agent_exec::ExecResult, String> {
     // Registration and target lookup share the PTY-map lock. A concurrent
     // close either prevents registration or cancels the newly registered job.
-    let (target, lease) = {
+    let (target, lease, _write_lease) = {
         let entries = state.0.lock().map_err(|_| "会话状态不可用")?;
         let entry = entries.get(&request.session_id).filter(|entry| entry.alive.load(Ordering::Acquire))
             .ok_or("目标会话已退出或断开，请先重新连接")?;
         let target = entry.exec.clone();
         if matches!(target, agent_exec::Target::Unsupported) { return Err("该协议不支持 AI 运维命令，仅支持本地终端和 SSH".into()); }
+        let write_lease = entry.gate.begin_write()?;
         let lease = executions.begin(&request)?;
         if !entry.alive.load(Ordering::Acquire) {
             lease.control.session_closed();
             return Err("目标会话已退出或断开，请先重新连接".into());
         }
-        (target, lease)
+        (target, lease, write_lease)
     };
     let sink: agent_exec::OutputSink = Arc::new(move |output| { let _ = app.emit("agent-exec-output", output); });
     agent_exec::execute(target, request, lease.control.clone(), sink).await
@@ -1217,6 +1269,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PtyState::default())
         .manage(TransferState::default())
+        .manage(ModemPending::default())
         .manage(TriggersState::default())
         .manage(LogState::default())
         .manage(ai::AiState::default())
@@ -1248,6 +1301,9 @@ pub fn run() {
             sftp_read_file,
             sftp_write_file,
             sftp_chmod,
+            modem_capabilities,
+            modem_transfer_start,
+            modem_transfer_cancel,
             sftp_transfer_start,
             sftp_transfer_control,
             sessions_load,

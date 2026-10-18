@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.9.1';
+  const VERSION = '0.10.0';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);
@@ -239,6 +239,7 @@ window.WT = (function () {
     if (window.Settings) Settings.mount($('#settings'));
     if (window.Home) Home.mount($('#home'));
     if (window.SftpPanel) SftpPanel.mount($('#sftp-panel'));
+    if (window.TransferQueue) TransferQueue.mount();
     if (window.AiPanel) AiPanel.mount($('#ai-panel'));
     if (!WT.term.order.length && WT.s.homeOnStart !== false && window.Home) Home.show();
 
@@ -269,6 +270,10 @@ window.WT = (function () {
     });
     await WT.listen('sftp-transfer-progress', (e) => {
       if (window.SftpPanel) SftpPanel.progress(e.payload.data);
+    });
+    await WT.listen('modem-transfer-progress', (e) => {
+      try { window.ModemTransfer?.progress(e.payload.data ?? e.payload); }
+      catch (error) { WT.ui.log('终端传输进度格式无效：' + String(error)); }
     });
     await WT.listen('connection-error', (e) => {
       const payload = e.payload || {};

@@ -1,6 +1,6 @@
 [package]
 name = "hurricane-term"
-version = "0.9.1"
+version = "0.10.0"
 description = "hurricaneTerm — cross-platform Tauri 2 terminal (SSH/Telnet/serial/TCP + SFTP)"
 edition = "2021"
 
@@ -33,6 +33,7 @@ rand = "0.8"
 serde_yaml = "0.9"
 sha2 = "=0.10.9"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
+zmodem2 = { version = "=0.5.0", path = "vendor/zmodem2" }
 
 [profile.release]
 opt-level = 2

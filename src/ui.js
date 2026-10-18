@@ -211,6 +211,7 @@
       if (palette && !palette.hidden) this.closePalette();
       if (search && !search.hidden) this.closeSearch();
       if (id === 'filer' && window.SftpPanel) { this.closeDock(); SftpPanel.open(); return; }
+      if (id === 'transfer' && window.TransferQueue) { this.closeDock(); TransferQueue.open(); return; }
       if (!T.s.dockVisible) this._dockReturnFocus = document.activeElement;
       if (window.SftpPanel && SftpPanel.isOpen() && SftpPanel.close() === false) return;
       if (window.Settings && Settings.isOpen()) Settings.close();
@@ -574,6 +575,7 @@
 
       add('窗格', '切换工具窗口', 'Ctrl+B', 'folder', () => this.toggleDock());
       add('窗格', 'AI 助手', '', 'sparkles', () => setTimeout(() => window.AiPanel?.toggle(), 0));
+      add('文件', '新建 X/Y/ZMODEM 传输', '', 'transfer', () => setTimeout(() => window.ModemTransfer?.open(), 0));
       for (let i = 0; i < PANES.length; i++) {
         const [id, label] = PANES[i];
         add('窗格', '工具窗口：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));
@@ -721,6 +723,7 @@
     if (mod && !e.shiftKey && k >= '1' && k <= '6') {
       e.preventDefault();
       if (k === '2' && window.SftpPanel) { UI.closeDock(); SftpPanel.toggle(); return; }
+      if (k === '4' && window.TransferQueue) { UI.closeDock(); TransferQueue.toggle(); return; }
       const p = PANES[+k - 1];
       if (p) UI.setDockPane(p[0]);
       return;

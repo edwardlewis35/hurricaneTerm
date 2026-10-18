@@ -236,6 +236,7 @@ pub fn spawn_session(
                 let error = connection_error::context("runtime", "无法启动 SSH 连接任务", Box::new(error));
                 sink.connection_error(&id, error.as_ref(), &[]);
                 session_alive.store(false, Ordering::Release);
+                crate::modem_transport::disconnect(&id);
                 let _ = app.emit("pty-exit", OutPayload { id, data: String::new() });
                 return;
             }
@@ -258,6 +259,7 @@ pub fn spawn_session(
             proxy,
         ));
         session_alive.store(false, Ordering::Release);
+        crate::modem_transport::disconnect(&id);
         let _ = app.emit("pty-exit", OutPayload { id, data: String::new() });
     })?;
 
@@ -514,7 +516,7 @@ async fn run_session(
             m = reader.wait() => {
                 match m {
                     Some(ChannelMsg::Data { data }) => {
-                        let s = stdout_decoder.push(&data);
+                        let s = crate::modem_transport::decode(&id, &mut stdout_decoder, &data);
                         if !s.is_empty() { app.emit("pty-output", id.clone(), s.clone()); }
                         // auto-login：输出流尾窗匹配 自动登录 expect 规则 -> 应答
                         if !s.is_empty() {
@@ -531,7 +533,7 @@ async fn run_session(
                         }
                     }
                     Some(ChannelMsg::ExtendedData { data, .. }) => {
-                        let s = stderr_decoder.push(&data);
+                        let s = if crate::modem_transport::busy(&id) { String::new() } else { stderr_decoder.push(&data) };
                         if !s.is_empty() { app.emit("pty-output", id.clone(), s); }
                     }
                     Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,

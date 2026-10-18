@@ -131,6 +131,8 @@ jobs:
           npm run test:text-input
           npm run test:connections
           npm run test:connection-feedback
+          npm run test:modem
+          npm run test:transfer-queue
 
       - name: 原生协议、AI 记忆与凭据回归
         run: |
@@ -143,7 +145,16 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml agent_exec::tests
           cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests
           cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests
-          cargo test --manifest-path src-tauri/Cargo.toml jump::tests
+          cargo test --locked --manifest-path src-tauri/Cargo.toml jump::tests
+          cargo test --locked --manifest-path src-tauri/Cargo.toml modem_transport::tests
+          cargo test --locked --manifest-path src-tauri/Cargo.toml modem_live::tests -- --skip interoperability_with_lrzsz_both_directions
+
+      - name: Linux XYZMODEM 独立对端互通
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lrzsz
+          cargo test --locked --manifest-path src-tauri/Cargo.toml interoperability_with_lrzsz_both_directions -- --ignored --nocapture
 
       - name: macOS 原生 PTY 关闭与 UTF-8 回归
         if: startsWith(matrix.platform, 'macos')
