@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "blowfish"
-version = "0.10.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62ce3946557b35e71d1bbe07ec385073ce9eda05043f95de134eb578fcf1a298"
 dependencies = [
@@ -2294,7 +2294,7 @@ checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "hurricane-term"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -4446,7 +4446,7 @@ dependencies = [
 
 [[package]]
 name = "rsa"
-version = "0.10.1-rc.18"
+version = "0.10.0-rc.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30b2aa4ba0d89f73d1e332df05be0eeab8840351c36ca5654341dfdb57bb3caf"
 dependencies = [

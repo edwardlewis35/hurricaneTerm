@@ -17,6 +17,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'codex/xyz-transfer-validation'
   workflow_dispatch:
 
 permissions:
@@ -168,7 +170,7 @@ jobs:
       # 直接报 `failed to import keychain certificate`（v0.7.0 的 macOS 失败即此）。
       # 是否配置由 job 级 env 探测，未配置时走下面这个完全不注入 APPLE_* 的步骤。
       - name: 构建并发布（未配置 Apple 签名）
-        if: env.APPLE_CERTIFICATE == ''
+        if: startsWith(github.ref, 'refs/tags/v') && env.APPLE_CERTIFICATE == ''
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -189,7 +191,7 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: 构建并发布（已配置 Apple 签名 + 公证）
-        if: env.APPLE_CERTIFICATE != ''
+        if: startsWith(github.ref, 'refs/tags/v') && env.APPLE_CERTIFICATE != ''
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
