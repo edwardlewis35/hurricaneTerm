@@ -763,7 +763,8 @@ fn modem_capabilities(state: State<'_, PtyState>, session_id:String)->Result<ser
     let entry=entries.get(&session_id).ok_or("目标连接不存在")?;
     let available=entry.gate.is_alive()&&entry.gate.binary_supported();
     let reason=if !entry.gate.is_alive(){"目标连接已断开"}else if !entry.gate.binary_supported(){"此通道无法保证二进制保真；请使用 SSH、原始 TCP、Unix 本地终端或串口"}else{"X/Y/ZMODEM 已内置，请先在对端启动相应收发程序"};
-    Ok(serde_json::json!({"available":available,"reason":reason,"protocols":["xmodem","ymodem","zmodem"].iter().map(|p|serde_json::json!({"protocol":p,"available":available})).collect::<Vec<_>>()}))
+    let protocols=["xmodem","ymodem","zmodem"].iter().map(|p|serde_json::json!({"protocol":p,"available":available})).collect::<Vec<_>>();
+    Ok(serde_json::json!({"available":available,"reason":reason,"protocols":protocols}))
 }
 #[tauri::command]
 async fn modem_transfer_start(app:AppHandle,state:State<'_,PtyState>,pending:State<'_,ModemPending>,request:modem_live::Request)->Result<modem_live::Outcome,String>{
