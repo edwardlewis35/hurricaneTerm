@@ -493,19 +493,82 @@ mod tests {
     #[test]fn exact_duplicate_ranking_keeps_recent_source_without_losing_other_fact(){let now=dated_memory_ms("memory/2026-10-17.md").unwrap() as u64;let result=rerank(vec![hit("global","memory/2020-01-01.md","database verified fact",0.9),hit("global","MEMORY.md","database verified fact",0.9),hit("global","memory/notes.md","independent nginx fact",0.8)],6,now);assert_eq!(result.len(),2);assert_eq!(result[0].path,"MEMORY.md");assert!(result.iter().any(|h|h.path=="memory/notes.md"));}
     #[test]fn cjk_mmr_tokens_support_unigrams_bigrams_and_do_not_bridge_ascii(){let a=similarity_tokens("数据库 nginx 故障排查");let b=similarity_tokens("数据库 nginx 故障修复");assert!(a.contains("数据")&&a.contains("数")&&a.contains("nginx"));assert!(!similarity_tokens("数nginx据").contains("数据"));assert!(jaccard(&a,&b,"","")>0.4);}
 
-    struct Server { endpoint:String, requests:Arc<std::sync::Mutex<Vec<String>>>, stop:Arc<std::sync::atomic::AtomicBool>, thread:Option<std::thread::JoinHandle<()>> }
+    const MAX_FIXTURE_REQUEST: usize = 256 * 1024;
+    #[derive(Clone, Debug)]
+    enum FixtureReadError {
+        Configure,
+        Read(std::io::ErrorKind),
+        Incomplete { received: usize, expected: Option<usize> },
+        TooLarge { received: usize },
+        InvalidHeaders,
+        InvalidLength,
+        InvalidUtf8,
+        InvalidJson,
+    }
+    impl FixtureReadError {
+        fn diagnostic(&self) -> String {
+            match self {
+                Self::Configure => "configure".into(),
+                Self::Read(kind) => format!("read:{kind:?}"),
+                Self::Incomplete { received, expected } => format!("incomplete:received={received},expected={expected:?}"),
+                Self::TooLarge { received } => format!("too-large:received={received}"),
+                Self::InvalidHeaders => "invalid-headers".into(),
+                Self::InvalidLength => "invalid-length".into(),
+                Self::InvalidUtf8 => "invalid-utf8".into(),
+                Self::InvalidJson => "invalid-json".into(),
+            }
+        }
+    }
+    fn read_fixture_request(stream: &mut std::net::TcpStream, on_headers: impl FnOnce()) -> Result<(String, serde_json::Value), FixtureReadError> {
+        // Winsock and BSD accept inherit the listener's nonblocking mode. A read
+        // timeout does not change it, so normalize accepted streams explicitly.
+        stream.set_nonblocking(false).map_err(|_| FixtureReadError::Configure)?;
+        stream.set_read_timeout(Some(Duration::from_secs(2))).map_err(|_| FixtureReadError::Configure)?;
+        let mut request = Vec::new(); let mut buffer = [0; 4096];
+        let mut framing: Option<(usize, usize)> = None; let mut on_headers = Some(on_headers);
+        loop {
+            let read = match stream.read(&mut buffer) {
+                Ok(0) => return Err(FixtureReadError::Incomplete { received: request.len(), expected: framing.map(|(end, length)| end + length) }),
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(FixtureReadError::Read(error.kind())),
+            };
+            request.extend_from_slice(&buffer[..read]);
+            if request.len() > MAX_FIXTURE_REQUEST { return Err(FixtureReadError::TooLarge { received: request.len() }); }
+            if framing.is_none() {
+                if let Some(at) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..at]).map_err(|_| FixtureReadError::InvalidHeaders)?.to_ascii_lowercase();
+                    let mut lengths = headers.lines().filter_map(|line| line.strip_prefix("content-length:"));
+                    let raw_length = lengths.next().ok_or(FixtureReadError::InvalidLength)?.trim();
+                    if raw_length.is_empty() || !raw_length.bytes().all(|byte| byte.is_ascii_digit()) { return Err(FixtureReadError::InvalidLength); }
+                    let length = raw_length.parse::<usize>().map_err(|_| FixtureReadError::InvalidLength)?;
+                    if lengths.next().is_some() || headers.lines().any(|line| line.starts_with("transfer-encoding:")) { return Err(FixtureReadError::InvalidLength); }
+                    let end = at + 4;
+                    if length > MAX_FIXTURE_REQUEST - end { return Err(FixtureReadError::TooLarge { received: end.saturating_add(length) }); }
+                    framing = Some((end, length));
+                    if let Some(ready) = on_headers.take() { ready(); }
+                }
+            }
+            if let Some((end, length)) = framing {
+                if request.len() >= end + length {
+                    if request.len() != end + length { return Err(FixtureReadError::InvalidLength); }
+                    let text = String::from_utf8(request).map_err(|_| FixtureReadError::InvalidUtf8)?;
+                    let body = serde_json::from_slice(&text.as_bytes()[end..end + length]).map_err(|_| FixtureReadError::InvalidJson)?;
+                    return Ok((text, body));
+                }
+            }
+        }
+    }
+    struct Server { endpoint:String, requests:Arc<std::sync::Mutex<Vec<String>>>, errors:Arc<std::sync::Mutex<Vec<FixtureReadError>>>, stop:Arc<std::sync::atomic::AtomicBool>, thread:Option<std::thread::JoinHandle<()>> }
     impl Server {
         fn new(mode:&'static str)->Self {
             use std::net::TcpListener;
             let listener=TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();let address=listener.local_addr().unwrap();
-            let requests=Arc::new(std::sync::Mutex::new(Vec::new()));let stored=requests.clone();let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));let stopped=stop.clone();
+            let requests=Arc::new(std::sync::Mutex::new(Vec::new()));let stored=requests.clone();let errors=Arc::new(std::sync::Mutex::new(Vec::new()));let read_errors=errors.clone();let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));let stopped=stop.clone();
             let thread=std::thread::spawn(move||{while !stopped.load(std::sync::atomic::Ordering::Relaxed){
                 match listener.accept(){Ok((mut stream,_))=>{
-                    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();let mut request=Vec::new();let mut buffer=[0;4096];let mut expected=None;
-                    loop{match stream.read(&mut buffer){Ok(0)|Err(_)=>break,Ok(n)=>{request.extend_from_slice(&buffer[..n]);if request.len()>256*1024{break;}if let Some(at)=request.windows(4).position(|w|w==b"\r\n\r\n"){let headers=String::from_utf8_lossy(&request[..at]).to_lowercase();let length=headers.lines().find_map(|l|l.strip_prefix("content-length:").and_then(|v|v.trim().parse::<usize>().ok())).unwrap_or(0);expected=Some(at+4+length);}if expected.is_some_and(|n|request.len()>=n){break;}}}}
-                    let text=String::from_utf8_lossy(&request).into_owned();stored.lock().unwrap().push(text.clone());
-                    let at=request.windows(4).position(|w|w==b"\r\n\r\n").unwrap_or(request.len());
-                    let body:serde_json::Value=serde_json::from_slice(request.get(at+4..).unwrap_or(&[])).unwrap_or_default();
+                    let (text,body)=match read_fixture_request(&mut stream,||{}) { Ok(request)=>request,Err(error)=>{read_errors.lock().unwrap().push(error);continue;} };
+                    stored.lock().unwrap().push(text);
                     let input=body["input"].as_array().cloned().unwrap_or_default();
                     let data=input.iter().enumerate().map(|(i,v)|{let text=v.as_str().unwrap_or("");let vector=if text.contains("database")||text.contains("postgres"){vec![1.0,0.0]}else{vec![0.0,1.0]};serde_json::json!({"index":i,"embedding":vector})}).rev().collect::<Vec<_>>();
                     if mode == "slow" { std::thread::sleep(Duration::from_millis(30)); }
@@ -518,23 +581,58 @@ mod tests {
                     };let _=stream.write_all(response.as_bytes());
                 },Err(e)if e.kind()==std::io::ErrorKind::WouldBlock=>std::thread::sleep(Duration::from_millis(2)),Err(_)=>break}
             }});
-            Self{endpoint:format!("http://{address}/custom/v1"),requests,stop,thread:Some(thread)}
+            Self{endpoint:format!("http://{address}/custom/v1"),requests,errors,stop,thread:Some(thread)}
         }
         fn config(&self)->EmbeddingConfig{EmbeddingConfig{endpoint:self.endpoint.clone(),model:"fixture-embedding".into(),api_key:"fixture-secret".into(),dimensions:Some(2)}}
         fn count(&self)->usize{self.requests.lock().unwrap().len()}
+        fn errors(&self)->Vec<String>{self.errors.lock().unwrap().iter().map(FixtureReadError::diagnostic).collect()}
     }
     impl Drop for Server{fn drop(&mut self){self.stop.store(true,std::sync::atomic::Ordering::Relaxed);if let Some(thread)=self.thread.take(){thread.join().unwrap();}}}
+
+    #[test]fn fixture_reads_segmented_headers_and_delayed_body_after_inherited_nonblocking(){
+        use std::net::{TcpListener,TcpStream};use std::sync::mpsc::{channel,RecvTimeoutError};
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let (headers_tx,headers_rx)=channel();let (done_tx,done_rx)=channel();
+        let thread=std::thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();
+            // Force the inherited Windows/BSD state on every test platform.
+            stream.set_nonblocking(true).unwrap();
+            let result=read_fixture_request(&mut stream,||{headers_tx.send(()).unwrap();});let _=done_tx.send(result);
+        });
+        let mut client=TcpStream::connect(address).unwrap();client.set_nodelay(true).unwrap();
+        let body=serde_json::json!({"model":"fragmented-fixture","input":["database"]}).to_string();
+        client.write_all(b"POST /custom/v1/embeddings HTTP/1.1\r\nContent-Len").unwrap();
+        assert_eq!(done_rx.recv_timeout(Duration::from_millis(20)).err(),Some(RecvTimeoutError::Timeout),"partial headers must not be accepted");
+        client.write_all(format!("gth: {}\r\nContent-Type: application/json\r\n\r\n",body.len()).as_bytes()).unwrap();
+        headers_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(done_rx.recv_timeout(Duration::from_millis(40)).err(),Some(RecvTimeoutError::Timeout),"complete headers must wait for the declared body");
+        let split=body.len()/2;client.write_all(&body.as_bytes()[..split]).unwrap();
+        assert_eq!(done_rx.recv_timeout(Duration::from_millis(20)).err(),Some(RecvTimeoutError::Timeout),"a partial body must not produce an empty or partial embedding request");
+        client.write_all(&body.as_bytes()[split..]).unwrap();
+        let(text,parsed)=done_rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+        assert_eq!(parsed,serde_json::from_str::<serde_json::Value>(&body).unwrap());assert!(text.ends_with(&body));thread.join().unwrap();
+    }
+    #[test]fn fixture_rejects_truncated_content_length_without_parsing_a_partial_request(){
+        use std::net::{Shutdown,TcpListener,TcpStream};
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let thread=std::thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();read_fixture_request(&mut stream,||{})});
+        let mut client=TcpStream::connect(address).unwrap();
+        let headers=b"POST /custom/v1/embeddings HTTP/1.1\r\nContent-Length: 20\r\n\r\n";
+        client.write_all(headers).unwrap();client.write_all(b"{}").unwrap();client.shutdown(Shutdown::Write).unwrap();
+        match thread.join().unwrap(){Err(FixtureReadError::Incomplete{received,expected})=>{assert_eq!(received,headers.len()+2);assert_eq!(expected,Some(headers.len()+20));},_=>panic!("a truncated request must fail with controlled length diagnostics")}
+    }
 
     #[tokio::test]async fn semantic_http_reorders_vectors_hybrid_ranks_and_cache_is_idempotent(){
         let t=Temp::new();let server=Server::new("success");let state=t.state();
         state.write(write("global","MEMORY.md","postgres configuration listens 5432")).await.unwrap();state.write(write("global","memory/2026-10-17.md","rabbitMQ message queue listens 5672")).await.unwrap();
         let mut request=search("global","database");request.embedding=Some(server.config());request.min_score=Some(0.35);
-        let result=state.search(request.clone()).await.unwrap();assert_eq!(result.mode,"hybrid");assert!(result.warning.is_none());assert_eq!(result.hits.len(),1);assert!(result.hits[0].snippet.contains("postgres"));assert_eq!(result.embedding_chunks,2);assert_eq!(server.count(),2);assert_eq!(state.status("global".into()).await.unwrap().embedding_chunks,2);
-        state.search(request.clone()).await.unwrap();assert_eq!(server.count(),3,"unchanged chunks use cache; only query embeds again");
-        request.embedding.as_mut().unwrap().api_key="another-fixture-key".into();state.search(request.clone()).await.unwrap();assert_eq!(server.count(),4,"auth is not part of vector identity");
-        request.embedding.as_mut().unwrap().model="another-model".into();state.search(request).await.unwrap();assert_eq!(server.count(),6,"changed model must re-embed document chunks");
+        let assert_hybrid=|result:&MemorySearchResponse,stage:&str|{assert_eq!(result.mode,"hybrid","{stage}: fixture read errors: {:?}",server.errors());assert!(result.warning.is_none(),"{stage}: unexpected fallback; fixture read errors: {:?}",server.errors());assert_eq!(result.embedding_chunks,2,"{stage}: both chunks must use the active embedding profile");};
+        let result=state.search(request.clone()).await.unwrap();assert_hybrid(&result,"initial");assert_eq!(result.hits.len(),1);assert!(result.hits[0].snippet.contains("postgres"));assert_eq!(server.count(),2,"initial: fixture read errors: {:?}",server.errors());assert_eq!(state.status("global".into()).await.unwrap().embedding_chunks,2);
+        let result=state.search(request.clone()).await.unwrap();assert_hybrid(&result,"cache reuse");assert_eq!(server.count(),3,"unchanged chunks use cache; only query embeds again; fixture read errors: {:?}",server.errors());
+        request.embedding.as_mut().unwrap().api_key="another-fixture-key".into();let result=state.search(request.clone()).await.unwrap();assert_hybrid(&result,"auth change");assert_eq!(server.count(),4,"auth is not part of vector identity; fixture read errors: {:?}",server.errors());
+        request.embedding.as_mut().unwrap().model="another-model".into();let new_profile=embedding_profile(request.embedding.as_ref().unwrap()).unwrap();let result=state.search(request).await.unwrap();assert_hybrid(&result,"model change");assert_eq!(server.count(),6,"changed model must re-embed document chunks; fixture read errors: {:?}",server.errors());
         let requests=server.requests.lock().unwrap();assert!(requests.iter().all(|r|r.starts_with("POST /custom/v1/embeddings ")));assert!(requests[0].contains("Bearer fixture-secret"));
         let conn=database(&t.0).unwrap();let cache:Vec<u8>=conn.query_row("SELECT vector FROM vectors LIMIT 1",[],|r|r.get(0)).unwrap();assert!(decode_vector(&cache,2).is_some());
+        let (rows,hashes,profiles,active):(i64,i64,i64,i64)=conn.query_row("SELECT count(*),count(DISTINCT hash),count(DISTINCT profile),coalesce(sum(profile=?1),0) FROM vectors",[new_profile],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();assert_eq!((rows,hashes,profiles,active),(2,2,1,2),"changed model must replace the old profile with exactly both document hashes");
         let profiles:String=conn.query_row("SELECT group_concat(profile) FROM vectors",[],|r|r.get(0)).unwrap();assert!(!profiles.contains("fixture-secret")&&!profiles.contains("127.0.0.1"));
     }
     #[tokio::test]async fn external_change_invalidates_embedding_cache_and_deleted_vectors_are_purged(){

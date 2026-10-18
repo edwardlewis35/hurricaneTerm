@@ -132,7 +132,7 @@ jobs:
           npm run test:connections
           npm run test:connection-feedback
 
-      - name: Gist 加密格式与兼容性回归
+      - name: 原生协议、AI 记忆与凭据回归
         run: |
           npm run prepare-dist
           cargo test --manifest-path src-tauri/Cargo.toml gist_sync::tests
