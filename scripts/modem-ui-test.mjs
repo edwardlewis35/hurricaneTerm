@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../src/modem.js', import.meta.url), 'utf8')
 const errors = [], console = new VirtualConsole(); console.on('jsdomError', e => errors.push(e.message));
 const dom = new JSDOM('<!doctype html><button id="previous">传输</button><main id="main-area"></main>', { runScripts:'outside-only', pretendToBeVisual:true, virtualConsole:console });
 const w = dom.window, d = w.document, pending = new Map(), calls = [], rows = new Map(), tabs = {};
-let selected, capabilitiesDelay, passed = 0;
+let selected, capabilitiesDelay, cancelOperation, passed = 0;
 const settle = async () => { for (let i=0;i<8;i++) await new Promise(r => setImmediate(r)); };
 const check = (condition, message) => { assert.ok(condition, message); passed++; };
 const tab = (id, protocol='ssh') => {
@@ -20,7 +20,10 @@ w.WT = {term:{tabs,activeTab:()=>selected,ptyId:t=>t.ptyId,isLive:t=>!!t&&!t.exi
     calls.push({command,args});
     if(command==='modem_capabilities') return capabilitiesDelay ? capabilitiesDelay : {available:true,protocols:['xmodem','ymodem','zmodem']};
     if(command==='modem_transfer_start') return new Promise((resolve,reject)=>pending.set(args.request.transferId,{resolve,reject,request:args.request}));
-    if(command==='modem_transfer_cancel') {pending.get(args.transferId)?.resolve({status:'cancelled',done:0,total:0});return;}
+    if(command==='modem_transfer_cancel') {
+      if(cancelOperation) return cancelOperation(args);
+      pending.get(args.transferId)?.resolve({status:'cancelled',done:0,total:0});return;
+    }
     if(command==='fs_realpath') return args.path||'/tmp/local';
     if(command==='fs_list') return [{name:'<img src=x onerror=alert(1)>.bin',path:'/tmp/local/<img src=x onerror=alert(1)>.bin',is_dir:false,size:12},{name:'folder',path:'/tmp/local/folder',is_dir:true}];
     throw new Error('Unexpected native operation '+command);
@@ -76,6 +79,69 @@ try {
   check(waitingSecond.status==='cancelled'&&!pending.has(waitingSecond.nativeTransferId),'queued cancellation never starts native transfer');
   pending.get(waitingFirst.nativeTransferId).resolve(undefined);await settle();
   check(waitingFirst.status==='failed'&&waitingFirst.error.includes('完成状态'),'missing native completion cannot become success');
+
+  // Cancellation is a request; only the native outcome proves what happened.
+  const refused=await api.enqueue({tab:a,paths:['/cancel-refused']});await settle();
+  api.progress({transferId:refused.nativeTransferId,sessionId:a.ptyId,status:'running',done:10,total:100});
+  cancelOperation=async()=>{throw Error('native cancellation denied');};
+  await assert.rejects(rows.get(refused.id).controls.cancel(),/native cancellation denied/);passed++;
+  check(refused.status==='running'&&!refused.cancelled&&!refused.cancelPending&&rows.get(refused.id).error.includes('native cancellation denied'),'rejected cancellation restores running state and reports the native error');
+  api.progress({transferId:refused.nativeTransferId,sessionId:a.ptyId,status:'running',done:60,total:100});
+  check(refused.done===60&&rows.get(refused.id).done===60,'progress resumes after a cancellation rejection');
+  pending.get(refused.nativeTransferId).resolve({status:'completed',done:100,total:100});await settle();
+  check(refused.status==='completed'&&!refused.cancelled&&refused.done===100&&refused.error==='','native success after a rejected cancellation remains completed');
+
+  const retryCancel=await api.enqueue({tab:a,paths:['/retry-cancel']});await settle();
+  api.progress({transferId:retryCancel.nativeTransferId,sessionId:a.ptyId,status:'negotiating',done:0,total:100});
+  await assert.rejects(rows.get(retryCancel.id).controls.cancel(),/native cancellation denied/);passed++;
+  check(retryCancel.status==='negotiating'&&!retryCancel.cancelled&&typeof rows.get(retryCancel.id).controls.cancel==='function','a failed cancellation restores the previous negotiating phase and permits another cancel');
+  cancelOperation=null;await rows.get(retryCancel.id).controls.cancel();await settle();
+  check(retryCancel.status==='cancelled'&&!api.isBusy(a),'a second cancellation can be accepted after the first one failed');
+
+  const completeBeforeCancel=await api.enqueue({tab:a,paths:['/completion-wins']});await settle();
+  let acceptCancel;
+  cancelOperation=()=>new Promise(resolve=>{acceptCancel=resolve;});
+  const cancellation=rows.get(completeBeforeCancel.id).controls.cancel();await settle();
+  const cancelCalls=calls.filter(call=>call.command==='modem_transfer_cancel').length;
+  await rows.get(completeBeforeCancel.id).controls.cancel();
+  check(completeBeforeCancel.status==='cancelling'&&calls.filter(call=>call.command==='modem_transfer_cancel').length===cancelCalls,'a pending native cancellation cannot be dispatched twice');
+  pending.get(completeBeforeCancel.nativeTransferId).resolve({status:'completed',done:2048,total:2048});await settle();
+  check(completeBeforeCancel.status==='completed'&&!completeBeforeCancel.cancelled&&completeBeforeCancel.done===2048&&!api.isBusy(a),'actual completion wins while cancellation IPC is still pending');
+  acceptCancel();await cancellation;await settle();
+  check(completeBeforeCancel.status==='completed'&&!completeBeforeCancel.cancelPending,'a late successful cancellation acknowledgement cannot overwrite completion');
+
+  const lateRejection=await api.enqueue({tab:a,paths:['/late-rejection']});await settle();
+  let rejectCancel;
+  cancelOperation=()=>new Promise((_,reject)=>{rejectCancel=reject;});
+  const lateCancellation=rows.get(lateRejection.id).controls.cancel();await settle();
+  pending.get(lateRejection.nativeTransferId).resolve({status:'completed',done:512,total:512});await settle();
+  rejectCancel(Error('reply arrived after commit'));await lateCancellation;await settle();
+  check(lateRejection.status==='completed'&&lateRejection.done===512&&!lateRejection.cancelled&&!lateRejection.cancelPending&&lateRejection.error==='','a late cancellation rejection cannot revert or dirty an already completed result');
+
+  const acknowledged=await api.enqueue({tab:a,paths:['/cancel-ack-before-complete']});await settle();
+  cancelOperation=async()=>{};await rows.get(acknowledged.id).controls.cancel();
+  check(acknowledged.status==='cancelling'&&api.isBusy(a),'cancellation IPC acknowledgement alone does not release the transfer session');
+  pending.get(acknowledged.nativeTransferId).resolve({status:'completed',done:256,total:256});await settle();
+  check(acknowledged.status==='completed'&&!acknowledged.cancelled&&acknowledged.done===256,'even an acknowledged cancel cannot replace a later authoritative completion');
+
+  const oldReply=await api.enqueue({tab:a,paths:['/attempt-isolation']});await settle();
+  let rejectOldCancel;
+  cancelOperation=()=>new Promise((_,reject)=>{rejectOldCancel=reject;});
+  const oldCancellation=rows.get(oldReply.id).controls.cancel();await settle();
+  const oldAttempt=oldReply.nativeTransferId;
+  pending.get(oldAttempt).reject(Error('传输已取消或连接已断开'));await settle();
+  check(oldReply.status==='cancelled'&&!oldReply.working,'a native cancellation error finalizes the original attempt');
+  rows.get(oldReply.id).controls.retry();await settle();
+  api.progress({transferId:oldReply.nativeTransferId,sessionId:a.ptyId,status:'running',done:32,total:64});
+  rejectOldCancel(Error('old attempt cancellation failed'));await oldCancellation;await settle();
+  check(oldReply.nativeTransferId!==oldAttempt&&oldReply.status==='running'&&oldReply.done===32&&oldReply.error===''&&!oldReply.cancelled,'a stale cancellation failure cannot roll back a new retry attempt');
+  pending.get(oldReply.nativeTransferId).resolve({status:'completed',done:64,total:64});await settle();
+
+  const unrelatedFailure=await api.enqueue({tab:a,paths:['/native-failure']});await settle();
+  cancelOperation=async()=>{};await rows.get(unrelatedFailure.id).controls.cancel();
+  pending.get(unrelatedFailure.nativeTransferId).reject(Error('CRC retry limit exceeded'));await settle();
+  check(unrelatedFailure.status==='failed'&&unrelatedFailure.error.includes('CRC'),'an unrelated native transfer failure is not relabeled as cancelled merely because cancel was requested');
+  cancelOperation=null;
 
   selected=a;await api.open();
   d.querySelector('[data-upload] button').click();await settle();

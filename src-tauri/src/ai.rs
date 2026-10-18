@@ -687,7 +687,7 @@ pub async fn agent_step<F: FnMut(AiChatDelta) -> Result<(), String>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -713,7 +713,18 @@ mod tests {
     fn wait_for_close(socket: &mut TcpStream, closed: &AtomicBool) {
         socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut byte = [0u8; 1];
-        if matches!(socket.read(&mut byte), Ok(0)) { closed.store(true, Ordering::SeqCst); }
+        loop {
+            match socket.read(&mut byte) {
+                Ok(0) => break,
+                // Cancelling an unfinished HTTP response can reset the TCP
+                // connection instead of sending FIN, especially on Windows.
+                // Both prove the peer closed; a timeout must still fail.
+                Err(error) if matches!(error.kind(), ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted) => break,
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                result => panic!("expected peer EOF or connection reset after cancellation, got {result:?}"),
+            }
+        }
+        closed.store(true, Ordering::SeqCst);
     }
     fn mock(plan: Reply) -> Mock {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

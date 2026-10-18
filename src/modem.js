@@ -42,12 +42,22 @@
     { controls: { ...(terminal.has(task.status) ? task.status === 'failed' || task.status === 'cancelled' ? { retry: () => retry(task) } : {} : { cancel: () => cancel(task) }) } });
   }
   async function cancel(task) {
-    if (terminal.has(task.status)) return;
+    if (terminal.has(task.status) || task.cancelPending === task.nativeTransferId) return;
+    const attempt = task.nativeTransferId, previousStatus = task.status;
     task.cancelled = true;
     if (!task.started) { task.status = 'cancelled'; sync(task); return; }
+    task.cancelPending = attempt;
     task.status = 'cancelling'; sync(task);
-    try { await T.invoke('modem_transfer_cancel', { transferId: task.nativeTransferId, sessionId: task.sessionId }); }
-    catch (error) { if (!terminal.has(task.status)) { task.error = String(error); sync(task); throw error; } }
+    try { await T.invoke('modem_transfer_cancel', { transferId: attempt, sessionId: task.sessionId }); }
+    catch (error) {
+      // Completion or an explicitly retried attempt owns its result. A late
+      // cancellation reply must never change either one.
+      if (task.nativeTransferId !== attempt || terminal.has(task.status)) return;
+      task.cancelled = false; task.status = previousStatus;
+      task.error = String(error?.message || error); sync(task); throw error;
+    } finally {
+      if (task.cancelPending === attempt) task.cancelPending = null;
+    }
   }
   function retry(task) {
     if (task.working || !terminal.has(task.status)) return;
@@ -70,15 +80,16 @@
           packetSize: task.packetSize, trimPadding: task.trimPadding,
         } });
       }).then(result => {
-        if (task.cancelled) { task.status = 'cancelled'; return; }
-        if (!valid(task)) throw new Error(changed);
         if (!result || !['completed', 'skipped', 'cancelled'].includes(result.status)) throw new Error('后端未返回有效传输完成状态');
-        task.status = result.status;
+        // A cancel request can race an already committed file. Only the
+        // native outcome decides whether this operation actually completed.
+        task.status = result.status; task.cancelled = result.status === 'cancelled'; task.error = '';
         if (Number.isFinite(result?.done)) task.done = result.done;
         if (Number.isFinite(result?.total)) task.total = result.total;
         if (task.total && task.status === 'completed') task.done = task.total;
       }).catch(error => {
-        task.status = task.cancelled ? 'cancelled' : 'failed'; task.error = String(error?.message || error);
+        const reason = String(error?.message || error);
+        task.status = task.cancelled && /已取消|对端取消|\b(?:cancelled|canceled|cancellation)\b/i.test(reason) ? 'cancelled' : 'failed'; task.error = reason;
       }).finally(() => {
         activeSessions.delete(task.sessionId); task.working = false; task.tab?.wrap?.classList.remove('modem-busy'); sync(task); pump();
         const finished = Array.from(tasks.values()).filter(t => terminal.has(t.status) && !t.working);
