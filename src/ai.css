@@ -57,6 +57,10 @@
 .ai-agent-approval p { font-size: 11px; }
 .ai-agent-approval pre { max-height: 140px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 var(--font-mono); }
 .ai-agent-approval button { font-size: 11px; margin: 4px 4px 0 0; padding: 5px 8px; }
+.ai-agent-approval-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ai-agent-approval-actions button { margin: 0; }
+.ai-agent-approval-scope { color: var(--muted); }
+.ai-agent-auto-note { color: var(--accent); font-size: 11px; margin: 8px 0; }
 #ai-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
 #ai-config { display: flex; flex-direction: column; gap: 6px; padding: 8px 16px 16px; border-bottom: 1px solid var(--border); overflow-y: auto; max-height: 62%; flex-shrink: 0; }

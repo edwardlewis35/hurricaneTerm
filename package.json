@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.11.1",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
@@ -32,7 +32,8 @@
     "test:transfer-queue": "node scripts/transfer-queue-test.mjs",
     "test:ai-harness": "node scripts/ai-harness-test.mjs",
     "test:ai-harness-agent": "node scripts/ai-harness-agent-test.mjs",
-    "test:ai-harness-ui": "node scripts/ai-harness-ui-test.mjs"
+    "test:ai-harness-ui": "node scripts/ai-harness-ui-test.mjs",
+    "test:ai-allow-remaining": "node scripts/ai-allow-remaining-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

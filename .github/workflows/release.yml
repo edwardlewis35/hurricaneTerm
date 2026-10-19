@@ -129,6 +129,7 @@ jobs:
           npm run test:ai-harness
           npm run test:ai-harness-agent
           npm run test:ai-harness-ui
+          npm run test:ai-allow-remaining
           npm run test:ai-ops
           npm run test:ai-context
           npm run test:ai-memory

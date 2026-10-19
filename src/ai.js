@@ -57,7 +57,7 @@
     $('#ai-context-selection').disabled = busy;
     $('#ai-context-output').disabled = busy;
     if ($('#ai-compact')) $('#ai-compact').disabled = busy || !conversation.length;
-    if ($('#ai-confirm-commands')) { $('#ai-confirm-commands').checked = settings().confirmCommands; $('#ai-confirm-commands').disabled = busy; }
+    if ($('#ai-confirm-commands')) { $('#ai-confirm-commands').checked = pending?.message?.allowRemainingCommands ? false : settings().confirmCommands; $('#ai-confirm-commands').disabled = busy; }
     el.dataset.aiMode = mode;
     el.querySelectorAll('[data-ai-mode]').forEach(button => { button.disabled = busy; button.classList.toggle('on', button.dataset.aiMode === mode); button.setAttribute('aria-pressed', String(button.dataset.aiMode === mode)); });
     $('#ai-input').placeholder = mode === 'agent' ? '描述要在当前机器完成的运维任务…' : '描述问题，Enter 发送…';
@@ -158,7 +158,7 @@
     const finished = selectedReplay?.status === 'complete';
     const render = matches => {
       button.disabled = !record || finished || !matches || !!pending || savingConfig || configOpen || typeof window.OpsAgent?.resume !== 'function';
-      if (note) note.textContent = !record ? '' : finished ? '任务已结束。如需新操作，请新建任务。' : matches ? '将在当前连接继续；每条新命令均需确认，旧命令不会自动重放。' : '请先切换或连接到此记录的目标机器；其他机器不能恢复本任务。';
+      if (note) note.textContent = !record ? '' : finished ? '任务已结束。如需新操作，请新建任务。' : matches ? '将在当前连接继续；重新请求执行确认，旧命令不会自动重放。' : '请先切换或连接到此记录的目标机器；其他机器不能恢复本任务。';
     };
     if (!record || finished || !canOperate(tab) || !record.metadata?.target?.identity || cachedRecordTarget(record, tab)) { render(matchingRecordTarget(record, tab)); return; }
     button.disabled = true; note.textContent = '正在核对当前连接与记录中的目标机器…';
@@ -384,6 +384,7 @@
     article.append(content); host.append(article);
   }
   function renderSteps(message, host) {
+    if (message.allowRemainingCommands) host.append(textNode('p', '本任务已授权后续所有命令自动执行', 'ai-agent-auto-note'));
     const steps = document.createElement('div'); steps.className = 'ai-agent-steps';
     for (const step of message.steps) {
       const card = document.createElement('details'); card.className = 'ai-agent-step'; card.dataset.aiStep = step.id;
@@ -406,7 +407,15 @@
       const yes = textNode('button', approval.kind === 'memory-write' ? '保存这条记忆' : '允许本次执行', 'primary'); yes.type = 'button'; yes.dataset.aiApprove = '';
       const no = textNode('button', '拒绝并停止'); no.type = 'button'; no.dataset.aiReject = '';
       const decide = value => { if (message.approval !== approval) return; message.approval = null; approval.resolve(value); renderMessages(); };
-      yes.onclick = () => decide(true); no.onclick = () => decide(false); box.append(yes, no); host.append(box);
+      const actions = document.createElement('div'); actions.className = 'ai-agent-approval-actions';
+      yes.onclick = () => decide(true); no.onclick = () => decide(false); actions.append(yes);
+      if (approval.kind !== 'memory-write') {
+        const all = textNode('button', '以后全部执行'); all.type = 'button'; all.dataset.aiApproveAll = '';
+        all.title = '仅本任务：允许当前及后续所有命令，不再逐条确认';
+        all.onclick = () => decide('allow-remaining'); actions.append(all);
+        box.append(textNode('p', '“以后全部执行”仅授权当前任务，后续所有命令不再逐条确认。', 'ai-agent-approval-scope'));
+      }
+      actions.append(no); box.append(actions); host.append(box);
     }
   }
   function handleAgentEvent(request, event) {
@@ -414,6 +423,9 @@
     const message = request.message;
     if (event.type === 'session') { message.sessionId = event.sessionId; message.resumed = !!event.resumed; }
     if (event.type === 'status') status(event.message || event.text || '任务执行中…');
+    if (event.type === 'approval-mode' && event.allRemaining === true) {
+      message.allowRemainingCommands = true; status('本任务后续命令自动执行，可随时停止'); sync(); scheduleRender();
+    }
     if (event.type === 'context') { activeContext = event; renderContextSize(); }
     if (event.type === 'memory') {
       if (event.saved) status('已保存记忆 · ' + event.path);
