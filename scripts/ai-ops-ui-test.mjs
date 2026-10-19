@@ -5,6 +5,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { installHarnessFixture } from './harness-fixture.mjs';
 
 const source = fileURLToPath(new URL('../src/', import.meta.url));
 const checks = [], errors = [];
@@ -41,6 +42,7 @@ const T = w.WT = {
     return Promise.resolve(true);
   },
 };
+installHarnessFixture(w, T);
 w.UI = T.ui = { toast() {}, status() {}, log() {}, renderDock() {}, closeDock() {}, fitAll() {} };
 for (const file of ['icons.js', 'term.js', 'ai-context.js', 'ai-agent.js']) w.eval(readFileSync(source + file, 'utf8'));
 const TM = T.term;

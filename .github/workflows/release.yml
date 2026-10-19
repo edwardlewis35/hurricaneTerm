@@ -126,6 +126,9 @@ jobs:
           npm run test:reconnect
           npm run test:ai
           npm run test:ai-agent
+          npm run test:ai-harness
+          npm run test:ai-harness-agent
+          npm run test:ai-harness-ui
           npm run test:ai-ops
           npm run test:ai-context
           npm run test:ai-memory
@@ -141,6 +144,7 @@ jobs:
           npm run prepare-dist
           cargo test --locked --manifest-path src-tauri/Cargo.toml gist_sync::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml ai::tests
+          cargo test --locked --manifest-path src-tauri/Cargo.toml harness_log::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml credentials::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml memory::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml mac_text_input::tests

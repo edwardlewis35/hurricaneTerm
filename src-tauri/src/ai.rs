@@ -1037,6 +1037,18 @@ mod tests {
             vec![agent_message("system", None, vec![], None)],
             vec![agent_message("assistant", None, vec![], None)],
         ] { assert!(agent_messages(&messages, false).is_err()); }
+        // Recovered side effects are observations, never fabricated success
+        // or an instruction to dispatch the old tool call again.
+        for code in ["TOOL_OUTCOME_UNKNOWN", "TOOL_NOT_STARTED"] {
+            let recovered = agent_message("tool", Some(&json!({
+                "code": code, "interrupted": true, "requiresReconciliation": true,
+                "message": "Verify actual state; do not replay this operation"
+            }).to_string()), vec![], Some("call-1"));
+            let wire = agent_messages(&[user.clone(), assistant.clone(), recovered], false).unwrap();
+            let evidence: Value = serde_json::from_str(wire[2]["content"].as_str().unwrap()).unwrap();
+            assert_eq!(evidence["code"], code);
+            assert!(evidence.get("exitCode").is_none());
+        }
         assert!(agent_messages(&[user, assistant, output], false).is_ok());
     }
 

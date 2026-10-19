@@ -17,6 +17,7 @@ mod serial_live;
 mod tcp_live;
 mod gist_sync;
 mod ai;
+mod harness_log;
 mod agent_exec;
 mod connection_error;
 mod credentials;
@@ -1188,6 +1189,17 @@ async fn ai_agent_step(app: AppHandle, state: State<'_, ai::AiState>, request: a
 }
 
 #[tauri::command]
+async fn harness_create(state: State<'_, harness_log::HarnessStore>, id: String, metadata: serde_json::Value) -> Result<harness_log::SessionRecord, String> { state.create(id, metadata).await }
+#[tauri::command]
+async fn harness_append(state: State<'_, harness_log::HarnessStore>, id: String, expected_seq: u64, kind: String, data: serde_json::Value) -> Result<harness_log::SessionEvent, String> { state.append(id, expected_seq, kind, data).await }
+#[tauri::command]
+async fn harness_read(state: State<'_, harness_log::HarnessStore>, id: String) -> Result<harness_log::SessionRecord, String> { state.read(id).await }
+#[tauri::command]
+async fn harness_list(state: State<'_, harness_log::HarnessStore>) -> Result<Vec<harness_log::SessionSummary>, String> { state.list().await }
+#[tauri::command]
+fn harness_fingerprint(identity: String) -> Result<String, String> { harness_log::fingerprint(&identity) }
+
+#[tauri::command]
 async fn agent_exec(
     app: AppHandle, state: State<'_, PtyState>, executions: State<'_, agent_exec::AgentExecState>,
     request: agent_exec::ExecRequest,
@@ -1278,6 +1290,7 @@ pub fn run() {
         .manage(credentials::Credentials::default())
         .setup(|app| {
             app.manage(memory::MemoryState::new(app.path().app_config_dir()?.join("ai-memory")));
+            app.manage(harness_log::HarnessStore::new(app.path().app_config_dir()?.join("ai-runs")));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1310,6 +1323,11 @@ pub fn run() {
             sessions_load,
             sessions_save,
             gist_request,
+            harness_create,
+            harness_append,
+            harness_read,
+            harness_list,
+            harness_fingerprint,
             ai_chat,
             ai_agent_step,
             ai_cancel,

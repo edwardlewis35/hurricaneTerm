@@ -4,6 +4,7 @@ import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { installHarnessFixture } from './harness-fixture.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const source = readFileSync(root + 'src/ai-agent.js', 'utf8');
@@ -31,8 +32,9 @@ function env(interceptor, { session = { protocol: 'ssh', host: 'fixture.invalid'
     },
     listen(name, listener) { listeners.set(name, listener); return Promise.resolve(() => { disposed++; listeners.delete(name); }); },
   };
+  const journalFixture = installHarnessFixture(w, T);
   w.eval(contextSource); w.eval(source);
-  const api = { dom, w, T, tab, calls, events, listeners, agent: w.OpsAgent, disposed: () => disposed,
+  const api = { dom, w, T, tab, calls, events, listeners, journalFixture, agent: w.OpsAgent, disposed: () => disposed,
     switchTab(value) { current = value; },
     emit(value) { listeners.get('agent-exec-output')?.({ payload: value }); },
     run(options = {}) { return w.OpsAgent.run({ endpoint: 'http://model.fixture.invalid/v1', model: 'fixture', apiKey: 'fixture-key', goal: '检查并修复模拟配置', tab, confirmEachCommand: false, onEvent: value => events.push(value), ...options }); },

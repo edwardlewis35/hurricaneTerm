@@ -4,6 +4,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { readFileSync } from 'node:fs';
 import { webcrypto, createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
+import { installHarnessFixture } from './harness-fixture.mjs';
 
 const source = new URL('../src/', import.meta.url), checks = [], errors = [];
 const read = path => readFileSync(new URL(path, source), 'utf8');
@@ -60,7 +61,8 @@ function fixture(memory = {}) {
       return Promise.resolve(true);
     },
   };
-  w.UI = T.ui = { toast() {}, status() {}, log() {}, renderDock() {}, closeDock() {}, fitAll() {} };
+  installHarnessFixture(w, T);
+w.UI = T.ui = { toast() {}, status() {}, log() {}, renderDock() {}, closeDock() {}, fitAll() {} };
   for (const file of ['icons.js', 'term.js', 'ai-context.js', 'ai-memory.js', 'ai-memory-flush.js', 'ai-agent.js']) w.eval(read(file));
   const TM = T.term;
   function terminal(id) {
