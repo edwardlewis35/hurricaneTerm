@@ -206,9 +206,51 @@
     isLive(tab) { return !!(tab && !tab._closing && !tab.exited && !tab._reconnecting && this.tabs[tab.id] === tab && this.ptyId(tab)); },
     canReconnect(tab) { return !!(tab?.session && ['ssh', 'telnet', 'tcp', 'serial'].includes(String(tab.session.protocol || '').toLowerCase())); },
     writeTo(tab, data) {
-      if (!this.isLive(tab) || !data) return Promise.resolve(false);
-      if (window.ModemTransfer?.isBusy(tab)) return Promise.resolve(false);
-      return T.invoke('write', { id: this.ptyId(tab), data }).then(() => true).catch(() => false);
+      return this.enqueueInput(tab, data, false);
+    },
+    writeBinaryTo(tab, data) {
+      return this.enqueueInput(tab, Array.from(data, ch => ch.charCodeAt(0) & 255), true);
+    },
+    enqueueInput(tab, data, binary) {
+      if (!this.isLive(tab) || !data?.length || window.ModemTransfer?.isBusy(tab)) return Promise.resolve(false);
+      const nativeId = this.ptyId(tab), generation = tab._connectionGeneration || 0;
+      let queue = tab._writeQueue;
+      if (!queue || queue.nativeId !== nativeId || queue.generation !== generation) {
+        queue = tab._writeQueue = { nativeId, generation, epoch: 0, bytes: 0, failed: false, tail: Promise.resolve() };
+      }
+      const current = () => this.isLive(tab) && tab._writeQueue === queue && this.ptyId(tab) === nativeId && (tab._connectionGeneration || 0) === generation;
+      // An interrupt explicitly discards unsent input, including queued Enter.
+      // Never retry a failed write: the peer may already have received a prefix.
+      const interrupt = !binary && data === '\x03';
+      if (interrupt) { queue.epoch++; queue.bytes = 0; queue.failed = false; tab._resetInput?.(); }
+      if (queue.failed) return Promise.resolve(false);
+      const epoch = queue.epoch, length = binary ? data.length : data.length * 3;
+      const fail = (reason = '终端输入发送失败') => {
+        if (!current() || queue.epoch !== epoch || queue.failed) return;
+        queue.failed = true;
+        const message = reason + '，已暂停后续输入。部分内容可能已送达，请检查远端状态；按 Ctrl+C 清除未发送内容并尝试中断，或重新连接。';
+        // Do not expose typed data or backend errors (which can contain secrets).
+        this.receiveOutput(tab, '\r\n[' + message + ']\r\n', { triggers: false });
+        UI.toast?.(message, 8000, 'err');
+      };
+      if (queue.bytes + length > 1048576) { fail('终端待发送输入超过缓冲上限'); return Promise.resolve(false); }
+      queue.bytes += length;
+      const result = queue.tail.then(async () => {
+        if (!current() || queue.epoch !== epoch || queue.failed || window.ModemTransfer?.isBusy(tab)) return false;
+        try {
+          await T.invoke(binary ? 'write_binary' : 'write', { id: nativeId, data });
+          return true;
+        } catch (_) { fail(); return false; }
+      }).finally(() => { if (queue.epoch === epoch) queue.bytes = Math.max(0, queue.bytes - length); });
+      queue.tail = result.catch(() => false);
+      return result;
+    },
+    paste(tab, text) {
+      if (!text || !this.isLive(tab) || window.ModemTransfer?.isBusy(tab)) return false;
+      // xterm owns bracketed-paste negotiation and newline normalization.
+      if (typeof tab.term.paste === 'function') tab.term.paste(text);
+      else this.writeTo(tab, text);
+      return true;
     },
     beginConnection() { this._pendingConnections = (this._pendingConnections || 0) + 1; },
     endConnection() {
@@ -494,34 +536,37 @@
       if (session) { session.lastUsed = Date.now(); T.persistSessions(); }
       if (window.Home) Home.hide();
 
-      let inputLine = '';   // 输入镜像（Tab 补全上下文；方向键编辑不追踪，v1 够用）
+      // Optional outline metadata must come from publicly echoed screen cells.
+      // Never store no-echo passwords or use a speculative input mirror to edit
+      // the remote line. Complex shell editing simply skips outline capture.
+      let inputLine = '', outlineValid = true;
       const subscribe = subscription => { if (subscription?.dispose) tab._inputSubscriptions.push(subscription); };
       subscribe(term.onData((data) => {
         if (tab._closing || this.tabs[tab.id] !== tab) return;
         if (tab.exited || tab._reconnecting) { if (!tab._reconnecting) this.reconnect(tab); return; }
-        if (!this.isLive(tab)) return;
-        if (window.ModemTransfer?.isBusy(tab)) return;
-        let submitted = null;
+        if (!this.isLive(tab) || window.ModemTransfer?.isBusy(tab)) return;
         for (const ch of data) {
-          if (ch === '\r') { submitted = inputLine; inputLine = ''; }
-          else if (ch === '\x7f') inputLine = inputLine.slice(0, -1);
-          else if (ch === '\x03') inputLine = '';
-          else if (ch >= ' ') inputLine += ch;
+          if (ch === '\r') {
+            const buffer = term.buffer.active, y = buffer.baseY + buffer.cursorY;
+            const visible = buffer.getLine?.(y)?.translateToString(true) || '';
+            if (outlineValid && inputLine && visible.endsWith(inputLine)) {
+              const text = visible.slice(-inputLine.length).trim().slice(0, 120);
+              if (text) { tab.outline.push({ n: tab.outline.length + 1, text, y }); UI.renderOutline(); }
+            }
+            inputLine = ''; outlineValid = true;
+          } else if (ch === '\x03' || ch === '\x15') { inputLine = ''; outlineValid = true; }
+          else if (ch === '\x7f') inputLine = Array.from(inputLine).slice(0, -1).join('');
+          else if (ch < ' ' || ch === '\x7f') outlineValid = false;
+          else if (inputLine.length < 8192) inputLine += ch;
+          else outlineValid = false;
         }
         if (T.s.sync && T.s.mode === 'Remote') {
           for (const t of Object.values(this.tabs)) this.writeTo(t, data);
-        } else {
-          this.writeTo(tab, data);
-        }
-        if (submitted !== null) {
-          // 大纲语义：记录真实提交的命令行，可点击回跳
-          const text = submitted.trim().slice(0, 120);
-          if (text) {
-            tab.outline.push({ n: tab.outline.length + 1, text, y: term.buffer.active.baseY + term.buffer.active.cursorY });
-            UI.renderOutline();
-          }
-        }
+        } else this.writeTo(tab, data);
       }));
+      // Legacy mouse reports contain arbitrary bytes, not UTF-8 text. Coordinates
+      // belong to one pane and must not be broadcast to other machines.
+      if (term.onBinary) subscribe(term.onBinary(data => this.writeBinaryTo(tab, data)));
       subscribe(term.onResize(({ rows, cols }) => {
         if (this.isLive(tab)) T.invoke('resize', { id: this.ptyId(tab), rows, cols }).catch(() => {});
         if (this.active === id) UI.status();
@@ -556,11 +601,12 @@
 
       // PuTTY 习惯：中键粘贴；右键粘贴（可关，关闭时右键留给上下文菜单）
       const pasteHere = async () => {
+        const nativeId = this.ptyId(tab), generation = tab._connectionGeneration || 0;
         try {
           const txt = await navigator.clipboard.readText();
-          if (tab.exited) { this.reconnect(tab); return; }
-          if (txt) this.writeTo(tab, txt);
-        } catch (e) {}
+          if (this.ptyId(tab) !== nativeId || (tab._connectionGeneration || 0) !== generation) return;
+          this.paste(tab, txt);
+        } catch (_) {}
       };
       wrap.addEventListener('mousedown', (e) => {
         if (e.button === 1) { e.preventDefault(); pasteHere(); }
@@ -570,81 +616,32 @@
         if (T.s.rightClickPaste !== false) { e.preventDefault(); pasteHere(); }
       });
 
-      // —— P2 Tab 补全 ——
-      let pop = null;
-      const popEl = document.createElement('div');
-      popEl.className = 'complete-pop';
-      popEl.style.display = 'none';
-      wrap.appendChild(popEl);
-      const closePop = () => { pop = null; popEl.style.display = 'none'; };
-      tab._resetInput = () => { inputLine = ''; closePop(); };
-      const applyDiff = (res, it) => {
-        if (!this.isLive(tab) || (res.generation != null && res.generation !== tab._connectionGeneration)) return;
-        const del = Math.max(0, inputLine.length - res.start);
-        const text = '\x7f'.repeat(del) + it.value;
-        this.writeTo(tab, text);
-        inputLine = inputLine.slice(0, res.start) + it.value;
-      };
-      const renderPop = () => {
-        popEl.innerHTML = '';
-        pop.items.forEach((it, i) => {
-          const d = document.createElement('div');
-          d.className = 'ci' + (i === pop.sel ? ' sel' : '');
-          const b = document.createElement('b'); b.textContent = it.value;
-          const em = document.createElement('i'); em.textContent = it.info;
-          d.append(b, em);
-          d.onmousedown = (e) => { e.preventDefault(); applyDiff(pop, it); closePop(); };
-          popEl.appendChild(d);
-        });
-        popEl.style.display = 'block';
-      };
+      tab._resetInput = () => { inputLine = ''; outlineValid = true; };
       term.attachCustomKeyEventHandler((ev) => {
         if (tab._closing || this.tabs[tab.id] !== tab) return false;
         const key = ev.code || ev.key;
-        // Consume the triggering physical key through keyup, including a keypress
-        // or auto-repeat delivered after a very fast reconnect has completed.
-        if (tab._reconnectKey === key) {
-          if (ev.type === 'keyup') { tab._reconnectKey = null; return false; }
-          if (ev.type === 'keypress' || ev.repeat) { ev.preventDefault(); return false; }
+        for (const latch of ['_shortcutKey', '_reconnectKey']) {
+          if (tab[latch] === key) {
+            if (ev.type === 'keyup') { tab[latch] = null; return false; }
+            if (ev.type === 'keypress' || ev.repeat) { ev.preventDefault(); ev.stopPropagation(); return false; }
+          }
         }
+        if (ev.type === 'keydown' && UI.handleKeyDown?.(ev, this.isLive(tab))) {
+          tab._shortcutKey = key; return false;
+        }
+        // Let the native composition commit supply text; an IME Enter is not
+        // a shell Enter. Do not cancel the browser's composition event.
+        if (ev.isComposing || ev.keyCode === 229) return this.isLive(tab) && ev.keyCode === 229;
         if (tab.exited || tab._reconnecting) {
           if (ev.type !== 'keydown') return false;
-          const lower = String(ev.key || '').toLowerCase(), mod = ev.ctrlKey || ev.metaKey;
-          const shortcut = ['F11', 'F3'].includes(ev.key) || (mod && (
-            (!ev.shiftKey && ['t', 'w', 'f', 'b', 'm', ',', '1', '2', '3', '4', '5', '6'].includes(lower)) ||
-            (ev.shiftKey && ['p', 'e', 'd', 'w', 'c', 'v'].includes(lower)) || ['=', '+', '-'].includes(lower)));
-          // App shortcuts still bubble to UI, especially Ctrl/Cmd+W close.
-          if (shortcut || ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(ev.key) || ev.isComposing) return false;
+          if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(ev.key)) return false;
           ev.preventDefault(); ev.stopPropagation();
           if (!ev.repeat && !tab._reconnecting) { tab._reconnectKey = key; this.reconnect(tab); }
-          return false;
-        }
-        if (ev.type === 'keyup' && tab._reconnectKey) tab._reconnectKey = null;
-        if (ev.type !== 'keydown') return pop === null;
-        if (pop) {
-          if (ev.key === 'Escape') { closePop(); return false; }
-          if (ev.key === 'ArrowDown') { pop.sel = (pop.sel + 1) % pop.items.length; renderPop(); return false; }
-          if (ev.key === 'ArrowUp') { pop.sel = (pop.sel + pop.items.length - 1) % pop.items.length; renderPop(); return false; }
-          if (ev.key === 'Tab' || ev.key === 'Enter') { applyDiff(pop, pop.items[pop.sel]); closePop(); return ev.key !== 'Tab'; }
-          return true;
-        }
-        if (ev.key === 'Tab' && !ev.shiftKey && !ev.ctrlKey) {
-          ev.preventDefault();
-          const generation = tab._connectionGeneration || 0, nativeId = this.ptyId(tab);
-          T.invoke('complete_input', { line: inputLine, caret: inputLine.length }).then((res) => {
-            if (!this.isLive(tab) || this.ptyId(tab) !== nativeId || (tab._connectionGeneration || 0) !== generation) return;
-            // 无候选时把 Tab 交还给 shell（PuTTY/普通终端习惯：shell 自身补全），不能吞键
-            if (!res.items.length) { this.writeTo(tab, '\t'); return; }
-            if (res.items.length === 1) { applyDiff(res, res.items[0]); return; }
-            pop = { items: res.items.slice(0, 12), start: res.start, sel: 0, generation: tab._connectionGeneration };
-            renderPop();
-          }).catch(() => { if (this.isLive(tab) && this.ptyId(tab) === nativeId && (tab._connectionGeneration || 0) === generation) this.writeTo(tab, '\t'); });
           return false;
         }
         return true;
       });
 
-      this.orderWrites(id);
       this.activate(id);
       this.consumePendingEvents(tab, id);
       this.endConnection();
@@ -657,7 +654,6 @@
       return tab;
     },
 
-    orderWrites(id) { /* reserved for future output ordering */ },
 
     activate(id, focusTerminal = true) {
       const t = this.tabs[id];
@@ -1001,7 +997,7 @@
           }
           UI.log(`触发器命中（后端 rule ${a.ruleId ?? ''}）`);
         }
-      }).catch(() => { if (current()) this.runTriggersV0(tab, data); });
+      }, () => { if (current()) this.runTriggersV0(tab, data); }).catch(() => {});
     },
 
     highlightHit(tab) {

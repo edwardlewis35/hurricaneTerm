@@ -268,7 +268,7 @@
       mi(m, { label: '活动时通知', svg: 'bell', checked: !!tab.notify, onClick: () => call('toggleNotify', id) });
       msep(m);
       mi(m, { label: '另存为机器', svg: 'server', onClick: () => callProfiles('edit', tab.session) });
-      mi(m, { label: tab.exited ? '关闭标签' : '断开连接', svg: 'x', danger: true, key: 'Ctrl+W', onClick: () => callExisting(T.term.closeTab ? 'closeTab' : 'close', id) });
+      mi(m, { label: tab.exited ? '关闭标签' : '断开连接', svg: 'x', danger: true, key: '⌘W', onClick: () => callExisting(T.term.closeTab ? 'closeTab' : 'close', id) });
     });
   }
 
@@ -443,8 +443,8 @@
     if (saved.length) connections(saved, 'saved');
     else mi(m, { label: list.length ? '（暂无其他已保存机器）' : '（暂无已保存机器）', disabled: true });
     msep(m);
-    mi(m, { label: '新建本地会话', svg: 'terminal', key: 'Ctrl+T', onClick: () => call('newLocal') });
-    mi(m, { label: '添加机器…', svg: 'server', key: 'Ctrl+M', onClick: () => callProfiles('openManager') });
+    mi(m, { label: '新建本地会话', svg: 'terminal', key: 'Ctrl+Shift+T / ⌘T', onClick: () => call('newLocal') });
+    mi(m, { label: '添加机器…', svg: 'server', key: 'Ctrl+Shift+M / ⌘M', onClick: () => callProfiles('openManager') });
     mi(m, { label: '打开主页', svg: 'home', onClick: () => call('openHome') });
   }
 
@@ -552,8 +552,8 @@
       if (e.target.closest('.ht-tab')) return;
       e.preventDefault();
       openMenu(e.clientX, e.clientY, (m) => {
-        mi(m, { label: '新建本地会话', svg: 'terminal', key: 'Ctrl+T', onClick: () => call('newLocal') });
-        mi(m, { label: '添加机器…', svg: 'server', key: 'Ctrl+M', onClick: () => callProfiles('openManager') });
+        mi(m, { label: '新建本地会话', svg: 'terminal', key: 'Ctrl+Shift+T / ⌘T', onClick: () => call('newLocal') });
+        mi(m, { label: '添加机器…', svg: 'server', key: 'Ctrl+Shift+M / ⌘M', onClick: () => callProfiles('openManager') });
         mi(m, { label: '打开主页', svg: 'home', onClick: () => call('openHome') });
       });
     });
@@ -561,7 +561,7 @@
     const actions = document.createElement('div');
     actions.className = 'ht-actions';
     const plus = document.createElement('button'); plus.type = 'button';
-    plus.className = 'ht-plus'; plus.innerHTML = svg('plus'); plus.title = '新建本地会话 (Ctrl+T)';
+    plus.className = 'ht-plus'; plus.innerHTML = svg('plus'); plus.title = '新建本地会话 (Ctrl+Shift+T / ⌘T)';
     plus.setAttribute('aria-label', '新建标签页');
     plus.addEventListener('click', (e) => { e.stopPropagation(); call('newLocal'); });
     const caret = document.createElement('button'); caret.type = 'button';

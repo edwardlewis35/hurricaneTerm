@@ -106,6 +106,7 @@ jobs:
         run: |
           npm run test:controls
           npm run test:terminal
+          npm run test:terminal-input-safety
 
       - name: 终端透明度、工具浮窗、窗口按钮和图标回归
         run: |
@@ -152,6 +153,7 @@ jobs:
           cargo test --locked --manifest-path src-tauri/Cargo.toml agent_exec::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml connection_error::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml ssh_live::session_tests
+          cargo test --locked --manifest-path src-tauri/Cargo.toml ssh_live::shell_input_safety_tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml jump::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml modem_transport::tests
           cargo test --locked --manifest-path src-tauri/Cargo.toml modem_live::tests -- --skip interoperability_with_lrzsz_both_directions

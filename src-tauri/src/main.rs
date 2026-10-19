@@ -574,7 +574,16 @@ fn connect_tcp(
 
 #[tauri::command]
 async fn write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
-    let (writer, _write_lease) = {
+    write_session(state, id, data.into_bytes()).await
+}
+
+#[tauri::command]
+async fn write_binary(state: State<'_, PtyState>, id: String, data: Vec<u8>) -> Result<(), String> {
+    write_session(state, id, data).await
+}
+
+async fn write_session(state: State<'_, PtyState>, id: String, data: Vec<u8>) -> Result<(), String> {
+    let (writer, write_lease) = {
         let map = state.0.lock().map_err(|e| e.to_string())?;
         let entry = map.get(&id).ok_or("no such pty")?;
         (entry.writer.clone(), entry.gate.begin_write()?)
@@ -585,7 +594,10 @@ async fn write(state: State<'_, PtyState>, id: String, data: String) -> Result<(
     // while another write is pending (important for quick typing / paste).
     let mut writer = writer.lock_owned().await;
     tauri::async_runtime::spawn_blocking(move || {
-        writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        // Cancellation of the IPC future must not release modem exclusion while
+        // its blocking writer is still running.
+        let _write_lease = write_lease;
+        writer.write_all(&data).map_err(|e| e.to_string())?;
         writer.flush().map_err(|e| e.to_string())
     }).await.map_err(|e| e.to_string())?
 }
@@ -1296,6 +1308,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
+            write_binary,
             resize,
             kill,
             connect_telnet,

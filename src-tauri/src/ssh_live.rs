@@ -471,12 +471,11 @@ async fn run_session(
         return Err(connection_error::failure("authentication", format!("SSH 认证失败 {user}@{host}"), auth_failures.join("；")));
     }
 
-    // —— 自动登录 expect 引擎（re/auto_login.rs，自动登录 默认规则：login:/password:）——
-    use crate::re::auto_login::{AccountPart, AutoLoginExpect};
-    let mut okm = AutoLoginExpect::default();
-    okm.compile_expects(AccountPart::Username, &[]);
-    okm.compile_expects(AccountPart::Password, &[]);
-    let mut al_tail = String::new();
+    // Credentials belong exclusively to SSH USERAUTH above. An authenticated
+    // shell can print arbitrary text (including sudo/passwd/login prompts),
+    // which must never cause a saved username/password or Enter to be sent.
+    // Shell input below comes only from the explicit input channel.
+    drop(password);
 
     // —— shell 通道 ——
     let chan = phase(tokio::time::Instant::now() + std::time::Duration::from_secs(10), "channel", "SSH 会话通道打开失败", session.channel_open_session()).await?;
@@ -517,20 +516,7 @@ async fn run_session(
                 match m {
                     Some(ChannelMsg::Data { data }) => {
                         let s = crate::modem_transport::decode(&id, &mut stdout_decoder, &data);
-                        if !s.is_empty() { app.emit("pty-output", id.clone(), s.clone()); }
-                        // auto-login：输出流尾窗匹配 自动登录 expect 规则 -> 应答
-                        if !s.is_empty() {
-                            crate::terminal_io::append_tail(&mut al_tail, &s, 240);
-                            if okm.match_account_expect(AccountPart::Username, &al_tail) {
-                                let _ = chan.data_bytes(bytes::Bytes::from(format!("{}\r", user))).await;
-                                al_tail.clear();
-                                log(&app, &id, "auto-login: username 已应答".into());
-                            } else if password.is_some() && okm.match_account_expect(AccountPart::Password, &al_tail) {
-                                let _ = chan.data_bytes(bytes::Bytes::from(format!("{}\r", password.as_deref().unwrap_or("")))).await;
-                                al_tail.clear();
-                                log(&app, &id, "auto-login: password 已应答".into());
-                            }
-                        }
+                        if !s.is_empty() { app.emit("pty-output", id.clone(), s); }
                     }
                     Some(ChannelMsg::ExtendedData { data, .. }) => {
                         let s = if crate::modem_transport::busy(&id) { String::new() } else { stderr_decoder.push(&data) };
@@ -1135,6 +1121,202 @@ fn expand(p: &str) -> PathBuf {
     } else {
         PathBuf::from(p)
     }
+}
+
+#[cfg(test)]
+mod shell_input_safety_tests {
+    use super::*;
+    use russh::server::{Auth, ChannelOpenHandle, Msg, Response, Server as _, Session};
+    use russh::{Channel, ChannelId, Pty};
+    use std::borrow::Cow;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Duration;
+
+    const USER: &str = "fixture-user";
+    const SECRET: &str = "ssh-auth-only-fixture-secret";
+    type ShellReady = Arc<Mutex<Option<oneshot::Sender<(ChannelId, russh::server::Handle)>>>>;
+
+    #[derive(Clone, Copy)]
+    enum AuthMode { Password, KeyboardInteractive }
+
+    #[derive(Clone)]
+    struct Fixture {
+        mode: AuthMode,
+        ready: ShellReady,
+        input: mpsc::UnboundedSender<Vec<u8>>,
+        password_seen: Arc<AtomicBool>,
+        keyboard_seen: Arc<AtomicBool>,
+        read_pause_ms: Arc<AtomicU64>,
+    }
+    impl russh::server::Server for Fixture {
+        type Handler = Self;
+        fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler { self.clone() }
+    }
+    impl russh::server::Handler for Fixture {
+        type Error = russh::Error;
+        async fn auth_none(&mut self, _: &str) -> Result<Auth, Self::Error> { Ok(Auth::reject()) }
+        async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+            let correct = user == USER && password == SECRET;
+            self.password_seen.store(correct, Ordering::SeqCst);
+            Ok(if correct && matches!(self.mode, AuthMode::Password) { Auth::Accept } else { Auth::reject() })
+        }
+        async fn auth_keyboard_interactive<'a>(&'a mut self, user: &str, _: &str, response: Option<Response<'a>>) -> Result<Auth, Self::Error> {
+            if !matches!(self.mode, AuthMode::KeyboardInteractive) { return Ok(Auth::reject()); }
+            match response {
+                None => Ok(Auth::Partial {
+                    name: Cow::Borrowed("isolated authentication fixture"),
+                    instructions: Cow::Borrowed("SSH USERAUTH challenge, not a shell prompt"),
+                    prompts: Cow::Owned(vec![(Cow::Borrowed("Password:"), false)]),
+                }),
+                Some(mut responses) => {
+                    let correct = user == USER && responses.next().as_deref() == Some(SECRET.as_bytes()) && responses.next().is_none();
+                    self.keyboard_seen.store(correct, Ordering::SeqCst);
+                    Ok(if correct { Auth::Accept } else { Auth::reject() })
+                }
+            }
+        }
+        async fn channel_open_session(&mut self, _: Channel<Msg>, reply: ChannelOpenHandle, _: &mut Session) -> Result<(), Self::Error> {
+            reply.accept().await; Ok(())
+        }
+        async fn pty_request(&mut self, channel: ChannelId, _: &str, _: u32, _: u32, _: u32, _: u32, _: &[(Pty, u32)], session: &mut Session) -> Result<(), Self::Error> {
+            session.channel_success(channel)?; Ok(())
+        }
+        async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
+            session.channel_success(channel)?;
+            if let Some(ready) = self.ready.lock().unwrap().take() { let _ = ready.send((channel, session.handle())); }
+            Ok(())
+        }
+        async fn data(&mut self, _: ChannelId, data: &[u8], _: &mut Session) -> Result<(), Self::Error> {
+            let pause = self.read_pause_ms.swap(0, Ordering::SeqCst);
+            if pause > 0 { tokio::time::sleep(Duration::from_millis(pause)).await; }
+            let _ = self.input.send(data.to_vec()); Ok(())
+        }
+    }
+
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("hurricane-ssh-input-safety-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap(); Self(path)
+        }
+    }
+    impl Drop for Scratch { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+
+    async fn displayed(events: &mut mpsc::UnboundedReceiver<(String, String)>, needle: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut text = String::new();
+            loop {
+                let (topic, data) = events.recv().await.expect("production session remains open");
+                if topic == "pty-output" {
+                    text.push_str(&data);
+                    if text.contains(needle) { return; }
+                }
+            }
+        }).await.expect("server output must reach the real production receive loop");
+    }
+
+    async fn shell_prompts_never_supply_input(mode: AuthMode) {
+        // An ephemeral in-process SSH server prints inert prompt bytes only.
+        // It never starts a shell, changes an account, or executes passwd/sudo.
+        let scratch = Scratch::new(); let key = scratch.0.join("fixture-host-key");
+        assert!(std::process::Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-f"]).arg(&key).status().unwrap().success());
+        let config = russh::server::Config {
+            keys: vec![load_secret_key(key, None).unwrap()], auth_rejection_time: Duration::ZERO, ..Default::default()
+        };
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (received, mut received_rx) = mpsc::unbounded_channel();
+        let password_seen = Arc::new(AtomicBool::new(false));
+        let keyboard_seen = Arc::new(AtomicBool::new(false));
+        let read_pause_ms = Arc::new(AtomicU64::new(0));
+        let mut fixture = Fixture { mode, ready: Arc::new(Mutex::new(Some(ready_tx))), input: received,
+            password_seen: password_seen.clone(), keyboard_seen: keyboard_seen.clone(), read_pause_ms: read_pause_ms.clone() };
+        let server = tokio::spawn(async move { fixture.run_on_socket(Arc::new(config), &socket).await });
+        let (input, input_rx) = mpsc::unbounded_channel(); let (_resize, resize_rx) = mpsc::unbounded_channel();
+        let (stop, stop_rx) = mpsc::unbounded_channel(); let (_sftp, sftp_rx) = mpsc::unbounded_channel();
+        let (events, mut events_rx) = mpsc::unbounded_channel();
+        let snapshot = Arc::new(Mutex::new(Vec::new())); let observed = snapshot.clone();
+        let sink = Sink(Arc::new(move |topic, _, data| {
+            observed.lock().unwrap().push((topic.to_owned(), data.clone()));
+            let _ = events.send((topic.to_owned(), data));
+        }));
+        let client = tokio::spawn(run(sink, format!("input-safety-{}", uuid::Uuid::new_v4()), "127.0.0.1".into(), port,
+            USER.into(), Some(SECRET.into()), None, 24, 80, scratch.0.clone(), input_rx, resize_rx, stop_rx, sftp_rx, ssh_relay::Proxy::None));
+        let (channel, handle) = tokio::time::timeout(Duration::from_secs(5), ready_rx).await.expect("real SSH authentication and shell setup succeed").unwrap();
+        assert!(password_seen.load(Ordering::SeqCst), "saved credential must still work for SSH password authentication");
+        assert_eq!(keyboard_seen.load(Ordering::SeqCst), matches!(mode, AuthMode::KeyboardInteractive));
+
+        let prompts = [
+            "\r\nPassword:", "\r\n[sudo] password for fixture-user: ", "\r\nCurrent password: ",
+            "\r\nNew password: ", "\r\nRetype new password: ", "\r\nlogin: ", "\r\nfixture login: ",
+        ];
+        for fragmented in [false, true] {
+            for stderr in [false, true] {
+                for prompt in prompts {
+                    let chunks: Vec<&[u8]> = if fragmented { prompt.as_bytes().chunks(2).collect() } else { vec![prompt.as_bytes()] };
+                    for chunk in chunks {
+                        if stderr { handle.extended_data(channel, 1, bytes::Bytes::copy_from_slice(chunk)).await.unwrap(); }
+                        else { handle.data(channel, bytes::Bytes::copy_from_slice(chunk)).await.unwrap(); }
+                        // Wait for each individual fragment to pass through the
+                        // production decoder before sending the next fragment.
+                        displayed(&mut events_rx, std::str::from_utf8(chunk).unwrap()).await;
+                    }
+                    let unsolicited = tokio::time::timeout(Duration::from_millis(75), received_rx.recv()).await;
+                    let (unexpected_len, saved_password_enter, saved_username_enter) = match &unsolicited {
+                        Ok(Some(bytes)) => (bytes.len(), bytes == format!("{SECRET}\r").as_bytes(), bytes == format!("{USER}\r").as_bytes()),
+                        _ => (0, false, false),
+                    };
+                    assert!(unsolicited.is_err(), "remote output must never send a username, password, or Enter; prompt={prompt:?}, fragmented={fragmented}, stderr={stderr}, bytes={unexpected_len}, savedPasswordPlusEnter={saved_password_enter}, savedUsernamePlusEnter={saved_username_enter}");
+                }
+            }
+        }
+        // User input remains a raw byte path: credentials are not substituted,
+        // Enter is not invented, and control/paste/UTF-8 sequences are intact.
+        for manual in [
+            b"manual-password-is-different\r".to_vec(),
+            b"\x1b[A\x1b[B\x1b[C\x1b[D\x7f\x08\t".to_vec(),
+            b"\x03\x04\x1b[200~pasted\nline\x1b[201~".to_vec(),
+            "手动输入".as_bytes().to_vec(), vec![0, 0xff, 0x80, b'\r', b'\n'],
+        ] {
+            input.send(manual.clone()).unwrap();
+            let actual = tokio::time::timeout(Duration::from_secs(3), async {
+                let mut actual = Vec::new();
+                while actual.len() < manual.len() { actual.extend(received_rx.recv().await.unwrap()); }
+                actual
+            }).await.expect("explicit user input must reach the server");
+            assert_eq!(actual, manual);
+        }
+        // A short peer read stall plus a burst of independently fragmented
+        // keystrokes must preserve every byte in order, with no replay.
+        read_pause_ms.store(100, Ordering::SeqCst);
+        let mut expected = Vec::new();
+        for sequence in 0..512u32 {
+            let frame = format!("{sequence:04}:键盘\r\n").into_bytes();
+            for fragment in frame.chunks(3) {
+                expected.extend_from_slice(fragment);
+                input.send(fragment.to_vec()).unwrap();
+            }
+        }
+        let burst = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut actual = Vec::new();
+            while actual.len() < expected.len() { actual.extend(received_rx.recv().await.unwrap()); }
+            actual
+        }).await.expect("fragmented burst survives a short peer stall without application replay");
+        assert_eq!(burst, expected);
+        assert!(tokio::time::timeout(Duration::from_millis(75), received_rx.recv()).await.is_err(), "no extra Enter after manual input");
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), client).await.expect("session closes promptly").unwrap().unwrap();
+        server.abort();
+        assert!(!snapshot.lock().unwrap().iter().any(|(_, data)| data.contains(SECRET)), "authentication credential must not appear in terminal output or logs");
+    }
+
+    #[tokio::test]
+    async fn password_authentication_does_not_enable_shell_prompt_autofill() { shell_prompts_never_supply_input(AuthMode::Password).await; }
+
+    #[tokio::test]
+    async fn keyboard_interactive_authentication_does_not_enable_shell_prompt_autofill() { shell_prompts_never_supply_input(AuthMode::KeyboardInteractive).await; }
 }
 
 #[cfg(test)]

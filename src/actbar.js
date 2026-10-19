@@ -11,12 +11,12 @@
 
   // 侧栏窗格（顺序即活动栏顺序）；图标互不重复（0.7.3：会话≠机器管理）
   const PANES = [
-    { id: 'explorer', icon: 'plug', label: '会话', key: 'Ctrl+1' },
-    { id: 'filer', icon: 'folder', label: '文件浏览器 (SFTP)', key: 'Ctrl+2' },
-    { id: 'sender', icon: 'send', label: '发送文本', key: 'Ctrl+3' },
-    { id: 'transfer', icon: 'transfer', label: '传输队列', key: 'Ctrl+4' },
-    { id: 'outline', icon: 'terminal', label: '输入大纲', key: 'Ctrl+5' },
-    { id: 'output', icon: 'output', label: '日志', key: 'Ctrl+6' },
+    { id: 'explorer', icon: 'plug', label: '会话', key: 'Ctrl+Shift+1' },
+    { id: 'filer', icon: 'folder', label: '文件浏览器 (SFTP)', key: 'Ctrl+Shift+2' },
+    { id: 'sender', icon: 'send', label: '发送文本', key: 'Ctrl+Shift+3' },
+    { id: 'transfer', icon: 'transfer', label: '传输队列', key: 'Ctrl+Shift+4' },
+    { id: 'outline', icon: 'terminal', label: '输入大纲', key: 'Ctrl+Shift+5' },
+    { id: 'output', icon: 'output', label: '日志', key: 'Ctrl+Shift+6' },
   ];
 
   let root = null, panelObserver = null;
@@ -97,7 +97,7 @@
         },
       });
       mkBtn(tools, {
-        icon: 'server', label: '机器管理', key: 'Ctrl+M', cls: 'ab-profiles',
+        icon: 'server', label: '机器管理', key: 'Ctrl+Shift+M / ⌘M', cls: 'ab-profiles',
         onClick: () => {
           const P = window.Profiles;
           if (T.ui) T.ui.toggleProfiles();
@@ -133,7 +133,7 @@
       const ai = mkBtn(extras, { icon: 'sparkles', label: 'AI 助手',
         onClick: () => window.AiPanel?.toggle() });
       ai.dataset.aiToggle = ''; ai.setAttribute('aria-controls', 'ai-panel'); ai.setAttribute('aria-expanded', 'false');
-      mkBtn(extras, { icon: 'search', label: '查找', key: 'Ctrl+F',
+      mkBtn(extras, { icon: 'search', label: '查找', key: 'Ctrl+Shift+F / ⌘F',
         onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.toggleSearch(); } } });
       mkBtn(extras, { icon: 'terminal', label: '命令面板', key: 'Ctrl+Shift+P',
         onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.togglePalette(); } } });

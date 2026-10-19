@@ -55,7 +55,7 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 | 会话管理（JSON 持久化，folder/command/args/host/port/user/proxy/jumpHost） | ✅ |
 | SFTP 独立双栏文件管理、文件编辑与可控传输队列 | ✅ |
 | 发送窗格 + 同步输入广播 | ✅ |
-| 查找（Ctrl+F）、缩放（Ctrl±）、全屏（F11） | ✅ |
+| 查找（Ctrl+Shift+F / ⌘F）、缩放（Ctrl±）、全屏（F11） | ✅ |
 | SSH（russh 实连，支持跳板机 direct-tcpip）/ Telnet（协商引擎）/ 串口（termios 直驱）/ TCP（直连·Socks5·HTTP CONNECT·ProxyCommand） | ✅ |
 | 本地会话落盘日志、选中自动复制 + 右键/中键粘贴、输出内置高亮 | ✅ |
 | X/Y/Zmodem、端口转发隧道、传输队列（引擎已完成，待接线到命令层） | ⏳ |
@@ -65,7 +65,7 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 [统一传输队列与 X/Y/ZMODEM](docs/XYZMODEM.md)：工具栏“传输队列”（Ctrl/Cmd+4）集中查看 SFTP 与终端文件传输，提供分类筛选、实时进度、速度、详细错误和取消/重试。SFTP 支持暂停/继续；X/Y/ZMODEM 手动选择当前连接与收发方向，同一终端串行，二进制数据直接进入协议通道，传输期间暂停普通键盘及运维命令。应用内置协议实现，无需本机安装 `rz/sz`，对端需要对应收发程序。Telnet 和 Windows 本地 ConPTY 暂不支持。
 
-点击标题栏文件夹按钮或按 `Ctrl+2` 打开文件管理。界面参考 [Tabby-SFTP-Plus](https://github.com/10D24D/Tabby-SFTP-Plus)，由本项目独立实现，使用现有 SSH 会话的 SFTP 子系统。
+点击标题栏文件夹按钮或在终端按 `Ctrl+Shift+2` / `⌘2` 打开文件管理。界面参考 [Tabby-SFTP-Plus](https://github.com/10D24D/Tabby-SFTP-Plus)，由本项目独立实现，使用现有 SSH 会话的 SFTP 子系统。
 
 - 本地 / 远程双栏，支持左右、上下、自适应和远程单栏布局；窗口可拖动、缩放、最大化，分栏比例可调。
 - 每栏独立的路径、前进 / 后退、上级 / 主目录、刷新、筛选、隐藏文件和列排序；支持多选、范围选择及键盘操作。
@@ -91,6 +91,8 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 前端验证：`npm run test:sftp` 和 `npm run test:ui`。后端安全测试：`cargo test sftp_safety_tests`、`cargo test files::tests`（需要构建依赖）。
 控件与终端回归：`npm run test:controls`、`npm run test:terminal`。独立透明度、工具浮窗与标签、macOS 窗口按钮、图标格式回归：`npm run test:appearance`、`npm run test:layout`、`npm run test:mac-controls`、`npm run test:icons`。快速连接与连续标题栏：`npm run test:quick-connect`、`npm run test:header`。发布 CI 额外在 macOS 运行真实 PTY 的空闲 / 连续输出 / 忽略 HUP 关闭测试，以及跨字节读取的 UTF-8 测试。
+
+终端输入安全修复与边界见 [审计说明](docs/TERMINAL_INPUT_SAFETY.md)。新增 `npm run test:terminal-input-safety` 和原生 `ssh_live::shell_input_safety_tests`：移除认证后默认自动密码/回车，统一顺序队列、失败提示、粘贴目标与二进制输入。活终端内 Ctrl 字母键和 F2/F3/F11 留给远端程序，应用操作使用 Ctrl+Shift 或 macOS ⌘，也可点击工具按钮。
 
 连接菜单与报错/复制回归：`npm run test:connections`、`npm run test:connection-feedback`；原生错误与SSH失败场景：`cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests`、`cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests`。
 

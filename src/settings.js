@@ -91,7 +91,7 @@
         `<div class="st-opacity-control"><input type="range" min="20" max="100" step="1" value="${terminalOpacity}" data-terminal-opacity aria-label="终端背景不透明度"><output data-terminal-opacity-value>${terminalOpacity}%</output></div>`)
       + `<div class="st-opacity-preview"><div class="st-opacity-sample st-terminal-opacity-sample">$ echo Huricano<br>Huricano · 终端预览</div></div><p class="st-opacity-note">${window.Appearance?.isNative() ? '降低不透明度会透出窗口背后的内容。' : '浏览器使用棋盘背景预览透明度；桌面版会透出窗口背后的内容。'}</p>`);
     h += card('字号与状态栏',
-      row('终端字号', '也可用 Ctrl+= / Ctrl+- 调整，范围 8–28',
+      row('终端字号', '也可用 Ctrl+Shift+= / Ctrl+Shift+- 调整，范围 8–28',
         `<input type="number" min="8" max="28" step="1" data-num="fontSize" value="${esc(T.s.fontSize)}" style="width:78px">`)
       + row('底部状态栏', '显示终端尺寸、编码、输入模式与主题', toggle('statusBar', T.s.statusBar !== false))
       + row('工具栏提示', '鼠标悬停图标时显示名称与快捷键', toggle('tooltips', T.s.tooltips !== false))
@@ -193,15 +193,15 @@
   }
 
   const HOTKEYS = [
-    ['新建本地会话', 'Ctrl+T'], ['关闭当前会话', 'Ctrl+W'], ['命令面板', 'Ctrl+Shift+P'],
-    ['机器管理', 'Ctrl+M'], ['设置', 'Ctrl+,'], ['查找', 'Ctrl+F'], ['查找下一个 / 上一个', 'F3 / Shift+F3'],
+    ['新建本地会话', 'Ctrl+Shift+T / ⌘T'], ['关闭当前会话', '⌘W（其他平台点击标签关闭）'], ['命令面板', 'Ctrl+Shift+P'],
+    ['机器管理', 'Ctrl+Shift+M / ⌘M'], ['设置', 'Ctrl+Shift+, / ⌘,'], ['查找', 'Ctrl+Shift+F / ⌘F'], ['查找下一个 / 上一个', 'F3 / Shift+F3'],
     ['左右分屏 / 上下分屏', 'Ctrl+Shift+E / Ctrl+Shift+D'], ['取消分屏', 'Ctrl+Shift+W'],
-    ['切换侧栏', 'Ctrl+B'], ['侧栏窗格 1–6', 'Ctrl+1 … Ctrl+6'],
-    ['放大 / 缩小字号', 'Ctrl+= / Ctrl+-'], ['复制 / 粘贴', 'Ctrl+Shift+C / Ctrl+Shift+V'],
+    ['切换侧栏', 'Ctrl+Shift+B / ⌘B'], ['侧栏窗格 1–6', 'Ctrl+Shift+1 … Ctrl+Shift+6'],
+    ['放大 / 缩小字号', 'Ctrl+Shift+= / Ctrl+Shift+-'], ['复制 / 粘贴', 'Ctrl+Shift+C / Ctrl+Shift+V'],
     ['全屏', 'F11'], ['发送文本到终端', 'Ctrl+Enter（发送窗格内）'],
   ];
   function renderHotkeys() {
-    let h = `<h2 class="st-h">快捷键</h2><p class="st-sub">当前为固定映射；自定义键位属后续路线。</p>`;
+    let h = `<h2 class="st-h">快捷键</h2><p class="st-sub">终端内保留 Ctrl 字母键和 F2/F3/F11 给远端应用；界面操作使用 Ctrl+Shift 或 macOS 的 ⌘。点击工具按钮也可操作。</p>`;
     h += card('', HOTKEYS.map(([l, k]) => `<div class="kb-row"><span class="kb-l">${esc(l)}</span><kbd>${esc(k)}</kbd></div>`).join(''));
     return h;
   }
