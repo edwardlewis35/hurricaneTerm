@@ -368,6 +368,14 @@ impl RootHandle {
         let mut walked = PathBuf::new();
         for component in path.components() {
             walked.push(component.as_os_str());
+            #[cfg(windows)]
+            if matches!(component, Component::Prefix(_)) {
+                // canonicalize() returns extended-length paths on Windows.
+                // A Prefix alone (e.g. \\?\C:) is not a directory: wait for
+                // RootDir to form \\?\C:\ before querying its attributes.
+                // RootDir and every real directory still get reparse checks.
+                continue;
+            }
             match fs::symlink_metadata(&walked) {
                 Ok(metadata) if metadata.is_dir() && !is_reparse(&metadata) => {}
                 Ok(_) => return Err("AI 事件日志目录包含符号链接或非目录路径".into()),
@@ -472,6 +480,10 @@ impl RootHandle {
 
     fn sync_directory(&self) -> Result<(), String> {
         #[cfg(unix)] { self.directory.sync_all().map_err(io_error) }
+        // std has no portable Windows directory-fsync guarantee. The regular
+        // journal file's sync_all/sync_data calls are mandatory and still
+        // propagate every error; a newly created directory entry surviving
+        // sudden power loss is not promised by this no-op.
         #[cfg(not(unix))] { Ok(()) }
     }
 
@@ -531,6 +543,13 @@ mod tests {
     #[tokio::test]
     async fn create_append_reopen_and_camel_case_contract() {
         let temp = Temp::new(); let store = created(&temp).await;
+        #[cfg(windows)] {
+            // The fixture intentionally uses canonicalize() in Temp::new, so
+            // this shared create/reopen test exercises extended-length paths
+            // rather than accidentally testing only drive-relative prefixes.
+            assert!(matches!(temp.path.components().next(),
+                Some(Component::Prefix(prefix)) if prefix.kind().is_verbatim()));
+        }
         let initial = store.read("session_1".into()).await.unwrap();
         assert!(initial.events.is_empty()); assert!(!initial.interrupted_tail);
         let event = store.append("session_1".into(), 0, "session/start".into(), json!({"name":"test"})).await.unwrap();
