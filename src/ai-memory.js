@@ -7,7 +7,7 @@
   let el, generation = 0, selectedScope = 'machine-local', machineScope = 'machine-local', activeTab = null;
   let currentDoc = null, documents = [], busy = false, savingConfig = false, dirty = false;
   let lastStatus = { value: '', error: false };
-  let key = '', keyEndpoint = '', keyRevision = 0, keyReady = Promise.resolve(), keyDraftDirty = false;
+  let key = '', keyEndpoint = '', keyRevision = 0, keyReady = Promise.resolve(), keyDraftDirty = false, keyRestoreState = 'idle';
   const $ = selector => el?.querySelector(selector);
   const node = (tag, text, cls) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; };
   const button = (text, id, action) => { const n = node('button', text); n.type = 'button'; if (id) n.id = id; if (action) n.onclick = action; return n; };
@@ -49,6 +49,7 @@
     $('#aim-config-toggle').setAttribute('aria-expanded', String(!$('#aim-config').hidden));
     $('#aim-title').textContent = selectedScope === 'global' ? '全局记忆' : '当前机器记忆';
     $('#aim-state').textContent = settings().enabled ? '已启用' : '未启用 · 自动检索已关闭';
+    renderKeyState();
   }
   function validEndpoint(value) {
     try { const u = new URL(value); return ['http:', 'https:'].includes(u.protocol) && !!u.hostname && !u.username && !u.password && !u.hash; } catch (_) { return false; }
@@ -73,19 +74,39 @@
     const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity));
     return 'machine-' + [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
   }
-  async function restoreKey() {
+  function renderKeyState() {
+    const note = $('#aim-key-state'); if (!note) return;
+    const state = $('#aim-endpoint')?.value.trim() === keyEndpoint ? keyRestoreState : 'idle';
+    note.textContent = state === 'pending' ? '正在读取应用本地加密密钥…'
+      : state === 'failed' ? '本地加密密钥读取失败；请重试读取或重新填写，现有密钥不会被空值覆盖。'
+      : state === 'ready' ? '已恢复此 Embedding 服务的应用本地加密密钥。'
+      : state === 'missing' ? '本地未保存此服务的密钥；升级用户请重新填写。无鉴权服务可留空。'
+      : state === 'session' ? '未读取已存密钥；密钥仅在本次运行中使用。'
+      : '未编辑密钥时，保存设置会保留此服务已有的本地加密密钥。';
+    const retry = $('#aim-key-retry'); if (retry) { retry.hidden = state !== 'failed'; retry.disabled = busy || savingConfig || state === 'pending'; }
+  }
+  async function readStoredKey(endpoint) {
+    const value = await T.invoke('memory_key_read', { endpoint });
+    if (value !== null && typeof value !== 'string') throw new Error('Invalid local key response');
+    return value || '';
+  }
+  async function restoreKey(force = false) {
     const cfg = settings();
     if (!cfg.endpoint) return;
-    if (cfg.endpoint === keyEndpoint) return keyReady;
-    const revision = ++keyRevision; keyEndpoint = cfg.endpoint; key = '';
+    if (cfg.endpoint === keyEndpoint && !force) return keyReady;
+    const revision = ++keyRevision;
+    if (keyEndpoint !== cfg.endpoint) key = '';
+    keyEndpoint = cfg.endpoint; keyRestoreState = cfg.rememberKey ? 'pending' : 'session'; renderKeyState();
     keyReady = (async () => {
       if (!cfg.rememberKey) return;
       try {
-        const result = await T.invoke('memory_key_read', { endpoint: cfg.endpoint });
+        const result = await readStoredKey(cfg.endpoint);
         if (revision !== keyRevision || settings().endpoint !== cfg.endpoint) return;
-        key = typeof result === 'string' ? result : '';
+        key = result; keyRestoreState = key ? 'ready' : 'missing';
         if (!keyDraftDirty && $('#aim-endpoint')?.value === cfg.endpoint) $('#aim-key').value = key;
-      } catch (_) { if (revision === keyRevision) emitStatus('无法读取记忆服务密钥，请在记忆设置中重新填写', true); }
+        if (!key && !keyDraftDirty && !savingConfig) emitStatus('本地未保存此 Embedding 服务的密钥，升级用户请重新填写；无鉴权服务可留空');
+      } catch (_) { if (revision === keyRevision) { keyRestoreState = 'failed'; emitStatus('无法读取记忆服务的应用本地加密密钥，请重试读取或重新填写', true); } }
+      finally { if (revision === keyRevision) renderKeyState(); }
     })();
     return keyReady;
   }
@@ -96,13 +117,14 @@
     await restoreKey(); await keyReady;
     const after = settings();
     if (savingConfig || !after.enabled || before.endpoint !== after.endpoint || before.model !== after.model) throw new Error('记忆配置已更改，请重试');
+    if (keyRestoreState === 'failed') throw new Error('应用本地加密密钥读取失败，请重试读取或重新填写');
     return { endpoint: after.endpoint, model: after.model, apiKey: keyEndpoint === after.endpoint ? key : '' };
   }
   function fillConfig() {
     const cfg = settings();
     for (const name of ['enabled', 'rememberKey', 'autoRecall', 'flushBeforeCompact', 'includeGlobal']) $('#aim-' + name).checked = cfg[name];
     $('#aim-endpoint').value = cfg.endpoint; $('#aim-model').value = cfg.model;
-    $('#aim-key').value = cfg.endpoint === keyEndpoint ? key : ''; keyDraftDirty = false;
+    $('#aim-key').value = cfg.endpoint === keyEndpoint ? key : ''; keyDraftDirty = false; renderKeyState();
   }
   async function saveConfig() {
     if (busy || savingConfig) return;
@@ -111,49 +133,63 @@
     if ((cfg.enabled || cfg.endpoint) && !validEndpoint(cfg.endpoint)) { status('请填写有效的 HTTP 或 HTTPS Embedding 地址', true); return; }
     if (cfg.enabled && (!cfg.model || cfg.model.length > 256)) { status('启用记忆前请填写 Embedding 模型', true); return; }
     let nextKey = $('#aim-key').value;
-    const view = generation, preserveRestoringKey = !keyDraftDirty && cfg.endpoint === settings().endpoint && cfg.rememberKey;
+    const previous = settings(), editedKey = keyDraftDirty;
+    const view = generation, preserveRestoringKey = !editedKey && cfg.endpoint === previous.endpoint && previous.rememberKey;
     savingConfig = true; sync(); status('正在保存记忆设置…');
     try {
       // Saving model/preferences while the startup credential read is pending must
       // preserve that key. A deliberate endpoint/key edit never borrows it.
-      if (preserveRestoringKey) { await restoreKey(); await keyReady; if (keyEndpoint === cfg.endpoint) nextKey = key; }
-      else if (cfg.endpoint && cfg.rememberKey && !keyDraftDirty && !nextKey) {
+      let alreadyStored = false;
+      if (preserveRestoringKey) {
+        await restoreKey(); await keyReady;
+        if (keyRestoreState === 'failed') throw new Error('Local key restore failed');
+        if (keyEndpoint === cfg.endpoint) nextKey = key; alreadyStored = true;
+      } else if (cfg.endpoint && cfg.rememberKey && !editedKey && !(cfg.endpoint === previous.endpoint && keyEndpoint === cfg.endpoint && nextKey)) {
         // Switching back to a saved provider may restore only that provider's key.
         // Clearing the field because its endpoint changed is not a delete action.
-        const stored = await T.invoke('memory_key_read', { endpoint: cfg.endpoint });
-        nextKey = typeof stored === 'string' ? stored : '';
+        nextKey = await readStoredKey(cfg.endpoint); alreadyStored = true;
       }
+      if (cfg.endpoint && cfg.rememberKey && nextKey && !alreadyStored) await T.invoke('memory_key_write', { endpoint: cfg.endpoint, apiKey: nextKey });
+      else if (cfg.endpoint && (!cfg.rememberKey || editedKey && !nextKey)) await T.invoke('memory_key_delete', { endpoint: cfg.endpoint });
       ++keyRevision;
-      if (cfg.endpoint && cfg.rememberKey && nextKey) await T.invoke('memory_key_write', { endpoint: cfg.endpoint, apiKey: nextKey });
-      else if (cfg.endpoint && (!cfg.rememberKey || keyDraftDirty)) await T.invoke('memory_key_delete', { endpoint: cfg.endpoint });
-      key = nextKey; keyEndpoint = cfg.endpoint; keyReady = Promise.resolve();
+      key = nextKey; keyEndpoint = cfg.endpoint; keyReady = Promise.resolve(); keyRestoreState = cfg.rememberKey ? key ? 'ready' : 'missing' : 'session';
       T.s.aiMemory = cfg; T.persistSettings();
       if (view === generation) { fillConfig(); $('#aim-config').hidden = true; status(cfg.enabled ? '记忆已启用，首次使用或修改文件后可重建索引' : '设置已保存，自动记忆检索已关闭'); }
       else if (el && !el.hidden) fillConfig();
-    } catch (_) { keyEndpoint = ''; if (view === generation) status('记忆设置未保存：无法访问系统凭据存储，请重试或关闭“持久保存密钥”', true); }
+    } catch (_) { if (view === generation) status('记忆设置未保存：无法读取或更新应用本地加密密钥。请重试读取或明确重新填写；现有密钥未被空值覆盖', true); }
     finally { savingConfig = false; sync(); }
   }
   async function forgetKey() {
     if (busy || savingConfig) return;
     const endpoint = $('#aim-endpoint').value.trim();
     if (!endpoint || !validEndpoint(endpoint)) { status('请先填写要移除密钥的服务地址', true); return; }
-    savingConfig = true; const view = generation; ++keyRevision; sync();
+    savingConfig = true; const view = generation, previousState = keyRestoreState;
+    if (endpoint === keyEndpoint) ++keyRevision;
+    sync();
     try {
       await T.invoke('memory_key_delete', { endpoint });
-      if (keyEndpoint === endpoint) { key = ''; keyReady = Promise.resolve(); }
-      if (view === generation) { $('#aim-key').value = ''; keyDraftDirty = true; status('已移除此记忆服务的已存密钥'); }
-    } catch (_) { keyEndpoint = ''; if (view === generation) status('无法移除已存密钥，请重试', true); }
+      if (keyEndpoint === endpoint) { key = ''; keyReady = Promise.resolve(); keyRestoreState = 'missing'; }
+      if (view === generation) { $('#aim-key').value = ''; keyDraftDirty = true; status('已移除此记忆服务的应用本地加密密钥；旧系统密钥未访问'); }
+    } catch (_) { if (keyEndpoint === endpoint && previousState === 'pending') { keyRestoreState = 'failed'; keyReady = Promise.resolve(); } if (view === generation) status('无法移除本地加密密钥，请重试', true); }
     finally { savingConfig = false; sync(); }
   }
   async function testConfig() {
     if (busy || savingConfig) return;
     const endpoint = $('#aim-endpoint').value.trim(), model = $('#aim-model').value.trim();
     if (!validEndpoint(endpoint) || !model) { status('请填写有效服务地址和模型后测试', true); return; }
-    const view = generation; busy = true; sync(); status('正在测试 Embedding 服务…');
+    const view = generation, editedKey = keyDraftDirty; let testKey = $('#aim-key').value, credentialsReady = false;
+    busy = true; sync(); status('正在测试 Embedding 服务…');
     try {
-      const result = await T.invoke('memory_embedding_test', { embedding: { endpoint, model, apiKey: $('#aim-key').value } });
+      if (!editedKey && endpoint === settings().endpoint && settings().rememberKey) {
+        await restoreKey(); await keyReady;
+        if (keyRestoreState === 'failed') throw new Error('Local key restore failed');
+        testKey = keyEndpoint === endpoint ? key : '';
+      } else if (!editedKey && !testKey && $('#aim-rememberKey').checked) testKey = await readStoredKey(endpoint);
+      if (view !== generation) return;
+      credentialsReady = true;
+      const result = await T.invoke('memory_embedding_test', { embedding: { endpoint, model, apiKey: testKey } });
       if (view === generation) status('Embedding 服务可用' + (result?.dimensions ? ' · 向量维度 ' + result.dimensions : '') + '；配置尚需保存');
-    } catch (_) { if (view === generation) status('Embedding 服务测试失败，请检查地址、模型和密钥', true); }
+    } catch (_) { if (view === generation) status(credentialsReady ? 'Embedding 服务测试失败，请检查地址、模型和密钥' : '测试未发送：无法读取本地加密密钥，请重试读取或重新填写', true); }
     finally { busy = false; sync(); }
   }
   function renderDocuments() {
@@ -342,8 +378,10 @@
     field(config, 'Embedding 地址', 'aim-endpoint').placeholder = 'https://example.com/v1 或完整 /embeddings 地址';
     field(config, 'Embedding 模型', 'aim-model').placeholder = 'text-embedding-model';
     field(config, 'Embedding API Key', 'aim-key', 'password');
-    config.append(node('small', '向量维度自动检测。密钥仅保存在系统凭据存储，不写入普通设置或 Gist。'));
-    check(config, '持久保存密钥', 'rememberKey'); check(config, '对话前自动检索相关记忆', 'autoRecall');
+    const keyNotice = node('small', '应用在本机加密保存并自动解锁；升级后请重新填写旧 Key。'); keyNotice.id = 'aim-key-storage-note'; keyNotice.title = '不会读取或删除旧系统密钥，也不进入普通设置或 Gist。加密库与本机解密材料同时被取得时，密钥仍可被恢复，详见使用说明。'; config.append(keyNotice);
+    const keyState = node('small'); keyState.id = 'aim-key-state'; keyState.setAttribute('aria-live', 'polite'); config.append(keyState);
+    const keyRetry = button('重试读取本地密钥', 'aim-key-retry', async () => { if (busy || savingConfig) return; if ($('#aim-endpoint').value.trim() !== settings().endpoint) { status('请先保存此服务设置或重新填写密钥', true); return; } await restoreKey(true); }); keyRetry.hidden = true; config.append(keyRetry);
+    check(config, '保存密钥到应用本地加密库', 'rememberKey'); check(config, '对话前自动检索相关记忆', 'autoRecall');
     check(config, '包含全局记忆', 'includeGlobal');
     check(config, '压缩上下文前整理并保存长期事实', 'flushBeforeCompact');
     config.append(node('small', '开启后会调用当前聊天模型，整理已确认的长期事实并追加到当前机器的当日记忆。记忆原文为 Markdown 明文，请勿存放密码、令牌或私钥。关闭时仅手动保存。'));
@@ -378,7 +416,7 @@
     scroll.append(state, configToggle, config, scopes, title, info, searchbar, controls, docs, results, edit);
     const footer = node('div', '', 'aim-status'); footer.id = 'aim-status'; footer.setAttribute('role', 'status');
     el.append(head, scroll, footer); host.append(el);
-    $('#aim-endpoint').oninput = () => { $('#aim-key').value = ''; keyDraftDirty = false; };
+    $('#aim-endpoint').oninput = () => { $('#aim-key').value = ''; keyDraftDirty = false; renderKeyState(); };
     $('#aim-key').oninput = () => { keyDraftDirty = true; };
     for (const id of ['aim-path', 'aim-content']) $('#' + id).oninput = () => { dirty = true; if (id === 'aim-content') renderEditorPreview(); sync(); };
     el.onkeydown = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } };

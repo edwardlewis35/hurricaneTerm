@@ -4,7 +4,7 @@ window.WT = (function () {
   const ev = window.__TAURI__.event;
 
   // 与 package.json / tauri.conf.json / Cargo.toml 同步 bump
-  const VERSION = '0.12.1';
+  const VERSION = '0.13.0';
 
   function cmpVer(a, b) {
     const pa = String(a).split('.').map((x) => parseInt(x, 10) || 0);

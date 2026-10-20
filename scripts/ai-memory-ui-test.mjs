@@ -19,7 +19,7 @@ function fixture(config = {}, options = {}) {
   const vc = new VirtualConsole(); vc.on('jsdomError', error => errors.push(error.message));
   const dom = new JSDOM('<!doctype html><body><aside id="ai-panel" hidden><textarea id="ai-input"></textarea></aside></body>', { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://tauri.localhost/', virtualConsole: vc });
   const w = dom.window, d = w.document, calls = [], snapshots = [], documents = new Map(), credentials = new Map(options.credentials || []);
-  const heldReads = [], heldWrites = [], heldLists = []; let holdRead = !!options.holdRead, holdWrite = false, holdList = false, failCredentials = false, searchMode = '';
+  const heldReads = [], heldWrites = [], heldLists = []; let holdRead = !!options.holdRead, holdWrite = false, holdList = false, failCredentials = false, failRead = !!options.failRead, failDelete = !!options.failDelete, invalidRead = !!options.invalidRead, searchMode = '';
   Object.defineProperty(w, 'crypto', { value: webcrypto }); w.TextEncoder = TextEncoder;
   const sha = content => createHash('sha256').update(content).digest('hex');
   const docKey = (scope, path) => scope + ':' + path;
@@ -33,14 +33,15 @@ function fixture(config = {}, options = {}) {
         if (failCredentials) throw new Error('secret-fixture-body-never-display');
         if (command === 'memory_key_read') {
           const captured = credentials.get(args.endpoint) || null;
-          if (holdRead) return new Promise(resolve => heldReads.push(() => resolve(captured)));
-          return captured;
+          const result = () => { if (failRead) throw new Error('PRIVATE_MEMORY_LOCAL_VAULT_ERROR'); return invalidRead ? { invalid: true } : captured; };
+          if (holdRead) return new Promise((resolve, reject) => heldReads.push(() => { try { resolve(result()); } catch (error) { reject(error); } }));
+          return result();
         }
         if (command === 'memory_key_write') {
           if (holdWrite) return new Promise(resolve => heldWrites.push(() => { credentials.set(args.endpoint, args.apiKey); resolve(null); }));
           credentials.set(args.endpoint, args.apiKey); return null;
         }
-        credentials.delete(args.endpoint); return null;
+        if (failDelete) throw new Error('PRIVATE_MEMORY_LOCAL_DELETE_ERROR'); credentials.delete(args.endpoint); return null;
       }
       if (command === 'memory_list') {
         const result = [...documents.values()].filter(doc => doc.scope === args.scope).map(compactDoc);
@@ -75,7 +76,7 @@ function fixture(config = {}, options = {}) {
   const q = selector => d.querySelector(selector), input = (selector, value) => { const n = q(selector); assert.ok(n, selector); n.value = value; n.dispatchEvent(new w.Event('input', { bubbles: true })); };
   const click = async selector => { assert.ok(q(selector), selector); q(selector).click(); await settle(); };
   return { w, d, A, T, calls, snapshots, documents, credentials, put, q, input, click, heldReads, heldWrites, heldLists,
-    flags(value) { if ('holdRead' in value) holdRead = value.holdRead; if ('holdWrite' in value) holdWrite = value.holdWrite; if ('holdList' in value) holdList = value.holdList; if ('failCredentials' in value) failCredentials = value.failCredentials; if ('searchMode' in value) searchMode = value.searchMode; },
+    flags(value) { if ('holdRead' in value) holdRead = value.holdRead; if ('holdWrite' in value) holdWrite = value.holdWrite; if ('holdList' in value) holdList = value.holdList; if ('failCredentials' in value) failCredentials = value.failCredentials; if ('failRead' in value) failRead = value.failRead; if ('failDelete' in value) failDelete = value.failDelete; if ('invalidRead' in value) invalidRead = value.invalidRead; if ('searchMode' in value) searchMode = value.searchMode; },
     count(name) { return calls.filter(([command]) => command === name).length; }, last(name) { return calls.filter(([command]) => command === name).at(-1)?.[1]; }, close() { dom.window.close(); } };
 }
 const f = fixture();
@@ -263,6 +264,83 @@ try {
   check('M79 Search excerpts use the same safe Markdown renderer without execution controls', q('#aim-results .aim-hit-preview h2')?.textContent === 'Edited draft' && !!q('#aim-results table') && !q('#aim-results [data-ai-insert], #aim-results img'));
   check('M80 Preview layout uses theme tokens and scrollable bounded content', css.includes('.aim-preview') && css.includes('max-height: 340px') && css.includes('overflow: auto') && css.includes('var(--input-bg)'));
 } finally { markdown.close(); }
+const localVaultMissing = fixture({ enabled: true, endpoint: 'http://127.0.0.1:11434/v1', model: 'embed-local' });
+try {
+  await localVaultMissing.A.open({ tab: tab() });
+  const note = localVaultMissing.q('#aim-key-storage-note');
+  check('M81 Memory settings explain app-local encryption, upgrade reentry and automatic-unlock limits', note.textContent.includes('本机加密') && note.textContent.includes('重新填写旧 Key') && note.title.includes('不会读取或删除旧系统密钥') && note.title.includes('解密材料'));
+  check('M82 Missing-key migration guidance is visible while configured memory settings are collapsed', localVaultMissing.q('#aim-config').hidden && localVaultMissing.q('#aim-status').textContent.includes('升级用户') && !localVaultMissing.q('#aim-search').disabled);
+  const cfg = await localVaultMissing.A.getEmbeddingConfig();
+  check('M83 A missing app-local key allows unauthenticated Embedding without OS fallback or key mutation', cfg.apiKey === '' && localVaultMissing.calls.filter(([command]) => command.includes('key')).every(([command]) => command === 'memory_key_read'));
+} finally { localVaultMissing.close(); }
+const localVaultFailure = fixture({ enabled: true, endpoint: 'https://memory-local-read-failed.example/v1', model: 'old-embed' }, { failRead: true, credentials: [['https://memory-local-read-failed.example/v1', 'PRESERVED_MEMORY_LOCAL_KEY']] });
+try {
+  await localVaultFailure.A.open({ tab: tab() }); await localVaultFailure.click('#aim-config-toggle');
+  await assert.rejects(() => localVaultFailure.A.getEmbeddingConfig());
+  check('M84 Failed local key restoration never becomes an empty-key Embedding configuration', !localVaultFailure.count('memory_search') && localVaultFailure.q('#aim-key-state').textContent.includes('读取失败') && !localVaultFailure.d.body.textContent.includes('PRIVATE_MEMORY_LOCAL_VAULT_ERROR'));
+  await localVaultFailure.click('#aim-test');
+  check('M85 Configuration testing also refuses a silent empty-key request after restore failure', !localVaultFailure.count('memory_embedding_test') && localVaultFailure.q('#aim-status').textContent.includes('测试未发送'));
+  localVaultFailure.input('#aim-model', 'uncommitted-embed'); await localVaultFailure.click('#aim-config-save');
+  check('M86 A preference-only save after local read failure preserves existing key and settings', !localVaultFailure.snapshots.length && !localVaultFailure.count('memory_key_write') && !localVaultFailure.count('memory_key_delete') && localVaultFailure.T.s.aiMemory.model === 'old-embed' && localVaultFailure.credentials.get('https://memory-local-read-failed.example/v1') === 'PRESERVED_MEMORY_LOCAL_KEY');
+  localVaultFailure.flags({ failRead: false, holdRead: true }); localVaultFailure.q('#aim-key-retry').click(); localVaultFailure.q('#aim-key-retry').click(); await settle();
+  check('M87 Repeated memory retry clicks are disabled while one local read is pending', localVaultFailure.q('#aim-key-retry').disabled && localVaultFailure.count('memory_key_read') === 2 && localVaultFailure.heldReads.length === 1);
+  localVaultFailure.flags({ holdRead: false }); localVaultFailure.heldReads.shift()(); await settle();
+  check('M88 Explicit retry restores the original Embedding key and unlocks its retry control', (await localVaultFailure.A.getEmbeddingConfig()).apiKey === 'PRESERVED_MEMORY_LOCAL_KEY' && localVaultFailure.q('#aim-key-retry').hidden);
+} finally { localVaultFailure.close(); }
+const localVaultReplace = fixture({ enabled: true, endpoint: 'https://memory-local-replace.example/v1', model: 'embed' }, { failRead: true, credentials: [['https://memory-local-replace.example/v1', 'OLD_MEMORY_LOCAL_KEY']] });
+try {
+  await localVaultReplace.A.open({ tab: tab() }); await localVaultReplace.click('#aim-config-toggle');
+  localVaultReplace.input('#aim-key', 'NEW_MEMORY_LOCAL_KEY'); await localVaultReplace.click('#aim-config-save');
+  check('M89 Explicit Embedding key replacement recovers from restore failure without leaking into settings', (await localVaultReplace.A.getEmbeddingConfig()).apiKey === 'NEW_MEMORY_LOCAL_KEY' && localVaultReplace.credentials.get('https://memory-local-replace.example/v1') === 'NEW_MEMORY_LOCAL_KEY' && !JSON.stringify(localVaultReplace.snapshots).includes('NEW_MEMORY_LOCAL_KEY'));
+} finally { localVaultReplace.close(); }
+const localVaultClear = fixture({ enabled: true, endpoint: 'https://memory-local-clear.example/v1', model: 'embed' }, { failRead: true, credentials: [['https://memory-local-clear.example/v1', 'CLEAR_MEMORY_LOCAL_KEY']] });
+try {
+  await localVaultClear.A.open({ tab: tab() }); await localVaultClear.click('#aim-config-toggle');
+  localVaultClear.input('#aim-key', ''); await localVaultClear.click('#aim-config-save');
+  check('M90 Explicit empty-key editing deletes only the selected local key and remains intentional', (await localVaultClear.A.getEmbeddingConfig()).apiKey === '' && !localVaultClear.credentials.has('https://memory-local-clear.example/v1') && localVaultClear.count('memory_key_delete') === 1);
+} finally { localVaultClear.close(); }
+const localVaultTest = fixture({ enabled: true, endpoint: 'https://memory-local-test-pending.example/v1', model: 'embed' }, { holdRead: true, credentials: [['https://memory-local-test-pending.example/v1', 'PENDING_TEST_MEMORY_KEY']] });
+try {
+  const opening = localVaultTest.A.open({ tab: tab() }); await settle(); await localVaultTest.click('#aim-config-toggle');
+  localVaultTest.q('#aim-test').click(); await settle();
+  check('M91 Embedding configuration testing waits for the same pending key read', !localVaultTest.count('memory_embedding_test') && localVaultTest.q('#aim-test').disabled);
+  localVaultTest.flags({ holdRead: false }); localVaultTest.heldReads.shift()(); await opening; await settle();
+  check('M92 Testing uses the restored local key without persisting or mutating it', localVaultTest.last('memory_embedding_test').embedding.apiKey === 'PENDING_TEST_MEMORY_KEY' && !localVaultTest.count('memory_key_write') && !localVaultTest.count('memory_key_delete'));
+} finally { localVaultTest.close(); }
+const localVaultDelete = fixture({ enabled: true, endpoint: 'https://memory-local-delete-pending.example/v1', model: 'embed' }, { holdRead: true, failDelete: true, credentials: [['https://memory-local-delete-pending.example/v1', 'PENDING_DELETE_MEMORY_KEY']] });
+try {
+  const opening = localVaultDelete.A.open({ tab: tab() }); await settle(); await localVaultDelete.click('#aim-config-toggle');
+  await localVaultDelete.click('#aim-forget-key'); localVaultDelete.heldReads.shift()(); await opening; await settle();
+  await assert.rejects(() => localVaultDelete.A.getEmbeddingConfig());
+  check('M93 A failed deletion cannot turn an invalidated pending memory read into empty authentication', localVaultDelete.credentials.get('https://memory-local-delete-pending.example/v1') === 'PENDING_DELETE_MEMORY_KEY' && !localVaultDelete.q('#aim-key-retry').hidden && !localVaultDelete.q('#aim-key-retry').disabled);
+} finally { localVaultDelete.close(); }
+const localVaultInvalid = fixture({ enabled: true, endpoint: 'https://memory-local-invalid.example/v1', model: 'embed' }, { invalidRead: true });
+try {
+  await localVaultInvalid.A.open({ tab: tab() }); await assert.rejects(() => localVaultInvalid.A.getEmbeddingConfig());
+  check('M94 Non-string/non-null memory key responses are errors rather than missing keys', !localVaultInvalid.q('#aim-key-retry').hidden && !localVaultInvalid.count('memory_search'));
+} finally { localVaultInvalid.close(); }
+const localVaultOtherDelete = fixture({ enabled: true, endpoint: 'https://memory-pending-current.example/v1', model: 'embed' }, { holdRead: true, credentials: [['https://memory-pending-current.example/v1', 'CURRENT_MEMORY_PENDING_KEY'], ['https://memory-forget-other.example/v1', 'OTHER_MEMORY_DELETE_KEY']] });
+try {
+  const opening = localVaultOtherDelete.A.open({ tab: tab() }); await settle(); await localVaultOtherDelete.click('#aim-config-toggle');
+  localVaultOtherDelete.input('#aim-endpoint', 'https://memory-forget-other.example/v1'); await localVaultOtherDelete.click('#aim-forget-key');
+  localVaultOtherDelete.flags({ holdRead: false }); localVaultOtherDelete.heldReads.shift()(); await opening; await settle();
+  check('M95 Deleting another draft provider does not invalidate the saved provider pending key read', (await localVaultOtherDelete.A.getEmbeddingConfig()).apiKey === 'CURRENT_MEMORY_PENDING_KEY' && localVaultOtherDelete.credentials.has('https://memory-pending-current.example/v1') && !localVaultOtherDelete.credentials.has('https://memory-forget-other.example/v1'));
+} finally { localVaultOtherDelete.close(); }
+const localVaultFailedWrite = fixture({ enabled: true, endpoint: 'https://memory-pending-failed-write.example/v1', model: 'old-embed' }, { holdRead: true, credentials: [['https://memory-pending-failed-write.example/v1', 'OLD_PENDING_MEMORY_KEY']] });
+try {
+  const opening = localVaultFailedWrite.A.open({ tab: tab() }); await settle(); await localVaultFailedWrite.click('#aim-config-toggle');
+  localVaultFailedWrite.input('#aim-key', 'UNSAVED_MEMORY_KEY'); localVaultFailedWrite.input('#aim-model', 'unsaved-embed'); localVaultFailedWrite.flags({ failCredentials: true }); await localVaultFailedWrite.click('#aim-config-save');
+  localVaultFailedWrite.flags({ failCredentials: false, holdRead: false }); localVaultFailedWrite.heldReads.shift()(); await opening; await settle();
+  check('M96 Failed explicit replacement preserves the original pending restoration and unsaved draft', (await localVaultFailedWrite.A.getEmbeddingConfig()).apiKey === 'OLD_PENDING_MEMORY_KEY' && localVaultFailedWrite.T.s.aiMemory.model === 'old-embed' && localVaultFailedWrite.q('#aim-key').value === 'UNSAVED_MEMORY_KEY' && !localVaultFailedWrite.snapshots.length);
+} finally { localVaultFailedWrite.close(); }
+const localVaultSession = fixture({ enabled: true, endpoint: 'https://memory-pending-session.example/v1', model: 'embed' }, { holdRead: true, credentials: [['https://memory-pending-session.example/v1', 'MEMORY_SESSION_AFTER_RESTORE']] });
+try {
+  const opening = localVaultSession.A.open({ tab: tab() }); await settle(); await localVaultSession.click('#aim-config-toggle');
+  localVaultSession.q('#aim-rememberKey').checked = false; localVaultSession.q('#aim-config-save').click(); await settle();
+  check('M97 Disabling memory key persistence waits for the in-flight restoration before deletion', localVaultSession.q('#aim-config-save').disabled && !localVaultSession.count('memory_key_delete'));
+  localVaultSession.flags({ holdRead: false }); localVaultSession.heldReads.shift()(); await opening; await settle();
+  check('M98 Persistence-off retains the restored Embedding key in memory while deleting only its local entry', (await localVaultSession.A.getEmbeddingConfig()).apiKey === 'MEMORY_SESSION_AFTER_RESTORE' && !localVaultSession.credentials.has('https://memory-pending-session.example/v1') && localVaultSession.T.s.aiMemory.rememberKey === false);
+} finally { localVaultSession.close(); }
 const limits = fixture({ enabled: true, endpoint: 'https://limits.example/v1', model: 'embed-limits' });
 try {
   const scope = await limits.A.scopeFor(tab());

@@ -88,11 +88,12 @@ for (const file of ['../node_modules/markdown-it/dist/browser/markdown-it.umd.mi
 const A = w.AiPanel;
 const send = async value => { input('#ai-input', value); await click('#ai-send'); return chats().at(-1); };
 const text = () => q('#ai-messages').textContent;
-async function restartPanel(settings, { holdRead = false, holdWrite = false } = {}) {
+async function restartPanel(settings, { holdRead = false, holdWrite = false, failRead = false, failWrite = false, failDelete = false, invalidRead = false } = {}) {
   // A separate window and freshly evaluated module simulate process restart;
   // only nonsecret settings and the controlled native credential map survive.
   const fresh = new JSDOM('<!doctype html><body><aside id="ai-panel" hidden></aside></body>', { runScripts: 'outside-only', pretendToBeVisual: true, url: 'http://tauri.localhost/', virtualConsole: vc });
   const fw = fresh.window, fd = fw.document, requests = [], ipc = [], snapshots = [], reads = [], writes = [];
+  const failures = { read: failRead, write: failWrite, delete: failDelete, invalidRead };
   fw.TextEncoder = TextEncoder;
   fw.WT = { s: { ai: JSON.parse(JSON.stringify(settings)) }, ui: { fitAll() {}, closeDock() {} }, term: { activeTab: () => null, isLive: () => false },
     persistSettings() { snapshots.push(JSON.parse(JSON.stringify(this.s))); }, copyText: async () => true,
@@ -100,19 +101,22 @@ async function restartPanel(settings, { holdRead = false, holdWrite = false } = 
       ipc.push([command, JSON.parse(JSON.stringify(args))]);
       if (command === 'ai_key_read') {
         const value = credentials.get(args.endpoint) || null;
-        return holdRead ? new Promise(resolve => reads.push(() => resolve(value))) : value;
+        const result = () => { if (failures.read) throw new Error('PRIVATE_LOCAL_VAULT_ERROR'); return failures.invalidRead ? { invalid: true } : value; };
+        return holdRead ? new Promise((resolve, reject) => reads.push(() => { try { resolve(result()); } catch (error) { reject(error); } })) : result();
       }
       if (command === 'ai_key_write') {
+        if (failures.write) throw new Error('PRIVATE_LOCAL_VAULT_WRITE_ERROR');
         if (holdWrite) return new Promise(resolve => writes.push(() => { credentials.set(args.endpoint, args.apiKey); resolve(null); }));
         credentials.set(args.endpoint, args.apiKey); return null;
       }
-      if (command === 'ai_key_delete') { credentials.delete(args.endpoint); return null; }
+      if (command === 'ai_key_delete') { if (failures.delete) throw new Error('PRIVATE_LOCAL_VAULT_DELETE_ERROR'); credentials.delete(args.endpoint); return null; }
       if (command === 'ai_chat') { requests.push(args.request); return { content: 'Restart fixture completed' }; }
       return null;
     } };
   for (const file of ['../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js', 'ai-markdown.js', 'icons.js', 'ai-context.js', 'ai.js']) fw.eval(readFileSync(source + file, 'utf8'));
   const api = fw.AiPanel; api.mount(fd.querySelector('#ai-panel')); api.open(); await settle();
   return { w: fw, d: fd, api, requests, ipc, snapshots,
+    flags(values) { Object.assign(failures, values); },
     async send(value) { fd.querySelector('#ai-input').value = value; await api.send(); await settle(); return requests.at(-1); },
     releaseRead() { assert.ok(reads.length, 'Credential read must be pending'); reads.shift()(); },
     releaseWrite() { assert.ok(writes.length, 'Credential write must be pending'); writes.shift()(); },
@@ -360,6 +364,106 @@ try {
     fresh.d.querySelector('#ai-input').value = 'The previous conversation draft must be discarded'; const waitingSend = fresh.api.send();
     fresh.api.newChat(); fresh.releaseRead(); await waitingSend; await settle();
     check('A81 A new conversation cannot receive a send delayed by the previous conversation key read', fresh.requests.length === 0 && fresh.d.querySelectorAll('[data-ai-message]').length === 0 && fresh.d.querySelector('#ai-input').value === '');
+    fresh.close();
+  }
+  const setFresh = (fresh, selector, value) => { const field = fresh.d.querySelector(selector); field.value = value; field.dispatchEvent(new fresh.w.Event('input', { bubbles: true })); };
+  {
+    const endpoint = 'http://127.0.0.1:11434/v1'; credentials.delete(endpoint);
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true });
+    const notice = fresh.d.querySelector('#ai-key-storage-note');
+    check('A82 Local encryption and upgrade guidance are visible without promising system-keychain protection', notice.textContent.includes('本机加密') && notice.textContent.includes('重新填写旧 Key') && notice.title.includes('不会读取或删除旧系统密钥') && notice.title.includes('解密材料'));
+    check('A82 Missing-key upgrade guidance is nonblocking and visible while saved configuration stays collapsed', fresh.d.querySelector('#ai-config').hidden && fresh.d.querySelector('#ai-status').textContent.includes('升级用户') && !fresh.d.querySelector('#ai-send').disabled);
+    const request = await fresh.send('An unauthenticated local provider is valid');
+    check('A83 Missing local encrypted key remains valid for an unauthenticated provider without OS fallback or mutation', request.apiKey === '' && fresh.d.querySelector('#ai-key-state').textContent.includes('升级用户') && fresh.ipc.filter(([command]) => command !== 'ai_chat').every(([command]) => command === 'ai_key_read'));
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-preferences.example/v1'; credentials.set(endpoint, 'PREFS_RESTORED_LOCAL_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'old-model', rememberKey: true }, { holdRead: true });
+    fresh.d.querySelector('#ai-settings').click(); setFresh(fresh, '#ai-model', 'new-model'); fresh.d.querySelector('#ai-save').click(); await settle();
+    check('A84 Preference-only save waits for local key restoration before committing', fresh.d.querySelector('#ai-save').disabled && fresh.snapshots.length === 0 && !fresh.ipc.some(([command]) => ['ai_key_write', 'ai_key_delete'].includes(command)));
+    fresh.releaseRead(); await settle(); const request = await fresh.send('The restored key survives preference editing');
+    check('A85 Preference-only save retains the restored key without rewriting or deleting it', request.apiKey === 'PREFS_RESTORED_LOCAL_KEY' && fresh.w.WT.s.ai.model === 'new-model' && credentials.get(endpoint) === 'PREFS_RESTORED_LOCAL_KEY' && !fresh.ipc.some(([command]) => ['ai_key_write', 'ai_key_delete'].includes(command)));
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-read-failed.example/v1'; credentials.set(endpoint, 'PRESERVE_AFTER_READ_ERROR');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'old-model', rememberKey: true }, { failRead: true });
+    await fresh.send('Keep this draft while local decryption failed');
+    check('A86 Local read failure blocks an empty-key request and retains the draft without exposing backend errors', !fresh.requests.length && fresh.d.querySelector('#ai-input').value === 'Keep this draft while local decryption failed' && fresh.d.querySelector('#ai-status').textContent.includes('未发送') && !fresh.d.body.textContent.includes('PRIVATE_LOCAL_VAULT_ERROR'));
+    setFresh(fresh, '#ai-model', 'uncommitted-model'); fresh.d.querySelector('#ai-save').click(); await settle();
+    check('A87 A failed local read cannot clear an existing key or commit a preference save', fresh.snapshots.length === 0 && fresh.w.WT.s.ai.model === 'old-model' && credentials.get(endpoint) === 'PRESERVE_AFTER_READ_ERROR' && !fresh.ipc.some(([command]) => ['ai_key_write', 'ai_key_delete'].includes(command)));
+    fresh.flags({ read: false }); fresh.d.querySelector('#ai-key-retry').click(); await settle();
+    const request = await fresh.send('Retry restoration explicitly');
+    check('A88 Retry performs a new local read and restores the original key', request.apiKey === 'PRESERVE_AFTER_READ_ERROR' && fresh.ipc.filter(([command]) => command === 'ai_key_read').length === 2 && fresh.d.querySelector('#ai-key-retry').hidden);
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-explicit-replace.example/v1'; credentials.set(endpoint, 'OLD_LOCAL_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { failRead: true });
+    fresh.d.querySelector('#ai-settings').click(); setFresh(fresh, '#ai-key', 'EXPLICIT_NEW_LOCAL_KEY'); fresh.d.querySelector('#ai-save').click(); await settle();
+    const request = await fresh.send('An explicitly replaced key may be used');
+    check('A89 Explicit replacement can recover from a read failure without an empty-key fallback', request.apiKey === 'EXPLICIT_NEW_LOCAL_KEY' && credentials.get(endpoint) === 'EXPLICIT_NEW_LOCAL_KEY' && fresh.ipc.filter(([command]) => command === 'ai_key_write').length === 1 && !JSON.stringify(fresh.snapshots).includes('EXPLICIT_NEW_LOCAL_KEY'));
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-explicit-clear.example/v1'; credentials.set(endpoint, 'EXPLICITLY_CLEAR_LOCAL_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { failRead: true });
+    fresh.d.querySelector('#ai-settings').click(); setFresh(fresh, '#ai-key', ''); fresh.d.querySelector('#ai-save').click(); await settle();
+    const request = await fresh.send('An explicitly cleared key is intentional');
+    check('A90 Explicit clear deletes only the app-local key and permits a later intentional empty-key request', !credentials.has(endpoint) && request.apiKey === '' && fresh.ipc.filter(([command]) => command === 'ai_key_delete').length === 1);
+    fresh.close();
+  }
+  {
+    const old = 'https://local-vault-provider-a.example/v1', endpoint = 'https://local-vault-provider-b.example/v1';
+    credentials.set(old, 'LOCAL_PROVIDER_A_KEY'); credentials.set(endpoint, 'LOCAL_PROVIDER_B_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint: old, model: 'fixture', rememberKey: true });
+    fresh.d.querySelector('#ai-settings').click(); setFresh(fresh, '#ai-endpoint', endpoint); fresh.d.querySelector('#ai-save').click(); await settle();
+    const request = await fresh.send('Switching providers retrieves only its own app-local key');
+    check('A91 An untouched field after endpoint change restores the target key without deleting or borrowing a key', request.endpoint === endpoint && request.apiKey === 'LOCAL_PROVIDER_B_KEY' && credentials.get(old) === 'LOCAL_PROVIDER_A_KEY' && !fresh.ipc.some(([command]) => ['ai_key_write', 'ai_key_delete'].includes(command)));
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-session-only.example/v1'; credentials.set(endpoint, 'SESSION_ONLY_AFTER_RESTORE');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true });
+    fresh.d.querySelector('#ai-settings').click(); fresh.d.querySelector('#ai-remember-key').checked = false; fresh.d.querySelector('#ai-save').click(); await settle();
+    fresh.releaseRead(); await settle(); const request = await fresh.send('Turn persistence off without losing the runtime key');
+    check('A92 Disabling persistence during restore waits, removes the local saved key and retains its session value', request.apiKey === 'SESSION_ONLY_AFTER_RESTORE' && !credentials.has(endpoint) && fresh.w.WT.s.ai.rememberKey === false);
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-invalid-read.example/v1';
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { invalidRead: true });
+    await fresh.send('Invalid native response must not look like missing key');
+    check('A93 A non-string/non-null local key response fails closed', !fresh.requests.length && !fresh.d.querySelector('#ai-key-retry').hidden);
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-delete-failed.example/v1'; credentials.set(endpoint, 'DELETE_FAILURE_LOCAL_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true, failDelete: true });
+    fresh.d.querySelector('#ai-settings').click(); fresh.d.querySelector('#ai-forget-key').click(); await settle(); fresh.releaseRead(); await settle();
+    await fresh.send('A failed delete cannot convert failed restoration into empty authentication');
+    check('A94 Failed deletion during a pending read keeps the key and requires explicit recovery', credentials.get(endpoint) === 'DELETE_FAILURE_LOCAL_KEY' && !fresh.requests.length && !fresh.d.querySelector('#ai-key-retry').hidden);
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-retry-button.example/v1'; credentials.set(endpoint, 'RETRY_BUTTON_LOCAL_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true, failRead: true });
+    fresh.d.querySelector('#ai-settings').click(); fresh.releaseRead(); await settle();
+    check('A95 A pending-to-failed restore leaves the retry control enabled', !fresh.d.querySelector('#ai-key-retry').hidden && !fresh.d.querySelector('#ai-key-retry').disabled);
+    fresh.flags({ read: false }); fresh.d.querySelector('#ai-key-retry').click(); fresh.d.querySelector('#ai-key-retry').click(); await settle();
+    check('A96 Repeated retry clicks while a local read is pending start only one read', fresh.d.querySelector('#ai-key-retry').disabled && fresh.ipc.filter(([command]) => command === 'ai_key_read').length === 2);
+    fresh.releaseRead(); await settle(); const request = await fresh.send('A successful retry recovers authentication');
+    check('A97 A resolved retry restores the key and hides the retry control', request.apiKey === 'RETRY_BUTTON_LOCAL_KEY' && fresh.d.querySelector('#ai-key-retry').hidden);
+    fresh.close();
+  }
+  {
+    const endpoint = 'https://local-vault-pending-current.example/v1', other = 'https://local-vault-forget-other.example/v1';
+    credentials.set(endpoint, 'CURRENT_PROVIDER_PENDING_KEY'); credentials.set(other, 'OTHER_PROVIDER_DELETE_KEY');
+    const fresh = await restartPanel({ ...T.s.ai, endpoint, model: 'fixture', rememberKey: true }, { holdRead: true });
+    fresh.d.querySelector('#ai-settings').click(); setFresh(fresh, '#ai-endpoint', other); fresh.d.querySelector('#ai-forget-key').click(); await settle();
+    fresh.releaseRead(); await settle(); const request = await fresh.send('Deleting another provider must preserve the current pending restoration');
+    check('A98 Deleting a draft provider key does not invalidate restoration for the saved current provider', request.endpoint === endpoint && request.apiKey === 'CURRENT_PROVIDER_PENDING_KEY' && credentials.get(endpoint) === 'CURRENT_PROVIDER_PENDING_KEY' && !credentials.has(other));
     fresh.close();
   }
   check('A51 Complete integration has no JavaScript or DOM errors', errors.length === 0);

@@ -37,7 +37,8 @@ const T = w.WT = {
     if (['ai_chat', 'ai_agent_step', 'agent_exec'].includes(command)) {
       return new Promise((resolve, reject) => pending.set(args.request.requestId, { command, request: clone(args.request), resolve, reject }));
     }
-    if (command === 'ui_state_load') return Promise.resolve(null);
+    // Missing app-local credentials use the native string|null contract.
+    if (command === 'ai_key_read' || command === 'ui_state_load') return Promise.resolve(null);
     if (command === 'triggers_feed') return Promise.resolve([{ action: 'send', text: 'AUTO_TRIGGER_LEAK\r' }]);
     return Promise.resolve(true);
   },

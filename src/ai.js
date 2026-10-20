@@ -11,7 +11,7 @@
   let el, key = '', messages = [], attachment = null, pending = null, listener, renderFrame, resizeStart;
   let configOpen = false, mode = 'chat';
   let conversation = [], compactions = 0, activeContext = null, keyEndpoint = '', keyReady = Promise.resolve(), keyRevision = 0;
-  let keyDraftDirty = false;
+  let keyDraftDirty = false, keyRestoreState = 'idle';
   let dialogueGeneration = 0;
   let savingConfig = false, conversationOrigin = null;
   let recordsOpen = false, recordsRevision = 0, selectedRecord = null, selectedReplay = null;
@@ -54,6 +54,7 @@
     $('#ai-new').disabled = savingConfig;
     $('#ai-config').querySelectorAll('input').forEach(input => { input.disabled = busy; });
     if ($('#ai-forget-key')) $('#ai-forget-key').disabled = !!pending || savingConfig;
+    if ($('#ai-key-retry')) $('#ai-key-retry').disabled = busy || keyRestoreState === 'pending';
     $('#ai-settings').disabled = busy;
     if ($('#ai-memory-toggle')) $('#ai-memory-toggle').disabled = busy;
     syncRecordResume();
@@ -70,6 +71,7 @@
     $('#ai-settings').setAttribute('aria-expanded', String(configOpen));
     const cfg = settings(); $('#ai-provider').textContent = cfg.model || '配置模型后开始';
     renderContextSize();
+    renderKeyState();
   }
   function renderContextSize() {
     const node = $('#ai-context-size'); if (!node) return;
@@ -81,20 +83,44 @@
     node.title = '按文字估算，实际分词和服务用量可能不同；已压缩 ' + (compactions + (activeContext?.compactions || 0)) + ' 次';
     const meter = $('#ai-context-meter'); if (meter) { meter.value = Math.min(tokens, maximum); meter.max = maximum; }
   }
-  async function restoreKey() {
+  function renderKeyState() {
+    const note = $('#ai-key-state'); if (!note) return;
+    const state = $('#ai-endpoint')?.value.trim() === keyEndpoint ? keyRestoreState : 'idle';
+    note.textContent = state === 'pending' ? '正在读取应用本地加密密钥…'
+      : state === 'failed' ? '本地加密密钥读取失败；请重试读取或重新填写，现有密钥不会被空值覆盖。'
+      : state === 'ready' ? '已恢复此服务的应用本地加密密钥。'
+      : state === 'missing' ? '本地未保存此服务的密钥；升级用户请重新填写。无鉴权服务可留空。'
+      : state === 'session' ? '未读取已存密钥；密钥仅在本次运行中使用。'
+      : '未编辑密钥时，保存配置会保留此服务已有的本地加密密钥。';
+    const retry = $('#ai-key-retry'); if (retry) { retry.hidden = state !== 'failed'; retry.disabled = !!pending || savingConfig || !!fileRead || state === 'pending'; }
+  }
+  async function readStoredKey(endpoint) {
+    const value = await T.invoke('ai_key_read', { endpoint });
+    if (value !== null && typeof value !== 'string') throw new Error('Invalid local key response');
+    return value || '';
+  }
+  async function restoreKey(force = false) {
     const cfg = settings();
-    if (!cfg.endpoint || cfg.endpoint === keyEndpoint) return keyReady;
-    const revision = ++keyRevision; keyEndpoint = cfg.endpoint; key = '';
+    if (!cfg.endpoint || cfg.endpoint === keyEndpoint && !force) return keyReady;
+    const revision = ++keyRevision;
+    if (keyEndpoint !== cfg.endpoint) key = '';
+    keyEndpoint = cfg.endpoint; keyRestoreState = cfg.rememberKey ? 'pending' : 'session'; renderKeyState();
     keyReady = (async () => {
       if (!cfg.rememberKey) return;
       try {
-        const saved = await T.invoke('ai_key_read', { endpoint: cfg.endpoint });
+        const saved = await readStoredKey(cfg.endpoint);
         if (revision !== keyRevision) return;
-        key = typeof saved === 'string' ? saved : '';
+        key = saved; keyRestoreState = key ? 'ready' : 'missing';
         if (!keyDraftDirty && $('#ai-endpoint')?.value === cfg.endpoint) $('#ai-key').value = key;
-      } catch (_) { if (revision === keyRevision) status('无法读取已保存的密钥，请在 AI 配置中重新填写', true); }
+        if (!key && !keyDraftDirty && !pending && !savingConfig) status('本地未保存此服务的密钥，升级用户请重新填写；无鉴权服务可留空');
+      } catch (_) { if (revision === keyRevision) { keyRestoreState = 'failed'; status('无法读取应用本地加密密钥，请重试读取或重新填写；未发送空密钥', true); } }
+      finally { if (revision === keyRevision) renderKeyState(); }
     })();
     return keyReady;
+  }
+  function keyAvailable() {
+    if (keyRestoreState !== 'failed') return true;
+    configOpen = true; sync(); status('本地加密密钥读取失败，操作未发送。请重试读取，或重新填写密钥后保存', true); return false;
   }
   async function compactConversation(manual = false) {
     if (savingConfig) return false;
@@ -106,7 +132,8 @@
       || (current() === compactTab && nativeId(compactTab) === compactNative && (compactTab?._connectionGeneration || 0) === compactGeneration));
     pending = request; sync(); status('正在压缩较早上下文，最近对话会保留…');
     try {
-      await keyReady;
+      await restoreKey(); await keyReady;
+      if (!keyAvailable()) return false;
       if (window.AiMemoryFlush && conversationOrigin === memoryIdentity(compactTab)) {
         await AiMemoryFlush.flush({ messages: conversation, tab: memoryTab(compactTab), ...cfg, apiKey: key,
           requestId: request.id + '-memory', shouldContinue: compactAlive,
@@ -271,6 +298,7 @@
     try {
       await restoreKey();
       if (!stillValid()) return;
+      if (!keyAvailable()) return;
       const target = await journal().target(tab);
       if (!stillValid()) return;
       if (target.identity !== record.metadata.target.identity) { recordTargetCache = null; status('目标机器不匹配，恢复已取消，请确认连接后重试。', true); return; }
@@ -631,17 +659,27 @@
     const endpoint = $('#ai-endpoint').value.trim(), model = $('#ai-model').value.trim();
     const error = validate(endpoint, model); if (error) { status(error, true); return; }
     const previous = settings();
-    const nextKey = $('#ai-key').value.trim(), rememberKey = $('#ai-remember-key').checked;
+    let nextKey = $('#ai-key').value.trim();
+    const rememberKey = $('#ai-remember-key').checked, editedKey = keyDraftDirty;
     const contextWindow = window.AiContext?.windowSize($('#ai-context-window').value) || 32768;
     dialogueGeneration++; savingConfig = true; sync();
     try {
-      if (rememberKey && nextKey) await T.invoke('ai_key_write', { endpoint, apiKey: nextKey });
-      else await T.invoke('ai_key_delete', { endpoint });
-    } catch (_) { savingConfig = false; sync(); status('密钥无法保存到系统凭据库，配置尚未保存；请检查系统钥匙串或凭据服务', true); return; }
+      let alreadyStored = false;
+      if (!editedKey && endpoint === previous.endpoint && previous.rememberKey) {
+          await restoreKey(); await keyReady;
+          if (keyRestoreState === 'failed') throw new Error('Local key restore failed');
+          nextKey = keyEndpoint === endpoint ? key : ''; alreadyStored = true;
+      } else if (rememberKey && !editedKey) {
+        if (endpoint === previous.endpoint && keyEndpoint === endpoint && key) nextKey = key;
+        else { nextKey = await readStoredKey(endpoint); alreadyStored = true; }
+      }
+      if (rememberKey && nextKey && !alreadyStored) await T.invoke('ai_key_write', { endpoint, apiKey: nextKey });
+      else if (!rememberKey || editedKey && !nextKey) await T.invoke('ai_key_delete', { endpoint });
+    } catch (_) { savingConfig = false; sync(); status('配置尚未保存：无法读取或更新应用本地加密密钥。请重试读取，或明确重新填写密钥；现有密钥未被空值覆盖', true); return; }
     if (previous.endpoint !== endpoint || previous.model !== model) { dialogueGeneration++; messages = []; conversation = []; conversationOrigin = null; compactions = 0; attachment = null; renderMessages(); renderAttachment(); }
-    ++keyRevision; key = nextKey; keyEndpoint = endpoint; keyReady = Promise.resolve();
+    ++keyRevision; key = nextKey; keyEndpoint = endpoint; keyReady = Promise.resolve(); keyRestoreState = rememberKey ? key ? 'ready' : 'missing' : 'session';
     T.s.ai = { ...previous, width: settings().width, endpoint, model, contextWindow, rememberKey, autoCompact: $('#ai-auto-compact').checked }; T.persistSettings();
-    savingConfig = false; configOpen = false; sync(); status(rememberKey && key ? '配置已保存，密钥已保存到本机系统凭据库' : '配置已保存，未持久保存密钥'); if (!el.hidden) $('#ai-input').focus();
+    savingConfig = false; configOpen = false; sync(); status(rememberKey && key ? '配置已保存，密钥已保存在应用本地加密库' : '配置已保存，未持久保存密钥'); if (!el.hidden) $('#ai-input').focus();
   }
   async function ensureListener() {
     if (!listener) listener = Promise.resolve(T.listen('ai-chat-delta', event => {
@@ -660,7 +698,7 @@
         <header class="ai-head"><span class="ai-brand">${icon('sparkles')}<b>AI 助手</b></span><div class="ai-head-actions"><button id="ai-new" type="button" title="新对话" aria-label="新对话">${icon('plus')}</button><button id="ai-memory-toggle" type="button" title="长期记忆" aria-label="长期记忆">${icon('book') || '记忆'}</button><button id="ai-records-toggle" type="button" title="运行记录" aria-label="运行记录" aria-controls="ai-records" aria-expanded="false">${icon('output')}</button><button id="ai-settings" type="button" title="AI 配置" aria-label="AI 配置" aria-controls="ai-config">${icon('gear')}</button><button id="ai-close" type="button" title="关闭 AI 助手" aria-label="关闭 AI 助手">${icon('x')}</button></div></header>
         <div class="ai-model-line"><span class="ai-dot"></span><span id="ai-provider"></span><span>Chat Completions</span></div>
         <div class="ai-mode-row" aria-label="AI 工作模式"><button type="button" data-ai-mode="chat" aria-pressed="true">对话</button><button type="button" data-ai-mode="agent" aria-pressed="false">运维 Agent</button></div><div id="ai-agent-target" hidden></div>
-        <form id="ai-config" hidden autocomplete="off"><h3>连接你的 AI 服务</h3><label for="ai-endpoint">服务地址</label><input id="ai-endpoint" type="url" placeholder="https://ai.example.com/v1" spellcheck="false" maxlength="2048"><small>填写 Base URL 或完整 /chat/completions 地址</small><label for="ai-model">模型</label><input id="ai-model" placeholder="服务提供的模型名称" spellcheck="false" maxlength="200"><label for="ai-key">API Key <span>可选</span></label><input id="ai-key" type="password" placeholder="本地服务可留空" autocomplete="new-password" spellcheck="false" maxlength="4096"><label class="ai-check"><input id="ai-remember-key" type="checkbox" checked>保存密钥到本机系统凭据库</label><button id="ai-forget-key" type="button">删除此服务已保存的密钥</button><label for="ai-context-window">模型上下文窗口（tokens）</label><input id="ai-context-window" type="number" min="8192" max="2097152" step="1024" value="32768"><label class="ai-check"><input id="ai-auto-compact" type="checkbox" checked>接近上限时自动压缩较早上下文</label><small>普通对话仅在本次运行中保留；运维运行记录保存在本机，密钥不进入配置同步</small><button id="ai-save" class="primary" type="submit">保存配置</button></form>
+        <form id="ai-config" hidden autocomplete="off"><h3>连接你的 AI 服务</h3><label for="ai-endpoint">服务地址</label><input id="ai-endpoint" type="url" placeholder="https://ai.example.com/v1" spellcheck="false" maxlength="2048"><small>填写 Base URL 或完整 /chat/completions 地址</small><label for="ai-model">模型</label><input id="ai-model" placeholder="服务提供的模型名称" spellcheck="false" maxlength="200"><label for="ai-key">API Key <span>可选</span></label><input id="ai-key" type="password" placeholder="本地服务可留空" autocomplete="new-password" spellcheck="false" maxlength="4096"><label class="ai-check"><input id="ai-remember-key" type="checkbox" checked>保存密钥到应用本地加密库</label><small id="ai-key-storage-note" title="不会读取或删除旧系统密钥。加密库与本机解密材料同时被取得时，密钥仍可被恢复，详见使用说明。">应用在本机加密保存并自动解锁；升级后请重新填写旧 Key。</small><small id="ai-key-state" aria-live="polite"></small><button id="ai-key-retry" type="button" hidden>重试读取本地密钥</button><button id="ai-forget-key" type="button">删除此服务的本地加密密钥</button><label for="ai-context-window">模型上下文窗口（tokens）</label><input id="ai-context-window" type="number" min="8192" max="2097152" step="1024" value="32768"><label class="ai-check"><input id="ai-auto-compact" type="checkbox" checked>接近上限时自动压缩较早上下文</label><small>普通对话仅在本次运行中保留；运维运行记录保存在本机，密钥不进入配置同步</small><button id="ai-save" class="primary" type="submit">保存配置</button></form>
         <section id="ai-records" hidden aria-label="运维运行记录"><div class="ai-records-head"><h3>运行记录</h3><button id="ai-record-refresh" type="button">刷新</button><button id="ai-record-close" type="button" aria-label="关闭运行记录">${icon('x')}</button></div><p class="ai-record-privacy">命令与输出保存在本机，可能包含机器信息。恢复任务会重新核对连接，旧命令不会自动重放。</p><div id="ai-record-list" aria-label="最近运行的任务"></div><div id="ai-record-detail" aria-live="polite"></div><div class="ai-record-resume"><p id="ai-record-target-status"></p><button id="ai-record-resume" type="button" class="primary" disabled>在当前连接继续</button></div></section>
         <div id="ai-messages" aria-label="AI 对话"></div>
         <div class="ai-context-usage"><span id="ai-context-size"></span><button id="ai-compact" type="button">压缩上下文</button><meter id="ai-context-meter" min="0" max="32768" value="0" aria-label="上下文使用量（估算）"></meter></div>
@@ -673,24 +711,25 @@
       $('#ai-settings').onclick = () => { if (recordsOpen) setRecordsOpen(false); configOpen = !configOpen; if (configOpen) { dialogueGeneration++; this.fillConfig(); } sync(); if (configOpen) $('#ai-endpoint').focus(); };
       $('#ai-config').onsubmit = event => { event.preventDefault(); saveConfig(); };
       $('#ai-key').oninput = () => { keyDraftDirty = true; };
-      $('#ai-endpoint').oninput = () => { if ($('#ai-endpoint').value.trim() !== keyEndpoint) { $('#ai-key').value = ''; keyDraftDirty = true; } };
+      $('#ai-endpoint').oninput = () => { if ($('#ai-endpoint').value.trim() !== keyEndpoint) { $('#ai-key').value = ''; keyDraftDirty = false; } renderKeyState(); };
+      $('#ai-key-retry').onclick = async () => { if (pending || savingConfig) return; if ($('#ai-endpoint').value.trim() !== settings().endpoint) { status('请先保存此服务配置或重新填写密钥', true); return; } await restoreKey(true); };
       $('#ai-forget-key').onclick = async () => {
         if (pending || savingConfig) return;
         const endpoint = $('#ai-endpoint').value.trim();
         if (validate(endpoint, $('#ai-model').value.trim())) { status('请先填写有效的服务地址和模型', true); return; }
         dialogueGeneration++;
-        const revision = ++keyRevision, previousKey = key;
-        if (endpoint === keyEndpoint) { key = ''; keyReady = Promise.resolve(); }
+        const revision = endpoint === keyEndpoint ? ++keyRevision : keyRevision, previousKey = key, previousState = keyRestoreState;
+        if (endpoint === keyEndpoint) { key = ''; keyReady = Promise.resolve(); keyRestoreState = 'missing'; }
         savingConfig = true; sync();
         try {
           await T.invoke('ai_key_delete', { endpoint });
           if (revision !== keyRevision) return;
           if (endpoint === keyEndpoint) key = '';
           if ($('#ai-endpoint').value.trim() === endpoint) { $('#ai-key').value = ''; keyDraftDirty = true; }
-          status('此服务的本机密钥已删除');
+          status('此服务的应用本地加密密钥已删除；旧系统密钥未访问');
         } catch (_) {
-          if (revision === keyRevision && endpoint === keyEndpoint) key = previousKey;
-          status('无法删除系统凭据库中的密钥，请检查凭据服务', true);
+          if (revision === keyRevision && endpoint === keyEndpoint) { key = previousKey; keyRestoreState = previousState === 'pending' ? 'failed' : previousState; }
+          status('无法删除应用本地加密密钥，请重试；配置未更改', true);
         } finally { savingConfig = false; sync(); }
       };
       $('#ai-compact').onclick = () => compactConversation(true);
@@ -714,7 +753,7 @@
       grip.onkeydown = event => { if (!['ArrowLeft', 'ArrowRight', 'Home'].includes(event.key)) return; event.preventDefault(); this.setWidth(event.key === 'Home' ? 380 : settings().width + (event.key === 'ArrowLeft' ? 20 : -20)); };
       renderMessages(); renderAttachment(); this.fillConfig(); sync(); restoreKey();
     },
-    fillConfig() { if (!el) return; const cfg = settings(); keyDraftDirty = false; $('#ai-endpoint').value = cfg.endpoint; $('#ai-model').value = cfg.model; $('#ai-key').value = cfg.endpoint === keyEndpoint ? key : ''; $('#ai-remember-key').checked = cfg.rememberKey; $('#ai-context-window').value = cfg.contextWindow; $('#ai-auto-compact').checked = cfg.autoCompact; },
+    fillConfig() { if (!el) return; const cfg = settings(); keyDraftDirty = false; $('#ai-endpoint').value = cfg.endpoint; $('#ai-model').value = cfg.model; $('#ai-key').value = cfg.endpoint === keyEndpoint ? key : ''; $('#ai-remember-key').checked = cfg.rememberKey; $('#ai-context-window').value = cfg.contextWindow; $('#ai-auto-compact').checked = cfg.autoCompact; renderKeyState(); },
     setMode(value) { if (pending || savingConfig || !['chat', 'agent'].includes(value)) return false; if (mode !== value) { dialogueGeneration++; fileRead = null; } mode = value; sync(); status(mode === 'agent' ? '输入任务并运行后，Agent 会执行命令、读取结果并继续下一步' : '发送消息及附加内容；记忆检索由记忆设置控制'); return true; },
     onSessionChange() { if (fileRead && (current() !== fileRead.tab || nativeId(current()) !== fileRead.native || (current()?._connectionGeneration || 0) !== fileRead.connection)) { fileRead = null; status('机器已变化，已取消文件读取'); sync(); } window.OpsAgent?.checkTarget?.(); if (pending?.kind === 'resume-preflight' && !resumeTargetValid(pending)) { this.stop(); status('目标连接已变化，恢复已取消，请确认机器后重试。', true); } syncRecordResume(); renderTarget(); if (el && !pending && !savingConfig) $('#ai-send').disabled = !!fileRead || (mode === 'agent' && !canOperate(current())); },
     isOpen() { return !!el && !el.hidden; },
@@ -747,6 +786,7 @@
       if (error) { configOpen = true; this.fillConfig(); sync(); status(error, true); $('#ai-endpoint').focus(); return; }
       await restoreKey();
       if (pending || savingConfig || fileRead || generation !== dialogueGeneration) return;
+      if (!keyAvailable()) return;
       const sameTarget = () => current() === originTab && nativeId(originTab) === originNative && (originTab?._connectionGeneration || 0) === originGeneration;
       if ((mode === 'agent' || window.AiMemory?.isEnabled?.()) && !sameTarget()) { status('活动机器已变化，请确认目标后重新发送', true); return; }
       const prospective = [{ role: 'system', content: SYSTEM }, ...conversation, { role: 'user', content: question + (attachment?.content || '') }];

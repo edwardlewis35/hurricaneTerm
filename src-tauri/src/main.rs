@@ -1299,8 +1299,8 @@ pub fn run() {
         .manage(LogState::default())
         .manage(ai::AiState::default())
         .manage(agent_exec::AgentExecState::default())
-        .manage(credentials::Credentials::default())
         .setup(|app| {
+            app.manage(credentials::Credentials::new(app.path().app_config_dir()?.join("ai-secrets")));
             app.manage(memory::MemoryState::new(app.path().app_config_dir()?.join("ai-memory")));
             app.manage(harness_log::HarnessStore::new(app.path().app_config_dir()?.join("ai-runs")));
             Ok(())
