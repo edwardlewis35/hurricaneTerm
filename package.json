@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.12.0",
+  "version": "0.12.1",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
@@ -37,7 +37,9 @@
     "test:terminal-input-safety": "node scripts/terminal-input-safety-test.mjs",
     "test:ai-markdown": "node scripts/ai-markdown-test.mjs",
     "test:ai-agent-stream": "node scripts/ai-agent-stream-test.mjs",
-    "test:ai-markdown-ui": "node scripts/ai-markdown-ui-test.mjs"
+    "test:ai-markdown-ui": "node scripts/ai-markdown-ui-test.mjs",
+    "test:ai-command-policy": "node scripts/ai-command-policy-test.mjs",
+    "test:ai-readonly-approval": "node scripts/ai-readonly-approval-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

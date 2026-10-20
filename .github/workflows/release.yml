@@ -131,6 +131,8 @@ jobs:
           npm run test:ai-harness-agent
           npm run test:ai-harness-ui
           npm run test:ai-allow-remaining
+          npm run test:ai-command-policy
+          npm run test:ai-readonly-approval
           npm run test:ai-markdown
           npm run test:ai-agent-stream
           npm run test:ai-markdown-ui

@@ -60,6 +60,7 @@
 .ai-agent-approval-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .ai-agent-approval-actions button { margin: 0; }
 .ai-agent-approval-scope { color: var(--muted); }
+.ai-agent-readonly-note { color: var(--accent); font-size: 11px; margin: 8px 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); }
 .ai-agent-auto-note { color: var(--accent); font-size: 11px; margin: 8px 0; }
 #ai-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }

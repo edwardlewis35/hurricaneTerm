@@ -61,7 +61,7 @@
     $('#ai-context-output').disabled = busy;
     $('#ai-context-file').disabled = busy;
     if ($('#ai-compact')) $('#ai-compact').disabled = busy || !conversation.length;
-    if ($('#ai-confirm-commands')) { $('#ai-confirm-commands').checked = pending?.message?.allowRemainingCommands ? false : settings().confirmCommands; $('#ai-confirm-commands').disabled = busy; }
+    if ($('#ai-confirm-commands')) { $('#ai-confirm-commands').checked = pending?.message?.readOnlyAuto ? true : pending?.message?.allowRemainingCommands ? false : settings().confirmCommands; $('#ai-confirm-label').textContent = pending?.message?.readOnlyAuto ? '本任务：只读自动，修改前确认' : '每条命令执行前确认'; $('#ai-confirm-commands').disabled = busy; }
     el.dataset.aiMode = mode;
     el.querySelectorAll('[data-ai-mode]').forEach(button => { button.disabled = busy; button.classList.toggle('on', button.dataset.aiMode === mode); button.setAttribute('aria-pressed', String(button.dataset.aiMode === mode)); });
     $('#ai-input').placeholder = mode === 'agent' ? '描述要在当前机器完成的运维任务…' : '描述问题，Enter 发送…';
@@ -381,6 +381,7 @@
     article.append(content); host.append(article);
   }
   function renderSteps(message, host) {
+    if (message.readOnlyAuto) host.append(textNode('p', '本任务：只读查询自动执行，修改或无法判断的命令需确认', 'ai-agent-readonly-note'));
     if (message.allowRemainingCommands) host.append(textNode('p', '本任务已授权后续所有命令自动执行', 'ai-agent-auto-note'));
     const steps = document.createElement('div'); steps.className = 'ai-agent-steps';
     for (const entry of message.timeline?.length ? message.timeline : message.steps.map(step => ({ kind: 'command', step }))) {
@@ -401,6 +402,7 @@
       const summary = textNode('summary', '步骤 ' + step.index + ' · ' + outcome);
       summary.append(textNode('code', '$ ' + step.command.split('\n')[0].slice(0, 100))); card.append(summary);
       if (step.purpose) card.append(textNode('p', step.purpose, 'ai-step-purpose'));
+      if (step.effect) card.append(textNode('p', 'AI 判断：' + ({read_only:'只读',modify:'修改',unknown:'不确定'}[step.effect] || '不确定') + (step.effectReason ? ' · ' + step.effectReason : ''), 'ai-step-purpose ai-command-effect'));
       card.append(textNode('pre', step.command, 'ai-step-command'));
       if (step.output) card.append(textNode('pre', step.output, 'ai-step-output'));
       if (result) card.append(textNode('small', (result.durationMs || 0) + ' ms' + (result.truncated || result.contextTruncated || step.displayTruncated ? ' · 输出已截断' : '')));
@@ -410,16 +412,22 @@
     if (message.approval) {
       const approval = message.approval, box = document.createElement('div'); box.className = 'ai-agent-approval'; box.dataset.aiApproval = '';
       box.append(textNode('strong', approval.kind === 'memory-write' ? '保存长期记忆前确认' : '此操作需要确认'), textNode('p', approval.reasons.join('；')), textNode('pre', approval.command));
+      if (approval.kind !== 'memory-write') box.append(textNode('p', 'AI 判断：' + ({ read_only: '只读', modify: '修改', unknown: '不确定' }[approval.effect] || '不确定') + (approval.effectReason ? ' · ' + approval.effectReason : ''), 'ai-command-effect'));
       const yes = textNode('button', approval.kind === 'memory-write' ? '保存这条记忆' : '允许本次执行', 'primary'); yes.type = 'button'; yes.dataset.aiApprove = '';
       const no = textNode('button', '拒绝并停止'); no.type = 'button'; no.dataset.aiReject = '';
       const decide = value => { if (message.approval !== approval) return; message.approval = null; approval.resolve(value); renderMessages(); };
       const actions = document.createElement('div'); actions.className = 'ai-agent-approval-actions';
       yes.onclick = () => decide(true); no.onclick = () => decide(false); actions.append(yes);
       if (approval.kind !== 'memory-write') {
+        if (!approval.readOnlyAuto) {
+          const readOnly = textNode('button', '只读自动，修改确认'); readOnly.type = 'button'; readOnly.dataset.aiApproveReadonly = '';
+          readOnly.title = '仅本任务：AI 判断为只读且通过客户端基本检查的命令自动执行；当前及后续修改或无法判断的命令仍需单次确认';
+          readOnly.onclick = () => decide('read-only-auto'); actions.append(readOnly);
+        }
         const all = textNode('button', '以后全部执行'); all.type = 'button'; all.dataset.aiApproveAll = '';
         all.title = '仅本任务：允许当前及后续所有命令，不再逐条确认';
         all.onclick = () => decide('allow-remaining'); actions.append(all);
-        box.append(textNode('p', '“以后全部执行”仅授权当前任务，后续所有命令不再逐条确认。', 'ai-agent-approval-scope'));
+        box.append(textNode('p', '“只读自动，修改确认”仅对 AI 判断为只读且通过客户端基本检查的命令自动执行；修改、复合及分类缺失/无效的命令需确认。“以后全部执行”会授权当前任务的所有命令。', 'ai-agent-approval-scope'));
       }
       actions.append(no); box.append(actions); host.append(box);
     }
@@ -430,7 +438,10 @@
     if (event.type === 'session') { message.sessionId = event.sessionId; message.resumed = !!event.resumed; }
     if (event.type === 'status') status(event.message || event.text || '任务执行中…');
     if (event.type === 'approval-mode' && event.allRemaining === true) {
-      message.allowRemainingCommands = true; status('本任务后续命令自动执行，可随时停止'); sync(); scheduleRender();
+      message.allowRemainingCommands = true; message.readOnlyAuto = false; status('本任务后续命令自动执行，可随时停止'); sync(); scheduleRender();
+    }
+    if (event.type === 'approval-mode' && event.readOnlyAuto === true) {
+      message.readOnlyAuto = true; message.allowRemainingCommands = false; status('本任务只读查询自动执行；修改或无法判断的命令需确认'); sync(); scheduleRender();
     }
     if (event.type === 'context') { activeContext = event; renderContextSize(); }
     if (event.type === 'memory') {
@@ -450,7 +461,7 @@
     }
     if (event.type === 'analysis' && !message.timeline?.length) { message.content = String(event.purpose || event.text || event.content || '正在分析下一步…'); scheduleRender(); }
     if (event.type === 'command') {
-      const step = { id: event.requestId, index: event.index || message.steps.length + 1, command: terminalText(event.command).slice(0, 16000), purpose: String(event.purpose || ''), output: '', counts: { stdout: 0, stderr: 0 }, streamed: false, result: null };
+      const step = { id: event.requestId, index: event.index || message.steps.length + 1, command: terminalText(event.command).slice(0, 16000), purpose: String(event.purpose || ''), effect: event.effect || 'unknown', effectReason: event.effectReason || '', output: '', counts: { stdout: 0, stderr: 0 }, streamed: false, result: null };
       message.steps.push(step); if (message.timeline) message.timeline.push({ kind: 'command', step }); request.steps.set(event.requestId, step);
       mirror(request, '\n[AI 运维 · 步骤 ' + step.index + '] $ ' + step.command + '\n');
       status('正在执行步骤 ' + step.index); scheduleRender();
@@ -653,7 +664,7 @@
         <section id="ai-records" hidden aria-label="运维运行记录"><div class="ai-records-head"><h3>运行记录</h3><button id="ai-record-refresh" type="button">刷新</button><button id="ai-record-close" type="button" aria-label="关闭运行记录">${icon('x')}</button></div><p class="ai-record-privacy">命令与输出保存在本机，可能包含机器信息。恢复任务会重新核对连接，旧命令不会自动重放。</p><div id="ai-record-list" aria-label="最近运行的任务"></div><div id="ai-record-detail" aria-live="polite"></div><div class="ai-record-resume"><p id="ai-record-target-status"></p><button id="ai-record-resume" type="button" class="primary" disabled>在当前连接继续</button></div></section>
         <div id="ai-messages" aria-label="AI 对话"></div>
         <div class="ai-context-usage"><span id="ai-context-size"></span><button id="ai-compact" type="button">压缩上下文</button><meter id="ai-context-meter" min="0" max="32768" value="0" aria-label="上下文使用量（估算）"></meter></div>
-        <div class="ai-compose"><div id="ai-context" hidden></div><div class="ai-context-actions"><button id="ai-context-selection" type="button" title="预览并附加当前终端选中的文本">${icon('plus')}附加选区</button><button id="ai-context-output" type="button" title="预览并附加当前终端最近 80 行，最多 16000 字符">${icon('output')}最近输出</button><button id="ai-context-file" type="button" title="预览并附加本地 UTF-8 Markdown 文件，最多 64 KiB">${icon('file')}Markdown</button><input id="ai-file-picker" type="file" accept=".md,.markdown,text/markdown" hidden></div><label class="ai-check ai-step-confirm"><input id="ai-confirm-commands" type="checkbox" checked>每条命令执行前确认</label><textarea id="ai-input" aria-label="发送给 AI 的消息" placeholder="描述问题，Enter 发送…" rows="3" maxlength="16000"></textarea><div class="ai-compose-bottom"><span>Shift + Enter 换行</span><button id="ai-stop" type="button" hidden>停止生成</button><button id="ai-send" class="primary" type="button">${icon('arrowUp')}发送</button></div></div>
+        <div class="ai-compose"><div id="ai-context" hidden></div><div class="ai-context-actions"><button id="ai-context-selection" type="button" title="预览并附加当前终端选中的文本">${icon('plus')}附加选区</button><button id="ai-context-output" type="button" title="预览并附加当前终端最近 80 行，最多 16000 字符">${icon('output')}最近输出</button><button id="ai-context-file" type="button" title="预览并附加本地 UTF-8 Markdown 文件，最多 64 KiB">${icon('file')}Markdown</button><input id="ai-file-picker" type="file" accept=".md,.markdown,text/markdown" hidden></div><label class="ai-check ai-step-confirm"><input id="ai-confirm-commands" type="checkbox" checked><span id="ai-confirm-label">每条命令执行前确认</span></label><textarea id="ai-input" aria-label="发送给 AI 的消息" placeholder="描述问题，Enter 发送…" rows="3" maxlength="16000"></textarea><div class="ai-compose-bottom"><span>Shift + Enter 换行</span><button id="ai-stop" type="button" hidden>停止生成</button><button id="ai-send" class="primary" type="button">${icon('arrowUp')}发送</button></div></div>
         <div id="ai-status" role="status" aria-live="polite">发送消息及附加内容；记忆检索由记忆设置控制</div>`;
       $('#ai-close').onclick = () => this.close(); $('#ai-new').onclick = () => this.newChat();
       window.AiMemory?.mount?.(); $('#ai-memory-toggle').onclick = () => window.AiMemory?.open?.({ tab: current() });

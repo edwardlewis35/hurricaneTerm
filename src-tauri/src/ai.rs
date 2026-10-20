@@ -100,6 +100,12 @@ struct CommandArguments {
     #[serde(default)]
     timeout_seconds: Option<u64>,
     purpose: String,
+    // Advisory model metadata is consumed by the client policy, never a native
+    // grant of permission. Invalid/missing shapes fall back to confirmation.
+    #[serde(default, rename = "effect")]
+    _effect: Value,
+    #[serde(default, rename = "effectReason")]
+    _effect_reason: Value,
 }
 
 #[derive(Deserialize)]
@@ -235,13 +241,15 @@ fn agent_messages(messages: &[AiAgentMessage], memory_enabled: bool) -> Result<V
 fn command_tools(memory_enabled: bool) -> Value {
     let mut tools = json!([{"type": "function", "function": {
         "name": "run_command",
-        "description": "Run one shell command on the user-authorized, locked target machine. Inspect its real stdout, stderr and exit status before choosing a next step. Each command runs in an independent shell; use cwd explicitly. Never request interactive input, passwords or persistent daemons. Explain the purpose before each command.",
+        "description": "Run one shell command on the user-authorized, locked target machine. Inspect its real stdout, stderr and exit status before choosing a next step. Each command runs in an independent shell; use cwd explicitly. Never request interactive input, passwords or persistent daemons. Explain the purpose and classify the complete command effect before each command. Classification is advisory and never grants permission.",
         "parameters": {"type": "object", "additionalProperties": false, "properties": {
             "command": {"type": "string", "description": "Non-interactive shell command, at most 16 KiB UTF-8."},
             "cwd": {"type": "string", "description": "Optional working directory, at most 4096 UTF-8 bytes. cd does not persist between calls."},
             "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300, "description": "Command time limit in seconds; default 60."},
-            "purpose": {"type": "string", "description": "Brief user-visible reason for this command."}
-        }, "required": ["command", "purpose"]}
+            "purpose": {"type": "string", "description": "Brief user-visible reason for this command."},
+            "effect": {"type": "string", "enum": ["read_only", "modify", "unknown"], "description": "Classify the entire command: read_only only queries with no file, configuration, service, permission, network or remote-system mutation; modify changes state; unknown whenever unsure. This is not user authorization."},
+            "effectReason": {"type": "string", "maxLength": 1024, "description": "Optional brief user-visible evidence for the effect classification, at most 1024 UTF-8 bytes."}
+        }, "required": ["command", "purpose", "effect"]}
     }}]);
     if memory_enabled {
         tools.as_array_mut().expect("fixed array").extend([
@@ -976,12 +984,15 @@ mod tests {
         assert_eq!(body["tools"][0]["function"]["name"], "run_command");
         assert_eq!(body["tools"][0]["function"]["parameters"]["additionalProperties"], false);
         assert_eq!(body["tools"][0]["function"]["parameters"]["properties"]["timeoutSeconds"]["maximum"], 300);
+        assert_eq!(body["tools"][0]["function"]["parameters"]["properties"]["effect"]["enum"], json!(["read_only", "modify", "unknown"]));
+        assert_eq!(body["tools"][0]["function"]["parameters"]["required"], json!(["command", "purpose", "effect"]));
+        assert_eq!(body["tools"][0]["function"]["parameters"]["properties"]["effectReason"]["maxLength"], 1024);
         assert_eq!(body["tool_choice"], "auto"); assert!(body.get("parallel_tool_calls").is_none());
     }
 
     #[tokio::test]
     async fn agent_stream_aggregates_split_ids_names_arguments_and_interleaved_calls() {
-        let first = json!({"command": "printf '健康🙂'", "purpose": "Inspect host"}).to_string();
+        let first = json!({"command": "printf '健康🙂'", "purpose": "Inspect host", "effect": "read_only", "effectReason": "Display a literal diagnostic"}).to_string();
         let second = command("call-2");
         let cut = first.char_indices().nth(12).unwrap().0;
         let data = format!("{}{}{}{}{}data: [DONE]\n\n", frame("Inspecting host. "),
@@ -1055,6 +1066,14 @@ mod tests {
     #[test]
     fn agent_tool_arguments_utf8_bounds_types_and_extra_authority_are_rejected() {
         let good = command("call-1"); assert!(validate_tool(&good, false).is_ok());
+        // Classification is a client policy input, not an authority field. Keep
+        // old histories valid and preserve invalid advisory values for the client
+        // to downgrade to unknown, while extra execution-authority keys fail.
+        for effect in [json!("read_only"), json!("modify"), json!("unknown"), json!("READ_ONLY"), json!(true), json!({"readOnly": true}), Value::Null] {
+            let mut advisory = good.clone();
+            advisory.arguments = json!({"command":"ls", "purpose":"check", "effect":effect, "effectReason":"Query directory"}).to_string();
+            assert!(validate_tool(&advisory, false).is_ok());
+        }
         for args in [
             json!({"command":"ls", "purpose":"check", "sessionId":"other-machine"}),
             json!({"command":"ls", "purpose":"check", "timeoutSeconds":301}),
