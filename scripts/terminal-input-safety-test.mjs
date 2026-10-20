@@ -104,8 +104,8 @@ function stroke(tab, key, extra = {}) {
   // Browsers suppress keypress when keydown was canceled. Printable keys also
   // generate input, which xterm must not double-send after its keypress path.
   if (!event.defaultPrevented && key.length === 1 && !extra.ctrlKey && !extra.metaKey && !extra.altKey) {
-    keyboard(tab, 'keypress', key, extra);
-    tab.term.textarea.dispatchEvent(new w.InputEvent('input', { data: key, inputType: 'insertText', composed: true, bubbles: true }));
+    const pressed = keyboard(tab, 'keypress', key, extra);
+    if (!pressed.defaultPrevented) tab.term.textarea.dispatchEvent(new w.InputEvent('input', { data: key, inputType: 'insertText', composed: true, bubbles: true }));
   }
   keyboard(tab, 'keyup', key, extra);
   return event;
@@ -454,6 +454,19 @@ try {
     await expectWrites('I47 shifted shortcut ' + key + ' sends no terminal input', start, []);
     check('I48 shifted shortcut ' + key + ' prevents the browser default', event.defaultPrevented);
     owner[method] = previous;
+  }
+  // A real command/search action moves focus before the physical key is
+  // released. Keyup belongs to the new field, not the originating xterm.
+  for (const [key, selector] of [['P', '#palette-input'], ['F', '#search-input']]) {
+    TM.activate(a.id); await new Promise(resolve => w.requestAnimationFrame(resolve)); start = writes().length;
+    keyboard(a, 'keydown', key, { ctrlKey: true, shiftKey: true }); await settle();
+    check('I49 real ' + key + ' shortcut transfers focus to its own input', d.activeElement, d.querySelector(selector));
+    d.activeElement.dispatchEvent(new w.KeyboardEvent('keyup', { key, code: 'Key' + key, keyCode: key.charCodeAt(0), which: key.charCodeAt(0), bubbles: true }));
+    d.activeElement.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true }));
+    await settle();
+    check('I50 closing the actual ' + key + ' panel restores terminal focus', d.activeElement, a.term.textarea);
+    stroke(a, key, { shiftKey: true });
+    await expectWrites('I51 first uppercase ' + key + ' after a focus-moving shortcut is never swallowed', start, [{ id: a.ptyId, data: key }]);
   }
   check('I30 no JavaScript errors during real xterm input regressions', errors, []);
   console.log(`\nRESULT ${checks.length} passed, ${failures.length} failed, ${errors.length} JavaScript errors`);

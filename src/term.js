@@ -621,6 +621,10 @@
         if (tab._closing || this.tabs[tab.id] !== tab) return false;
         const key = ev.code || ev.key;
         for (const latch of ['_shortcutKey', '_reconnectKey']) {
+          // Opening a panel can move focus before keyup, so xterm may never
+          // receive that release. A fresh physical keydown starts a new stroke;
+          // held-key repeats remain consumed until release.
+          if (ev.type === 'keydown' && !ev.repeat && tab[latch] === key) tab[latch] = null;
           if (tab[latch] === key) {
             if (ev.type === 'keyup') { tab[latch] = null; return false; }
             if (ev.type === 'keypress' || ev.repeat) { ev.preventDefault(); ev.stopPropagation(); return false; }
