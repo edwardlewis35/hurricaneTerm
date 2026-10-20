@@ -57,3 +57,13 @@
 网络请求由原生后端发送，因此不依赖浏览器 CORS 配置。AI 不继承 GitHub 专用代理，不跟随接口重定向；如服务返回跳转，请填写最终接口地址。对话模式使用文本 Chat Completions；运维模式使用同一接口的原生 function/tool calling。不包含图像或原生 Anthropic/Responses 协议。
 
 接口格式参考：[创建 Chat Completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[流式增量格式](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events)。兼容性仍取决于具体服务，本项目测试使用本地受控服务，不代表已连接所有厂商模型。
+
+## Markdown 与流式显示
+
+AI 回复支持标题、列表、引用、表格、链接、行内代码和代码块。代码可以复制；仅完整回复中闭合的 Shell 单行代码块提供“插入终端”，不会添加回车。运维助手按模型分析、命令、实际输出、最终结论依次显示，流式文字不构成工具执行授权。停止或失败时保留已有内容并标注状态，后续请求不使用未完成回复。
+
+点击输入框上方“Markdown”选择 UTF-8 `.md` 或 `.markdown` 文件，文件须非空且不超过 64 KiB。可先查看排版、移除，再点击发送；文件内容按不可信参考数据传入，不自动执行其中命令。文件读取期间新建对话、关闭面板或切换机器会取消附加。纯文本原文用于上下文，排版不会修改文件。
+
+长期记忆管理保留 Markdown 原文编辑与保存，同时预览已保存原文和未保存草稿；记忆引用也可排版显示。原始 HTML 按文本显示，远程图片只显示说明和手动查看链接。
+
+验证：`npm run test:ai-markdown`、`npm run test:ai-agent-stream`、`npm run test:ai-markdown-ui`，另有记忆 UI 和终端输入回归。测试使用真实前端模块及受控本地传输，不访问用户模型账号。

@@ -75,7 +75,8 @@ w.UI = T.ui = { toast() {}, status() {}, log() {}, renderDock() {}, closeDock() 
     TM.tabs[id] = value; TM.order.push(id); return value;
   }
   const first = terminal('first'), second = terminal('second'); TM.active = first.id;
-  w.eval(read('ai.js')); const A = w.AiPanel;
+  w.eval(readFileSync(new URL('../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js', import.meta.url), 'utf8'));
+  w.eval(read('ai-markdown.js')); w.eval(read('ai.js')); const A = w.AiPanel;
   const q = selector => d.querySelector(selector), qa = selector => [...d.querySelectorAll(selector)];
   A.mount(q('#ai-panel')); A.open();
   const requests = name => calls.filter(([command]) => command === name).map(([, args]) => args.request);

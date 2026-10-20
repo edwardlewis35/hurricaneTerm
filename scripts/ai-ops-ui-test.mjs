@@ -84,6 +84,8 @@ const text = () => q('#ai-messages').textContent;
 let panel = q('#ai-panel');
 if (!panel) { panel = d.createElement('aside'); panel.id = 'ai-panel'; panel.hidden = true; q('#workspace').append(panel); }
 const style = d.createElement('style'); style.textContent = readFileSync(source + 'ai.css', 'utf8'); d.head.append(style);
+w.eval(readFileSync(new URL('../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js', import.meta.url), 'utf8'));
+w.eval(readFileSync(source + 'ai-markdown.js', 'utf8'));
 w.eval(readFileSync(source + 'ai.js', 'utf8'));
 const A = w.AiPanel;
 async function runTask(goal) {

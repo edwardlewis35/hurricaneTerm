@@ -1,7 +1,7 @@
 {
   "name": "hurricane-term",
   "private": true,
-  "version": "0.11.3",
+  "version": "0.12.0",
   "scripts": {
     "prepare-dist": "node scripts/prepare-dist.mjs",
     "tauri": "tauri",
@@ -34,13 +34,17 @@
     "test:ai-harness-agent": "node scripts/ai-harness-agent-test.mjs",
     "test:ai-harness-ui": "node scripts/ai-harness-ui-test.mjs",
     "test:ai-allow-remaining": "node scripts/ai-allow-remaining-test.mjs",
-    "test:terminal-input-safety": "node scripts/terminal-input-safety-test.mjs"
+    "test:terminal-input-safety": "node scripts/terminal-input-safety-test.mjs",
+    "test:ai-markdown": "node scripts/ai-markdown-test.mjs",
+    "test:ai-agent-stream": "node scripts/ai-agent-stream-test.mjs",
+    "test:ai-markdown-ui": "node scripts/ai-markdown-ui-test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-web-links": "^0.11.0",
-    "@xterm/xterm": "^5.5.0"
+    "@xterm/xterm": "^5.5.0",
+    "markdown-it": "15.0.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

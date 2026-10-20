@@ -50,7 +50,7 @@ function fixture({ holdKey = false, noHarness = false } = {}) {
       options.onEvent({ type: 'command', requestId: 'new-1', command: 'pwd', index: 1 });
       options.onEvent({ type: 'result', requestId: 'new-1', result: { stdout: '/fixture', stderr: '', exitCode: 0, durationMs: 3 } });
       return { status: 'complete', summary: 'Resumed verified result', commands: 1, compactions: 0 }; }, stop() {}, checkTarget() {} };
-  for (const file of ['icons.js', 'ai.js']) w.eval(readFileSync(new URL(file, source), 'utf8'));
+  for (const file of ['../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js', 'ai-markdown.js', 'icons.js', 'ai.js']) w.eval(readFileSync(new URL(file, source), 'utf8'));
   const A = w.AiPanel, q = selector => d.querySelector(selector);
   A.mount(q('#ai-panel')); A.open();
   const click = async selector => { assert.ok(q(selector), 'Missing ' + selector); q(selector).click(); await tick(); };

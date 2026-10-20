@@ -141,3 +141,34 @@
   .ai-welcome { padding-top: 10px; }
   #ai-status { padding-top: 5px; padding-bottom: 5px; }
 }
+/* Shared Markdown views use the active theme and never fetch remote media. */
+.ai-markdown { min-width: 0; overflow-wrap: anywhere; line-height: 1.75; user-select: text; }
+.ai-markdown > :first-child { margin-top: 0; }
+.ai-markdown > :last-child { margin-bottom: 0; }
+.ai-markdown :is(h1, h2, h3, h4, h5, h6) { color: var(--fg3); line-height: 1.45; margin: 16px 0 8px; font-weight: 600; }
+.ai-markdown h1 { font-size: 19px; } .ai-markdown h2 { font-size: 16px; } .ai-markdown h3 { font-size: 14px; }
+.ai-markdown :is(h4, h5, h6) { font-size: 12px; }
+.ai-markdown p { white-space: normal; margin: 7px 0; }
+.ai-markdown :is(ul, ol) { padding-left: 23px; margin: 8px 0; }
+.ai-markdown li { padding-left: 2px; margin: 3px 0; }
+.ai-markdown li > p { margin: 3px 0; }
+.ai-markdown blockquote { border-left: 3px solid var(--accent); margin: 10px 0; padding: 2px 11px; color: var(--fg2); background: var(--surface); }
+.ai-markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.ai-markdown :not(pre) > code { padding: 1px 4px; border-radius: 3px; background: var(--surface-hover); color: var(--fg3); font: .92em var(--font-mono); }
+.ai-markdown hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+.ai-markdown .ai-table-wrap { width: 100%; overflow-x: auto; margin: 10px 0; }
+.ai-markdown table { border-collapse: collapse; width: 100%; font-size: 11px; }
+.ai-markdown :is(th, td) { padding: 6px 9px; border: 1px solid var(--border); text-align: left; white-space: normal; min-width: 70px; }
+.ai-markdown th { background: var(--surface-hover); color: var(--fg3); font-weight: 600; }
+.ai-markdown pre { tab-size: 4; }
+.ai-markdown .ai-code pre { white-space: pre; overflow: auto; max-height: 360px; }
+.ai-model-reply { padding: 2px 0; }
+.ai-stream-state { display: block; color: var(--fg2); font-size: 10px; margin-top: 5px; }
+.ai-stream-state::before { content: ''; display: inline-block; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: var(--accent); }
+.ai-context-actions { flex-wrap: wrap; }
+#ai-file-picker[hidden] { display: none; }
+#ai-context .ai-markdown { padding-top: 7px; font-size: 11px; }
+#ai-context .ai-markdown :is(h1, h2, h3) { font-size: 13px; }
+#ai-context .ai-markdown .ai-code pre { white-space: pre; }
+.ai-memory-sources .ai-markdown { font-size: 11px; padding: 7px 0; max-height: 240px; overflow: auto; }
+#ai-record-detail .ai-markdown p { white-space: normal; }

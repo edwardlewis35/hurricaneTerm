@@ -64,7 +64,7 @@ function env(interceptor, { session = { protocol: 'ssh', host: 'fixture.invalid'
   check('A09 UI analysis events expose command purpose, not tool-round chain text', e.events.filter(value => value.type === 'analysis').every(value => value.purpose === '检查模拟环境' && !('content' in value)));
   check('A10 Each command/result has request ID, stable target and sequence', e.events.filter(value => ['command', 'result'].includes(value.type)).every(value => value.requestId && value.sessionId === 'native-original' && value.index >= 1 && value.target.tabId === 'ui-original'));
   check('A11 Target metadata does not contain API Key or machine credentials', !JSON.stringify(result.target).includes('fixture-key') && !('session' in result.target));
-  check('A12 Completion releases the sole output listener and running state', !e.agent.isRunning() && !e.agent.getTarget() && e.disposed() === 1 && e.listeners.size === 0);
+  check('A12 Completion releases both native output and model stream listeners and running state', !e.agent.isRunning() && !e.agent.getTarget() && e.disposed() === 2 && e.listeners.size === 0);
   e.close();
 }
 

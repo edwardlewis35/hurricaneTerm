@@ -3,9 +3,13 @@
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { readFileSync } from 'node:fs';
 import { webcrypto, createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 
 const source = readFileSync(new URL('../src/ai-memory.js', import.meta.url), 'utf8');
+const require = createRequire(import.meta.url);
+const markdownParser = readFileSync(require.resolve('markdown-it/browser'), 'utf8');
+const markdownSource = readFileSync(new URL('../src/ai-markdown.js', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../src/ai-memory.css', import.meta.url), 'utf8');
 const checks = [], errors = [];
 const check = (name, condition) => { assert.ok(condition, name); checks.push(name); console.log('PASS ' + name); };
@@ -67,7 +71,7 @@ function fixture(config = {}, options = {}) {
       }
       throw new Error('Unexpected IPC: ' + command);
     } };
-  w.eval(source); const A = w.AiMemory;
+  w.eval(markdownParser); w.eval(markdownSource); w.eval(source); const A = w.AiMemory;
   const q = selector => d.querySelector(selector), input = (selector, value) => { const n = q(selector); assert.ok(n, selector); n.value = value; n.dispatchEvent(new w.Event('input', { bubbles: true })); };
   const click = async selector => { assert.ok(q(selector), selector); q(selector).click(); await settle(); };
   return { w, d, A, T, calls, snapshots, documents, credentials, put, q, input, click, heldReads, heldWrites, heldLists,
@@ -229,6 +233,36 @@ try {
   await providerSwitch.click('#aim-config-toggle'); providerSwitch.input('#aim-key', ''); await providerSwitch.click('#aim-config-save');
   check('M59 Deliberately clearing a key removes the selected saved credential and runtime copy', !providerSwitch.credentials.has('https://provider-b.example/v1') && (await providerSwitch.A.getEmbeddingConfig()).apiKey === '');
 } finally { providerSwitch.close(); }
+const markdown = fixture();
+try {
+  const { A, q, input, click, T } = markdown, clipboard = [];
+  T.copyText = async value => { clipboard.push(value); };
+  const scope = await A.scopeFor(tab());
+  const original = '# Stored memory\n\n- first item\n\n```sh\nprintf preview-only\n```\n\n![remote image](https://tracker.invalid/pixel)\n\n<script>never run</script>';
+  markdown.put(scope, 'MEMORY.md', original);
+  await A.open({ tab: tab() }); await click('#aim-documents button');
+  check('M70 Opening a memory shows a real Markdown preview and preserves exact editable source', !q('#aim-preview').hidden && q('#aim-preview h1')?.textContent === 'Stored memory' && q('#aim-preview li')?.textContent === 'first item' && q('#aim-content').value === original && q('#aim-preview-toggle').getAttribute('aria-expanded') === 'true');
+  check('M71 Memory preview displays HTML/images as safe text and manual links only', !q('#aim-preview img, #aim-preview script') && q('#aim-preview').textContent.includes('<script>never run</script>') && q('#aim-preview .ai-image-placeholder a')?.href === 'https://tracker.invalid/pixel');
+  check('M72 Memory code is copyable but never offers terminal insertion', !!q('#aim-preview [data-ai-copy-code]') && !q('#ai-memory [data-ai-insert]'));
+  const writes = markdown.count('memory_write'), searches = markdown.count('memory_search'), reads = markdown.count('memory_get');
+  await click('#aim-preview [data-ai-copy-code]');
+  check('M73 Preview code copy preserves exact bytes without terminal/native write side effects', clipboard.at(-1) === 'printf preview-only' && markdown.count('memory_write') === writes && !markdown.calls.some(([command]) => ['write', 'write_binary', 'ai_chat'].includes(command)));
+  const draft = '## Edited draft\n\n| Key | Value |\n| --- | --- |\n| **answer** | `42` |\n\n[blocked](javascript:alert(1))';
+  input('#aim-content', draft);
+  const field = q('#aim-content'); field.focus(); field.setSelectionRange(2, 7);
+  field.dispatchEvent(new markdown.w.Event('input', { bubbles: true }));
+  check('M74 Preview follows the unsaved Markdown draft without changing focus or source selection', q('#aim-preview h2')?.textContent === 'Edited draft' && !!q('#aim-preview .ai-table-wrap table td strong') && q('#aim-content').value === draft && markdown.d.activeElement === field && field.selectionStart === 2 && field.selectionEnd === 7);
+  check('M75 Preview typing never saves or retrieves memory or makes unsafe links clickable', markdown.count('memory_write') === writes && markdown.count('memory_search') === searches && markdown.count('memory_get') === reads && !q('#aim-preview a[href]'));
+  await click('#aim-preview-toggle');
+  check('M76 Preview can be collapsed without hiding or discarding editable source', q('#aim-preview').hidden && q('#aim-preview-toggle').getAttribute('aria-expanded') === 'false' && !q('#aim-content').hidden && q('#aim-content').value === draft);
+  await click('#aim-preview-toggle');
+  check('M77 Reopening preview retains the current unsaved draft', !q('#aim-preview').hidden && q('#aim-preview h2')?.textContent === 'Edited draft');
+  await click('#aim-write');
+  check('M78 Saving stores original Markdown syntax rather than rendered preview text', markdown.documents.get(scope + ':MEMORY.md').content === draft && markdown.last('memory_write').request.content === draft && q('#aim-content').value === draft);
+  input('#aim-query', 'edited'); await click('#aim-search');
+  check('M79 Search excerpts use the same safe Markdown renderer without execution controls', q('#aim-results .aim-hit-preview h2')?.textContent === 'Edited draft' && !!q('#aim-results table') && !q('#aim-results [data-ai-insert], #aim-results img'));
+  check('M80 Preview layout uses theme tokens and scrollable bounded content', css.includes('.aim-preview') && css.includes('max-height: 340px') && css.includes('overflow: auto') && css.includes('var(--input-bg)'));
+} finally { markdown.close(); }
 const limits = fixture({ enabled: true, endpoint: 'https://limits.example/v1', model: 'embed-limits' });
 try {
   const scope = await limits.A.scopeFor(tab());

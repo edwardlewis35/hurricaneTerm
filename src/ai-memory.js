@@ -165,9 +165,22 @@
       if (currentDoc?.path === doc.path && currentDoc.scope === (doc.scope || selectedScope)) b.classList.add('on'); host.append(b);
     }
   }
+  function renderMarkdown(host, content) {
+    if (!host) return;
+    if (window.AiMarkdown?.render) {
+      window.AiMarkdown.render(host, content, { complete: true, onCopyCode: async code => {
+        try {
+          if (typeof T.copyText !== 'function') throw new Error('Clipboard unavailable');
+          await T.copyText(code); status('代码已复制');
+        } catch (_) { status('复制失败，请选择文本后复制', true); }
+      } });
+    } else host.textContent = String(content || '');
+  }
+  function renderEditorPreview() { renderMarkdown($('#aim-preview'), $('#aim-content')?.value || ''); }
   function editor(doc, isNew = false) {
     currentDoc = doc; $('#aim-path').value = doc.path; $('#aim-content').value = doc.content || '';
     $('#aim-original').textContent = isNew ? '新文档 · 保存后生效' : '原文 · ' + (doc.totalLines || String(doc.content || '').split('\n').length) + ' 行';
+    renderEditorPreview();
     $('#aim-editor').hidden = false; $('#aim-delete-confirm').hidden = true; dirty = isNew; renderDocuments(); sync();
   }
   async function loadDocument(scope, path) {
@@ -252,7 +265,8 @@
       if (!result.hits?.length) host.append(node('p', '没有找到相关记忆', 'aim-empty'));
       for (const hit of result.hits || []) {
         const card = node('article', null, 'aim-hit'); const b = button((hit.scope === 'global' ? '全局 · ' : '当前机器 · ') + hit.path + ':' + hit.startLine + '–' + hit.endLine, null, () => loadDocument(hit.scope, hit.path));
-        b.title = '读取原文'; card.append(b, node('pre', hit.snippet)); host.append(card);
+        const preview = node('div', null, 'aim-hit-preview ai-markdown'); renderMarkdown(preview, hit.snippet);
+        b.title = '读取原文'; card.append(b, preview); host.append(card);
       }
       showSearchMode(result);
     } catch (_) { if (view === generation) status('记忆检索未完成，请重试', true); }
@@ -344,7 +358,19 @@
     const docs = node('div', null, 'aim-documents'); docs.id = 'aim-documents'; const results = node('div', null, 'aim-results'); results.id = 'aim-results';
     const edit = node('section', null, 'aim-editor'); edit.id = 'aim-editor'; edit.hidden = true;
     const original = node('small'); original.id = 'aim-original'; edit.append(original);
-    field(edit, '记忆文件', 'aim-path'); const content = inputAttrs(node('textarea')); content.id = 'aim-content'; content.rows = 12; content.setAttribute('aria-label', '记忆 Markdown 原文'); edit.append(content);
+    field(edit, '记忆文件', 'aim-path');
+    const previewHead = node('div', null, 'aim-preview-head');
+    const previewToggle = button('收起预览', 'aim-preview-toggle', () => {
+      const preview = $('#aim-preview'); preview.hidden = !preview.hidden;
+      previewToggle.textContent = preview.hidden ? '显示预览' : '收起预览';
+      previewToggle.setAttribute('aria-expanded', String(!preview.hidden));
+      if (!preview.hidden) renderEditorPreview();
+    });
+    previewToggle.setAttribute('aria-controls', 'aim-preview'); previewToggle.setAttribute('aria-expanded', 'true');
+    previewHead.append(node('small', 'Markdown 预览'), previewToggle);
+    const preview = node('div', null, 'aim-preview ai-markdown'); preview.id = 'aim-preview'; preview.setAttribute('role', 'region'); preview.setAttribute('aria-label', '记忆 Markdown 预览');
+    const sourceLabel = node('label', '编辑 Markdown 原文'); sourceLabel.htmlFor = 'aim-content';
+    const content = inputAttrs(node('textarea')); content.id = 'aim-content'; content.rows = 12; content.setAttribute('aria-label', '记忆 Markdown 原文'); edit.append(previewHead, preview, sourceLabel, content);
     const editActions = node('div', null, 'aim-actions'); editActions.append(button('放弃草稿', 'aim-discard', async () => { dirty = false; if (currentDoc?.hash) { const doc = currentDoc; currentDoc = null; await loadDocument(doc.scope, doc.path); } else { currentDoc = null; $('#aim-editor').hidden = true; sync(); } }),
       button('删除', 'aim-delete', () => { $('#aim-delete-confirm').hidden = false; }), button('保存记忆', 'aim-write', saveDocument)); edit.append(editActions);
     const confirm = node('div', null, 'aim-confirm'); confirm.id = 'aim-delete-confirm'; confirm.hidden = true;
@@ -354,7 +380,7 @@
     el.append(head, scroll, footer); host.append(el);
     $('#aim-endpoint').oninput = () => { $('#aim-key').value = ''; keyDraftDirty = false; };
     $('#aim-key').oninput = () => { keyDraftDirty = true; };
-    for (const id of ['aim-path', 'aim-content']) $('#' + id).oninput = () => { dirty = true; sync(); };
+    for (const id of ['aim-path', 'aim-content']) $('#' + id).oninput = () => { dirty = true; if (id === 'aim-content') renderEditorPreview(); sync(); };
     el.onkeydown = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } };
     fillConfig(); sync(); status(lastStatus.value, lastStatus.error); return el;
   }

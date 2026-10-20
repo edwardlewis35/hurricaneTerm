@@ -84,7 +84,7 @@ let panel = q('#ai-panel');
 if (!panel) { panel = d.createElement('aside'); panel.id = 'ai-panel'; panel.hidden = true; q('#workspace').append(panel); }
 for (const file of ['ai.css']) { const style = d.createElement('style'); style.textContent = readFileSync(source + file, 'utf8'); style.dataset.file = file; d.head.append(style); }
 w.TextEncoder = TextEncoder;
-for (const file of ['ai-context.js', 'ai.js']) w.eval(readFileSync(source + file, 'utf8'));
+for (const file of ['../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js', 'ai-markdown.js', 'ai-context.js', 'ai.js']) w.eval(readFileSync(source + file, 'utf8'));
 const A = w.AiPanel;
 const send = async value => { input('#ai-input', value); await click('#ai-send'); return chats().at(-1); };
 const text = () => q('#ai-messages').textContent;
@@ -110,7 +110,7 @@ async function restartPanel(settings, { holdRead = false, holdWrite = false } = 
       if (command === 'ai_chat') { requests.push(args.request); return { content: 'Restart fixture completed' }; }
       return null;
     } };
-  for (const file of ['icons.js', 'ai-context.js', 'ai.js']) fw.eval(readFileSync(source + file, 'utf8'));
+  for (const file of ['../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js', 'ai-markdown.js', 'icons.js', 'ai-context.js', 'ai.js']) fw.eval(readFileSync(source + file, 'utf8'));
   const api = fw.AiPanel; api.mount(fd.querySelector('#ai-panel')); api.open(); await settle();
   return { w: fw, d: fd, api, requests, ipc, snapshots,
     async send(value) { fd.querySelector('#ai-input').value = value; await api.send(); await settle(); return requests.at(-1); },

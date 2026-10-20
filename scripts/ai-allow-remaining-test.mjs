@@ -196,7 +196,8 @@ function panel({ memory = false } = {}) {
     writeApproved: async () => { writes++; return { path: 'MEMORY.md', hash: 'saved' }; } };
   const q = selector => d.querySelector(selector), requests = name => calls.filter(([command]) => command === name).map(([, args]) => args.request);
   let host = q('#ai-panel'); if (!host) { host = d.createElement('aside'); host.id = 'ai-panel'; q('#workspace').append(host); }
-  w.eval(read('ai.js')); const A = w.AiPanel; A.mount(host); A.open(); A.setMode('agent');
+  w.eval(readFileSync(new URL('../node_modules/markdown-it/dist/browser/markdown-it.umd.min.js', import.meta.url), 'utf8'));
+  w.eval(read('ai-markdown.js')); w.eval(read('ai.js')); const A = w.AiPanel; A.mount(host); A.open(); A.setMode('agent');
   return {
     w, d, T, A, TM, tab, q, pending, requests, calls, snapshots, get writes() { return writes; },
     async send(goal) { await pause(10); const before = requests('ai_agent_step').length; q('#ai-input').value = goal; q('#ai-input').dispatchEvent(new w.Event('input', { bubbles: true })); q('#ai-send').click(); await until(() => requests('ai_agent_step').length > before, 'panel model'); return requests('ai_agent_step').at(-1); },
