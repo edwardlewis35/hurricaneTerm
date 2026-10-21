@@ -269,7 +269,33 @@ fn subprocess_writer_child() {
 #[test]
 fn invalid_root_paths_and_nonregular_files_are_rejected() {
     let temp = Temp::new(); assert!(LocalStore::new(PathBuf::from("relative/ai-secrets")).read("ignored").is_err());
-    assert!(LocalStore::new(temp.root.join("..")).read("ignored").is_err());
+    // PathBuf::join normalizes `..` after a Windows verbatim prefix, including
+    // canonicalize's output. Append raw OS text so the store receives traversal.
+    for parts in [&[".."][..], &["..", "ai-secrets"][..]] {
+        let mut raw = temp.root.as_os_str().to_os_string();
+        for part in parts { raw.push(std::path::MAIN_SEPARATOR.to_string()); raw.push(part); }
+        let traversal = PathBuf::from(raw);
+        assert!(traversal.is_absolute());
+        assert!(traversal.components().any(|part| matches!(part, Component::ParentDir)));
+        assert!(LocalStore::new(traversal).read("ignored").is_err());
+    }
+    assert!(LocalStore::new(PathBuf::new()).read("ignored").is_err());
+    let root_only: PathBuf = temp.root.components().take_while(|part| !matches!(part, Component::Normal(_))).collect();
+    assert!(root_only.is_absolute());
+    assert!(!root_only.components().any(|part| matches!(part, Component::Normal(_))));
+    assert!(LocalStore::new(root_only).read("ignored").is_err());
+    #[cfg(windows)] {
+        for raw in [r"C:ai-secrets", r"\ai-secrets"] {
+            let relative = PathBuf::from(raw); assert!(!relative.is_absolute());
+            assert!(LocalStore::new(relative).read("ignored").is_err());
+        }
+        for raw in [r"C:\vault\..\outside", r"\\?\C:\vault\..\outside", r"\\server\share\vault\..\outside", r"\\?\UNC\server\share\vault\..\outside"] {
+            let traversal = PathBuf::from(raw); assert!(traversal.is_absolute());
+            assert!(traversal.components().any(|part| matches!(part, Component::ParentDir)));
+            assert!(LocalStore::new(traversal).read("ignored").is_err());
+        }
+    }
+    assert!(!temp.root.exists());
     let ordinary = temp.parent.join("ordinary.txt"); fs::write(&ordinary, b"retained").unwrap();
     assert!(LocalStore::new(ordinary.join("ai-secrets")).read("ignored").is_err()); assert_eq!(fs::read(&ordinary).unwrap(), b"retained");
     for name in [KEY_FILE, VAULT_FILE, LOCK_FILE] {
