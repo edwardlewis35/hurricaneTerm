@@ -85,7 +85,7 @@ try {
   check('R11 Reconnect refreshes SFTP with new native identity without registering new IPC/input listeners', connectionChanges.at(-1)[1] === 'replacement-ssh' && listenCount === initialListeners && tab._inputSubscriptions.length === originalSubscriptions);
   key(tab, 'ArrowUp', { repeat: true });
   check('R12 Held triggering key cannot leak auto-repeat into a fast replacement connection', writes().length === beforeKeyWrites);
-  release(tab, 'ArrowUp'); tab.term.input('after-reconnect', true);
+  release(tab, 'ArrowUp'); tab.term.input('after-reconnect', true); await frame();
   check('R13 Later intentional input is sent to the replacement PTY', writes().at(-1)[1].id === 'replacement-ssh' && writes().at(-1)[1].data === 'after-reconnect');
   tab.term.resize(91, 31); await frame();
   check('R14 Resize uses dynamic native ID while UI IDs remain stable', calls.filter(([c]) => c === 'resize').at(-1)[1].id === 'replacement-ssh');
@@ -117,9 +117,9 @@ try {
   parent.term.input('trigger', true); await until(() => !parent._reconnecting);
   check('R21 Split reconnect preserves one top-level tab, both panes, ratio and sibling session', TM.workspaceTabs(parentId).length === 2 && TM.displayOrder().length === 1 && parent.workspaceId === workspace && sibling.ptyId === siblingNative && TM.workspaceState(parent).ratio === 63);
   check('R22 Reconnect-trigger input is never broadcast into a live sibling', writes().length === writesBeforeSync);
-  sibling.term.input('broadcast', true);
+  sibling.term.input('broadcast', true); await frame();
   check('R23 Later synchronized input uses both current native IDs', writes().slice(-2).some(([, a]) => a.id === parent.ptyId) && writes().slice(-2).some(([, a]) => a.id === siblingNative));
-  exit(parent); const beforeLiveInput = count('connect_ssh'); sibling.term.input('live-only', true);
+  exit(parent); const beforeLiveInput = count('connect_ssh'); sibling.term.input('live-only', true); await frame();
   check('R24 Broadcast skips an exited sibling without automatically reconnecting it', writes().at(-1)[1].id === siblingNative && count('connect_ssh') === beforeLiveInput);
   T.s.sync = false;
   const beforeCtrlW = count('connect_ssh'); TM.activate(parentId); key(parent, 'w', { ctrlKey: true }); await frame();
@@ -139,11 +139,11 @@ try {
   const local = await TM.create(null), beforeSpawn = count('spawn'); exit(local); local.term.input('ignored', true); await frame();
   check('R27 Local exit stays read-only with explicit new-tab guidance instead of unexpected restart', local.exited && count('spawn') === beforeSpawn && text(local).includes('新建标签'));
   await TM.close(local.id);
-  const pendingCompletion = await TM.create({ ...ssh }); let complete;
-  interceptor = command => command === 'complete_input' ? new Promise(resolve => { complete = resolve; }) : null;
-  key(pendingCompletion, 'Tab'); exit(pendingCompletion); const beforeStaleCompletion = writes().length;
-  complete({ start: 0, items: [{ value: 'stale-completion', info: '' }] }); await frame(); interceptor = null;
-  check('R28 Completion from a previous connection generation cannot write to the dead or replacement PTY', writes().length === beforeStaleCompletion && pendingCompletion.wrap.querySelector('.complete-pop').style.display === 'none');
+  const pendingCompletion = await TM.create({ ...ssh });
+  const beforeCompletion = count('complete_input'), beforeNativeTab = writes().length;
+  key(pendingCompletion, 'Tab'); release(pendingCompletion, 'Tab'); await frame();
+  exit(pendingCompletion); await TM.reconnect(pendingCompletion); await frame();
+  check('R28 Native Tab sends once without client completion or replay into a replacement PTY', count('complete_input') === beforeCompletion && writes().length === beforeNativeTab + 1 && writes().at(-1)[1].data === '\t');
   await TM.close(pendingCompletion.id);
   interceptor = command => command === 'connect_ssh' ? Promise.resolve().then(() => {
     event('pty-output', 'early-initial', 'early initial output\r\n'); event('pty-exit', 'early-initial'); return 'early-initial';

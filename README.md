@@ -26,9 +26,9 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 设置中的 [GitHub Gist 同步](docs/GIST_SYNC.md) 提供 Gist ID、访问 Token 和加密密钥，支持 Tabby Cloud Sync Settings 的文件名、V1 读取和 V2 加密格式。同步机器连接前展示差异并确认，保留云端其他设置；默认排除本机密码和私钥内容。
 
-[AI 助手](docs/AI_ASSISTANT.md) 位于终端右侧，工具栏按钮可开合，宽度可拖动。支持自定义 Chat Completions 兼容服务地址、模型和可选 API Key，包括本地服务；提供流式回答、停止生成、新对话、主动附加选区/最近输出预览。密钥可保存在本机系统凭据库，普通聊天只在当前运行中保留。上下文显示估算占用，支持手动与自动模型摘要压缩。运维模式默认逐命令确认，可关闭普通命令确认；危险操作仍强制确认。命令和输出先于最终总结，完成后返回原目标终端输入；任务持续运行到完成或停止，不再固定思考轮数。
+[AI 助手](docs/AI_ASSISTANT.md) 位于终端右侧，工具栏按钮可开合，宽度可拖动。支持自定义 Chat Completions 兼容服务地址、模型和可选 API Key，包括本地服务；提供流式回答、停止生成、新对话、主动附加选区/最近输出预览。AI 回复、记忆文件和记忆引用支持 Markdown 排版；可预览并附加本地 UTF-8 `.md`/`.markdown` 文件（最多 64 KiB），点击发送后才进入上下文。普通对话及运维分析均支持流式显示，未完成代码块不能插入终端。AI 与 Embedding 密钥由应用加密保存在本机并自动解锁，不调用系统钥匙串；升级后需要重新填写旧 Key，普通聊天只在当前运行中保留。上下文显示估算占用，支持手动与自动模型摘要压缩。运维模式默认逐命令确认，可关闭普通命令确认；确认区提供「只读自动，修改确认」：模型随命令返回只读/修改/不确定分类，客户端解析后，仅 AI 判断为只读且通过基本检查的命令自动执行；修改、未知或分类无效均单独确认。也保留「以后全部执行」，显式授权当前任务剩余所有命令连续执行；任务授权不沿用到新任务或恢复任务。命令和输出先于最终总结，完成后返回原目标终端输入；任务持续运行到完成或停止，不再固定思考轮数。
 
-[AI 长期记忆](docs/AI_MEMORY.md) 参考 OpenClaw，提供当前机器/全局 Markdown 记忆、SQLite 混合检索、文件与行号来源、自定义独立 Embedding 地址/模型/系统凭据密钥。记忆默认关闭；开启后可自动召回，接口异常明确显示关键词降级。回复可先生成记忆草稿，Agent 写记忆始终逐次确认；压缩前自动整理并追加当日记忆需单独开启。跨机器隔离，记忆库不随 Gist 机器同步上传。
+[AI 长期记忆](docs/AI_MEMORY.md) 参考 OpenClaw，提供当前机器/全局 Markdown 记忆、SQLite 混合检索、文件与行号来源、自定义独立 Embedding 地址/模型/应用本地加密密钥。记忆默认关闭；开启后可自动召回，接口异常明确显示关键词降级。回复可先生成记忆草稿，Agent 写记忆始终逐次确认；压缩前自动整理并追加当日记忆需单独开启。跨机器隔离，记忆库不随 Gist 机器同步上传。
 
 [运维 Agent](docs/OPS_AGENT.md) 在右侧面板切换启用，支持 SSH 和本地机器。描述任务后，模型通过 `run_command` 调用独立执行通道，读取真实输出、退出码与超时状态，再决定修正、继续检查或总结。目标锁定到启动时的连接，切换标签不会改变目标；支持逐步记录、停止和已知高影响命令的单次确认。模型服务需支持原生工具调用；每条命令是独立 Shell，使用连接用户权限，不继承交互终端的 `cd` 或环境变量。
 
@@ -55,7 +55,7 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 | 会话管理（JSON 持久化，folder/command/args/host/port/user/proxy/jumpHost） | ✅ |
 | SFTP 独立双栏文件管理、文件编辑与可控传输队列 | ✅ |
 | 发送窗格 + 同步输入广播 | ✅ |
-| 查找（Ctrl+F）、缩放（Ctrl±）、全屏（F11） | ✅ |
+| 查找（Ctrl+Shift+F / ⌘F）、缩放（Ctrl±）、全屏（F11） | ✅ |
 | SSH（russh 实连，支持跳板机 direct-tcpip）/ Telnet（协商引擎）/ 串口（termios 直驱）/ TCP（直连·Socks5·HTTP CONNECT·ProxyCommand） | ✅ |
 | 本地会话落盘日志、选中自动复制 + 右键/中键粘贴、输出内置高亮 | ✅ |
 | X/Y/Zmodem、端口转发隧道、传输队列（引擎已完成，待接线到命令层） | ⏳ |
@@ -65,7 +65,7 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 [统一传输队列与 X/Y/ZMODEM](docs/XYZMODEM.md)：工具栏“传输队列”（Ctrl/Cmd+4）集中查看 SFTP 与终端文件传输，提供分类筛选、实时进度、速度、详细错误和取消/重试。SFTP 支持暂停/继续；X/Y/ZMODEM 手动选择当前连接与收发方向，同一终端串行，二进制数据直接进入协议通道，传输期间暂停普通键盘及运维命令。应用内置协议实现，无需本机安装 `rz/sz`，对端需要对应收发程序。Telnet 和 Windows 本地 ConPTY 暂不支持。
 
-点击标题栏文件夹按钮或按 `Ctrl+2` 打开文件管理。界面参考 [Tabby-SFTP-Plus](https://github.com/10D24D/Tabby-SFTP-Plus)，由本项目独立实现，使用现有 SSH 会话的 SFTP 子系统。
+点击标题栏文件夹按钮或在终端按 `Ctrl+Shift+2` / `⌘2` 打开文件管理。界面参考 [Tabby-SFTP-Plus](https://github.com/10D24D/Tabby-SFTP-Plus)，由本项目独立实现，使用现有 SSH 会话的 SFTP 子系统。
 
 - 本地 / 远程双栏，支持左右、上下、自适应和远程单栏布局；窗口可拖动、缩放、最大化，分栏比例可调。
 - 每栏独立的路径、前进 / 后退、上级 / 主目录、刷新、筛选、隐藏文件和列排序；支持多选、范围选择及键盘操作。
@@ -92,11 +92,13 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 前端验证：`npm run test:sftp` 和 `npm run test:ui`。后端安全测试：`cargo test sftp_safety_tests`、`cargo test files::tests`（需要构建依赖）。
 控件与终端回归：`npm run test:controls`、`npm run test:terminal`。独立透明度、工具浮窗与标签、macOS 窗口按钮、图标格式回归：`npm run test:appearance`、`npm run test:layout`、`npm run test:mac-controls`、`npm run test:icons`。快速连接与连续标题栏：`npm run test:quick-connect`、`npm run test:header`。发布 CI 额外在 macOS 运行真实 PTY 的空闲 / 连续输出 / 忽略 HUP 关闭测试，以及跨字节读取的 UTF-8 测试。
 
+终端输入安全修复与边界见 [审计说明](docs/TERMINAL_INPUT_SAFETY.md)。新增 `npm run test:terminal-input-safety` 和原生 `ssh_live::shell_input_safety_tests`：移除认证后默认自动密码/回车，统一顺序队列、失败提示、粘贴目标与二进制输入。活终端内 Ctrl 字母键和 F2/F3/F11 留给远端程序，应用操作使用 Ctrl+Shift 或 macOS ⌘，也可点击工具按钮。
+
 连接菜单与报错/复制回归：`npm run test:connections`、`npm run test:connection-feedback`；原生错误与SSH失败场景：`cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests`、`cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests`。
 
 AI 前端回归：`npm run test:ai`、`npm run test:ai-agent`、`npm run test:ai-ops`；原生命令测试：`cargo test --manifest-path src-tauri/Cargo.toml agent_exec::tests`；原生传输测试：`cargo test --manifest-path src-tauri/Cargo.toml ai::tests`。后者使用真实本地 HTTP mock，不访问用户模型账号。
 
-长期记忆回归：`npm run test:ai-memory`、`npm run test:ai-memory-integration`；原生记忆测试：`cargo test --manifest-path src-tauri/Cargo.toml memory::tests`。测试使用临时记忆库和受控传输，不访问用户真实记忆或模型账号；实际端点与系统凭据库仍需按[验证范围](docs/AI_MEMORY.md#验证范围)验收。
+长期记忆回归：`npm run test:ai-memory`、`npm run test:ai-memory-integration`；原生记忆测试：`cargo test --manifest-path src-tauri/Cargo.toml memory::tests`。测试使用临时记忆库和受控传输，不访问用户真实记忆或模型账号；实际端点与本机密钥库仍需按[验证范围](docs/AI_MEMORY.md#验证范围)验收。
 
 ## 构建
 
@@ -225,4 +227,4 @@ src-tauri/      Rust 后端
 
 Apache-2.0（见 [LICENSE](LICENSE)）。hurricaneTerm 是独立项目，代码与本仓库内全部实现均为原创。
 
-AI Harness 回归：`npm run test:ai-harness`、`npm run test:ai-harness-agent`、`npm run test:ai-harness-ui`；原生日志测试：`cargo test --locked --manifest-path src-tauri/Cargo.toml harness_log::tests`。
+AI Harness 回归：`npm run test:ai-harness`、`npm run test:ai-harness-agent`、`npm run test:ai-harness-ui && npm run test:ai-allow-remaining`；原生日志测试：`cargo test --locked --manifest-path src-tauri/Cargo.toml harness_log::tests`。

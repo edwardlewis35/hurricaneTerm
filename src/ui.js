@@ -267,7 +267,7 @@
       const groups = {};
       for (const s of (T.s.sessions || [])) (groups[s.folder || '（未分组）'] ||= []).push(s);
       let html = `<div class="pane-head"><span>会话</span>
-        <span><button id="sess-add" title="机器管理 (Ctrl+M)">管理</button><button id="sess-refresh" title="刷新">⟳</button></span></div>`;
+        <span><button id="sess-add" title="机器管理 (Ctrl+Shift+M / ⌘M)">管理</button><button id="sess-refresh" title="刷新">⟳</button></span></div>`;
       for (const g of Object.keys(groups).sort()) {
         html += `<div class="grp">▸ ${g}</div>`;
         for (const s of groups[g]) {
@@ -361,7 +361,7 @@
       body.innerHTML = `<div class="pane-head"><span>文件管理</span></div>
         <div class="sender"><b>${escapeHtml(connected ? tab.title : '本地文件')}</b>
         <p class="dim">独立双栏文件管理，支持书签、筛选、文件编辑与传输队列。</p>
-        <button class="primary" id="open-sftp-panel">打开文件管理 (Ctrl+2)</button></div>`;
+        <button class="primary" id="open-sftp-panel">打开文件管理 (Ctrl+Shift+2)</button></div>`;
       body.querySelector('#open-sftp-panel').onclick = () => window.SftpPanel && SftpPanel.open();
     },
 
@@ -501,14 +501,14 @@
       catch (e) { this.toast('复制失败：' + e, 3000, 'err'); }
     },
     async paste() {
+      const t = T.term.activeTab();
+      if (!t) return;
+      const nativeId = T.term.ptyId(t), generation = t._connectionGeneration || 0;
       try {
         const txt = await navigator.clipboard.readText();
-        const t = T.term.activeTab();
-        if (t && txt) {
-          if (T.term.isLive && !T.term.isLive(t)) { if (t.exited) T.term.reconnect?.(t); return; }
-          await T.invoke('write', { id: T.term.ptyId ? T.term.ptyId(t) : t.id, data: txt });
-        }
-      } catch (e) { this.toast('粘贴请用 Ctrl+Shift+V（WebKit 剪贴板限制）', 3000, 'err'); }
+        if (T.term.ptyId(t) !== nativeId || (t._connectionGeneration || 0) !== generation) return;
+        T.term.paste(t, txt);
+      } catch (_) { this.toast('读取剪贴板失败，请使用系统粘贴重试', 3000, 'err'); }
     },
 
     /* ---------- mode / sync / view ---------- */
@@ -564,21 +564,21 @@
       const add = (group, label, keys, icon, run) => A.push({ group, label, keys, icon, run });
       const S = () => window.Settings;
 
-      add('会话', '新建本地会话', 'Ctrl+T', 'plus', () => T.term.newLocal());
+      add('会话', '新建本地会话', 'Ctrl+Shift+T / ⌘T', 'plus', () => T.term.newLocal());
       add('会话', '打开主页', '', 'home', () => T.term.openHome());
-      add('会话', '机器管理…', 'Ctrl+M', 'server', () => this.openProfiles());
+      add('会话', '机器管理…', 'Ctrl+Shift+M / ⌘M', 'server', () => this.openProfiles());
       add('会话', '添加机器…', '', 'server', () => this.editProfile(null));
       add('会话', '把当前会话另存为机器…', '', 'copy', () => this.editProfile(T.term.activeTab() && T.term.activeTab().session));
-      add('会话', '关闭当前会话', 'Ctrl+W', 'x', () => T.term.active && (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)));
+      add('会话', '关闭当前会话', '⌘W（其他平台点击标签关闭）', 'x', () => T.term.active && (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)));
       add('会话', '关闭其他会话', '', 'x', () => T.term.active && T.term.closeOthers(T.term.active));
       add('会话', '重命名当前标签', 'F2', 'output', () => window.TabBar && TabBar.renameActive());
 
-      add('窗格', '切换工具窗口', 'Ctrl+B', 'folder', () => this.toggleDock());
+      add('窗格', '切换工具窗口', 'Ctrl+Shift+B / ⌘B', 'folder', () => this.toggleDock());
       add('窗格', 'AI 助手', '', 'sparkles', () => setTimeout(() => window.AiPanel?.toggle(), 0));
       add('文件', '新建 X/Y/ZMODEM 传输', '', 'transfer', () => setTimeout(() => window.ModemTransfer?.open(), 0));
       for (let i = 0; i < PANES.length; i++) {
         const [id, label] = PANES[i];
-        add('窗格', '工具窗口：' + label, 'Ctrl+' + (i + 1), 'folder', () => this.setDockPane(id));
+        add('窗格', '工具窗口：' + label, 'Ctrl+Shift+' + (i + 1), 'folder', () => this.setDockPane(id));
       }
 
       add('分屏', '左右分屏', 'Ctrl+Shift+E', 'splitH', () => T.term.splitActive('right'));
@@ -589,13 +589,13 @@
       add('编辑', '复制选中', 'Ctrl+Shift+C', 'copy', () => this.copy());
       add('编辑', '粘贴', 'Ctrl+Shift+V', 'send', () => this.paste());
       add('编辑', '全选', '', 'output', () => { const t = T.term.activeTab(); if (t) t.term.selectAll(); });
-      add('编辑', '查找…', 'Ctrl+F', 'search', () => this.openSearch());
+      add('编辑', '查找…', 'Ctrl+Shift+F / ⌘F', 'search', () => this.openSearch());
       add('编辑', '查找下一个', 'F3', 'search', () => this.doSearch(true));
       add('编辑', '查找上一个', 'Shift+F3', 'search', () => this.doSearch(false));
       add('编辑', '滚动到顶部 / 底部', 'Ctrl+Home', 'up', () => { const t = T.term.activeTab(); if (t) t.term.scrollToTop(); });
 
-      add('视图', '放大字号', 'Ctrl+=', 'zoomIn', () => T.term.zoom(1));
-      add('视图', '缩小字号', 'Ctrl+-', 'zoomOut', () => T.term.zoom(-1));
+      add('视图', '放大字号', 'Ctrl+Shift+=', 'zoomIn', () => T.term.zoom(1));
+      add('视图', '缩小字号', 'Ctrl+Shift+-', 'zoomOut', () => T.term.zoom(-1));
       add('视图', '重置字号', '', 'zoomOut', () => T.term.zoomReset());
       add('视图', '全屏切换', 'F11', 'maximize', () => this.toggleFullscreen());
       add('视图', '深浅色一键切换', '', 'theme', () => this.cycleTheme());
@@ -700,57 +700,56 @@
   window.WT.ui = UI;
 
   /* ---------- 全局快捷键 ---------- */
-  document.addEventListener('keydown', (e) => {
-    const k = e.key;
+  UI.handleKeyDown = (e, fromTerminal = null) => {
+    const k = e.key, lower = String(k).toLowerCase();
+    const terminal = fromTerminal == null ? !!e.target?.closest?.('.xterm') : fromTerminal;
     const mod = e.ctrlKey || e.metaKey;
-    const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '');
-
-    if (mod && e.shiftKey && (k === 'P' || k === 'p')) { e.preventDefault(); UI.openPalette(); return; }
-    if (mod && e.shiftKey && (k === 'E' || k === 'e')) { e.preventDefault(); T.term.splitActive('right'); return; }
-    if (mod && e.shiftKey && (k === 'D' || k === 'd')) { e.preventDefault(); T.term.splitActive('down'); return; }
-    if (mod && e.shiftKey && (k === 'W' || k === 'w')) { e.preventDefault(); T.term.unsplit(); return; }
-    if (mod && e.shiftKey && (k === 'C' || k === 'c')) { e.preventDefault(); UI.copy(); return; }
-    if (mod && e.shiftKey && (k === 'V' || k === 'v')) { e.preventDefault(); UI.paste(); return; }
-    if (mod && !e.shiftKey && (k === 't' || k === 'T')) { e.preventDefault(); T.term.newLocal(); return; }
-    if (mod && !e.shiftKey && (k === 'w' || k === 'W')) { e.preventDefault(); if (T.term.active) (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)); return; }
-    if (mod && !e.shiftKey && (k === 'f' || k === 'F')) { e.preventDefault(); UI.openSearch(); return; }
-    if (mod && !e.shiftKey && (k === 'b' || k === 'B')) { e.preventDefault(); UI.toggleDock(); return; }
-    if (mod && !e.shiftKey && (k === 'm' || k === 'M')) { e.preventDefault(); UI.openProfiles(); return; }
-    if (mod && !e.shiftKey && k === ',') { e.preventDefault(); UI.closeDock(); window.Settings ? Settings.toggle() : null; return; }
-    if (mod && (k === '=' || k === '+')) { e.preventDefault(); T.term.zoom(1); return; }
-    if (mod && k === '-') { e.preventDefault(); T.term.zoom(-1); return; }
-    // Ctrl+1..6 → 侧栏窗格
-    if (mod && !e.shiftKey && k >= '1' && k <= '6') {
-      e.preventDefault();
-      if (k === '2' && window.SftpPanel) { UI.closeDock(); SftpPanel.toggle(); return; }
-      if (k === '4' && window.TransferQueue) { UI.closeDock(); TransferQueue.toggle(); return; }
-      const p = PANES[+k - 1];
-      if (p) UI.setDockPane(p[0]);
-      return;
+    const appMod = e.metaKey || (e.ctrlKey && (!terminal || e.shiftKey));
+    const digit = /^Digit[1-6]$/.test(e.code || '') ? e.code.slice(-1) : k;
+    const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName || '');
+    const act = fn => { e.preventDefault(); e.stopPropagation(); fn(); return true; };
+    if (e.isComposing || e.keyCode === 229 || e.altKey) return false;
+    if (mod && e.shiftKey) {
+      if (lower === 'p') return act(() => UI.openPalette());
+      if (lower === 'e') return act(() => T.term.splitActive('right'));
+      if (lower === 'd') return act(() => T.term.splitActive('down'));
+      if (lower === 'w') return act(() => T.term.unsplit());
+      if (lower === 'c') return act(() => UI.copy());
+      if (lower === 'v') return act(() => UI.paste());
     }
-    if (k === 'F11') { e.preventDefault(); UI.toggleFullscreen(); return; }
-    if (k === 'F3') { e.preventDefault(); UI.doSearch(!e.shiftKey); return; }
-
-    const pal = $('#palette');
-    const sf = $('#search-float');
+    if (appMod) {
+      if (lower === 't') return act(() => T.term.newLocal());
+      if (lower === 'w') return act(() => { if (T.term.active) (T.term.closeTab ? T.term.closeTab(T.term.active) : T.term.close(T.term.active)); });
+      if (lower === 'f') return act(() => UI.openSearch());
+      if (lower === 'b') return act(() => UI.toggleDock());
+      if (lower === 'm') return act(() => UI.openProfiles());
+      if (k === ',' || (e.shiftKey && e.code === 'Comma')) return act(() => { UI.closeDock(); window.Settings?.toggle(); });
+      if (k === '=' || k === '+') return act(() => T.term.zoom(1));
+      if (k === '-' || (e.shiftKey && e.code === 'Minus')) return act(() => T.term.zoom(-1));
+      if (digit >= '1' && digit <= '6') return act(() => {
+        if (digit === '2' && window.SftpPanel) { UI.closeDock(); SftpPanel.toggle(); return; }
+        if (digit === '4' && window.TransferQueue) { UI.closeDock(); TransferQueue.toggle(); return; }
+        const p = PANES[+digit - 1]; if (p) UI.setDockPane(p[0]);
+      });
+    }
+    if (!terminal && k === 'F11') return act(() => UI.toggleFullscreen());
+    if (!terminal && k === 'F3') return act(() => UI.doSearch(!e.shiftKey));
+    const pal = $('#palette'), sf = $('#search-float');
     if (pal && !pal.hidden) {
-      if (k === 'Escape') { e.preventDefault(); UI.closePalette(); }
-      else if (k === 'ArrowDown') { e.preventDefault(); UI.paletteMove(1); }
-      else if (k === 'ArrowUp') { e.preventDefault(); UI.paletteMove(-1); }
-      else if (k === 'Enter') { e.preventDefault(); UI.runPalette(); }
-      return;
+      if (k === 'Escape') return act(() => UI.closePalette());
+      if (k === 'ArrowDown') return act(() => UI.paletteMove(1));
+      if (k === 'ArrowUp') return act(() => UI.paletteMove(-1));
+      if (k === 'Enter') return act(() => UI.runPalette());
+      return false;
     }
-    if (sf && !sf.hidden && !inField) {
-      if (k === 'Escape') { e.preventDefault(); UI.closeSearch(); }
-      return;
-    }
+    if (sf && !sf.hidden && !inField && k === 'Escape') return act(() => UI.closeSearch());
     if (k === 'Escape') {
-      // 依次收：右键菜单 → 设置页 → 主页
-      if (window.TabBar && TabBar.menuOpen()) TabBar.closeMenu();
-      else if (window.Settings && Settings.isOpen()) Settings.close();
-      else if (!$('#home').hidden && T.term.order.length) Home.hide();
-      return;
+      if (window.TabBar?.menuOpen()) return act(() => TabBar.closeMenu());
+      if (window.Settings?.isOpen()) return act(() => Settings.close());
+      if (!$('#home').hidden && T.term.order.length) return act(() => Home.hide());
     }
-    if (k === 'F2' && !mod) { e.preventDefault(); if (window.TabBar) TabBar.renameActive(); return; }
-  });
+    if (!terminal && k === 'F2' && !mod) return act(() => window.TabBar?.renameActive());
+    return false;
+  };
+  document.addEventListener('keydown', e => UI.handleKeyDown(e));
 })();

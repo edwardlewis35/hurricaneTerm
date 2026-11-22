@@ -324,7 +324,10 @@ UI.setMode('Remote');
 ok('L5 内置高亮默认开启且 4 类规则', T.s.builtinHighlight !== false && TM.HIGHLIGHT_RULES.length === 4);
 const tabH = await TM.create(null);
 await flush();
-tabH.term._onData('kubectl get pods\r');
+tabH.term._onData('kubectl get pods');
+// Outline capture requires public echo; a no-echo password is never history.
+tabH.term.buffer.active.getLine = () => ({ translateToString: () => 'fixture$ kubectl get pods' });
+tabH.term._onData('\r');
 await flush();
 ok('L6 大纲记录真实命令文本', tabH.outline.length === 1 && tabH.outline[0].text === 'kubectl get pods');
 // Use xterm's actual parser and buffer for row positions; FakeTerm cannot
@@ -364,13 +367,13 @@ ok('M6 独立 SFTP 面板挂载双栏且列出远端家目录', window.SftpPanel
   && $('#sftp-panel [data-side="remote"] .sftp-path').value === '/home/root'
   && $('#sftp-panel [data-side="remote"]').textContent.includes('app.log'));
 window.SftpPanel.close();
-// Tab 无候选时交还 shell
+// Tab is handled by xterm and the remote shell, without client substitution.
 window.__invokes.length = 0;
 const ckeh = tabM.term._ckeh;
 ok('M7 xterm 自定义键处理已挂载', typeof ckeh === 'function');
-if (ckeh) { ckeh({ type: 'keydown', key: 'Tab', shiftKey: false, ctrlKey: false, preventDefault() {} }); }
+if (ckeh && ckeh({ type: 'keydown', key: 'Tab', shiftKey: false, ctrlKey: false, preventDefault() {} })) tabM.term.input('\t');
 await flush();
-ok('M8 Tab 无候选时把 \t 写回 pty（shell 补全不被吞）', window.__invokes.some(([c, a]) => c === 'write' && a && a.data === '\t'));
+ok('M8 Tab 原样交给 shell 且不调用客户端补全', window.__invokes.some(([c, a]) => c === 'write' && a && a.data === '\t') && !window.__invokes.some(([c]) => c === 'complete_input'));
 // 更新检查：无网络环境应静默失败不抛错
 const up = await T.checkUpdate(false);
 ok('M9 更新检查离线静默失败', up === null && !!T.s.updateInfo === false || up === null);
