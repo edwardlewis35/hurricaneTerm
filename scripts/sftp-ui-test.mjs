@@ -119,10 +119,10 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
     },
   };
   w.addEventListener('error', e => errors.push(e.message));
-  for (const name of ['style.css', 'sftp.css']) {
+  for (const name of ['style.css', 'sftp.css', 'transfer-queue.css']) {
     const style = d.createElement('style'); style.dataset.file = name; style.textContent = readFileSync(SRC + '/' + name, 'utf8'); d.head.appendChild(style);
   }
-  for (const name of ['icons.js', 'common-controls.js', 'term.js', 'sftp.js']) w.eval(readFileSync(SRC + '/' + name, 'utf8'));
+  for (const name of ['icons.js', 'common-controls.js', 'term.js', 'transfer-queue.js', 'sftp.js']) w.eval(readFileSync(SRC + '/' + name, 'utf8'));
   const P = w.SftpPanel, TM = T.term;
   let activeTab = active;
   TM.tabs = Object.fromEntries(active ? [[active.id, active]] : []); TM.order = active ? [active.id] : []; TM.activeTab = () => activeTab;
@@ -163,6 +163,7 @@ function harness({ active = tab('ssh-a', 'alpha.example'), preferences = {} } = 
     if (op === 'chmod') { need(side, id, path).permissions = args.mode; return null; }
   };
   P.mount(d.getElementById('sftp-panel')); TM.applyTheme('tabby-dark');
+  w.TransferQueue.mount();
   const q = s => d.querySelector(s), qa = s => [...d.querySelectorAll(s)];
   const pane = side => q(`#sftp-panel [data-side="${side}"]`);
   const rows = side => [...pane(side).querySelectorAll('tr[data-path]')];
@@ -613,6 +614,53 @@ await scenario('T 断线不丢失编辑器未保存内容', async h => {
   check('T2 编辑器打开时底层远程路径和导航仍禁用', h.pane('remote').querySelector('.sftp-path').disabled && [...h.pane('remote').querySelectorAll('.sftp-nav button')].every(b => b.disabled));
   h.q('[data-save]').click(); await settle();
   check('T3 断线状态保存不发送任何远端写入', !h.calls.some(([command]) => command === 'sftp_write_file') && input.value === 'unsaved across reconnect');
+});
+
+await scenario('U 全局传输队列与真实SFTP协作', async h => {
+  await h.P.open(); await h.go('remote', '/home/alice/target');
+  const c = h.P.context, entry = c.local.entries.find(e => e.name === 'alpha.txt'), Q = h.w.TransferQueue;
+  await h.P.enqueue(c, 'local', [entry], c, 'remote'); await until(() => h.transfers.size === 1);
+  const task = h.P.tasks.at(-1), queueId = task.queueId, row = () => [...h.qa('.tq-task')].find(n => n.dataset.task === queueId);
+  check('U1 SFTP原始任务同步到独立队列且保留来源机器', Q.tasks.length === 1 && Q.tasks[0].id === queueId && Q.tasks[0].protocol === 'SFTP' && Q.tasks[0].machine === 'alice@alpha.example:22');
+  h.P.close(); Q.open(); const originalRow = row();
+  h.P.progress({ transferId: task.id, sessionId: 'ssh-a', done: 7, total: 14, status: 'running' });
+  check('U2 文件管理关闭后进度继续且不重新打开文件管理', !h.P.isOpen() && row() === originalRow && row().querySelector('.tq-progress i').style.width === '50%');
+  row().querySelector('[data-action="pause"]').click(); await settle();
+  check('U3 全局暂停调用同一原生任务且同步原队列', task.status === 'paused' && row().dataset.status === 'paused' && h.q(`[data-task="${task.id}"] [data-action="resume"]`));
+  row().querySelector('[data-action="resume"]').click(); await settle();
+  check('U4 全局继续与SFTP控制一致', task.status === 'running' && h.calls.some(([name, args]) => name === 'sftp_transfer_control' && args.transferId === task.id && args.action === 'resume'));
+  const oldId = task.id; c.tab.exited = true; c.tab.ptyId = null; h.P.onConnectionChange(c.tab); await until(() => !task.working); await settle();
+  check('U5 断线任务失败及详细错误在两处一致', task.status === 'failed' && row().dataset.status === 'failed' && row().querySelector('.tq-error').textContent.includes('SSH 连接已断开'));
+  row().querySelector('[data-action="retry"]').click(); await settle();
+  check('U6 断线重试不能伪造新任务且展示错误', task.id === oldId && task.status === 'failed' && row().querySelector('.tq-error').textContent.includes('操作未完成'));
+  c.tab.exited = false; c.tab.ptyId = 'ssh-a'; h.P.onConnectionChange(c.tab); await settle();
+  row().querySelector('[data-action="retry"]').click(); await until(() => h.transfers.size === 1); await settle();
+  check('U7 重试变更原生传输ID却复用唯一的全局活动行', task.id !== oldId && task.queueId === queueId && row() === originalRow && Q.tasks.length === 1 && Q.tasks[0].status === 'running');
+  row().querySelector('[data-action="cancel"]').click(); await until(() => task.status === 'cancelled' && !task.working); await settle();
+  check('U8 全局取消精确作用重试后的原生ID', Q.tasks[0].status === 'cancelled' && h.calls.some(([name, args]) => name === 'sftp_transfer_control' && args.transferId === task.id && args.action === 'cancel'));
+  Q.clear(); h.P.progress({ transferId: task.id, sessionId: 'wrong-session', done: 14, total: 14, status: 'completed' });
+  check('U9 清除全局已结束记录不取消工作且无关刷新不复活旧行', !Q.tasks.length && task.status === 'cancelled');
+  const before = h.calls.filter(([name]) => name === 'sftp_transfer_start').length;
+  c.tab.session.host = 'another-machine.example'; h.P.onConnectionChange(c.tab); await settle();
+  let rejected = false; try { h.P.retry(task); } catch (error) { rejected = String(error).includes('目标机器已更改'); }
+  check('U10 标签改连其他机器不能重放旧传输', rejected && task.status === 'cancelled' && h.calls.filter(([name]) => name === 'sftp_transfer_start').length === before);
+});
+
+await scenario('V SFTP控制失败与异步收尾', async h => {
+  await h.P.open(); await h.go('remote', '/home/alice/target');
+  const c = h.P.context, Q = h.w.TransferQueue;
+  await h.P.enqueue(c, 'local', [c.local.entries.find(e => e.name === 'alpha.txt')], c, 'remote'); await until(() => h.transfers.size === 1);
+  const task = h.P.tasks.at(-1), row = () => [...h.qa('.tq-task')].find(n => n.dataset.task === task.queueId);
+  h.setInterceptor((command, args) => command === 'sftp_transfer_control' && args.action === 'pause' ? Promise.reject(Error('fixture native pause denied')) : null);
+  row().querySelector('[data-action="pause"]').click(); await settle();
+  check('V1 原生拒绝暂停时恢复running且两处显示详细错误', task.status === 'running' && !task.controlPending && row().dataset.status === 'running' && row().textContent.includes('fixture native pause denied'));
+  let reject;
+  h.setInterceptor((command, args) => command === 'sftp_transfer_control' && args.action === 'pause' ? new Promise((_, fail) => { reject = fail; }) : null);
+  row().querySelector('[data-action="pause"]').click(); await until(() => !!reject);
+  check('V2 控制调用等待时不能重复触发继续或取消', task.controlPending && row().getAttribute('aria-busy') === 'true' && row().querySelector('[data-action="cancel"]').disabled);
+  await h.finish(task.id); reject(Error('fixture pause arrived after completion')); await settle();
+  check('V3 传输先完成时迟到的暂停失败不能还原running', task.status === 'completed' && row().dataset.status === 'completed' && !task.controlPending && !task.working);
+  h.setInterceptor(null);
 });
 
 await scenario('J 主主题继承', async h => {

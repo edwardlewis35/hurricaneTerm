@@ -29,7 +29,7 @@ pub struct JumpSpec {
     pub key_path: Option<String>,
 }
 
-/// 解析 "user@host[:port]"；非法返回 None（调用方回退直连）。
+/// 解析 user@host[:port] / user@[IPv6]:port；非法返回 None，调用方必须拒绝。
 pub fn parse_spec(raw: &str, default_user: &str) -> Option<JumpSpec> {
     let s = raw.trim();
     if s.is_empty() {
@@ -39,14 +39,24 @@ pub fn parse_spec(raw: &str, default_user: &str) -> Option<JumpSpec> {
         Some((u, r)) => (u.to_string(), r),
         None => (default_user.to_string(), s),
     };
-    if user.is_empty() || rest.is_empty() {
+    if user.is_empty() || rest.is_empty() || user.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return None;
     }
-    let (host, port) = match rest.rsplit_once(':') {
-        Some((h, p)) => (h.to_string(), p.parse::<u16>().ok()?),
-        None => (rest.to_string(), 22),
+    let (host, port) = if let Some(bracketed) = rest.strip_prefix('[') {
+        let (host, suffix) = bracketed.split_once(']')?;
+        host.parse::<std::net::Ipv6Addr>().ok()?;
+        let port = if suffix.is_empty() { 22 } else { suffix.strip_prefix(':')?.parse::<u16>().ok()? };
+        (host.to_string(), port)
+    } else if rest.matches(':').count() > 1 {
+        rest.parse::<std::net::Ipv6Addr>().ok()?;
+        (rest.to_string(), 22)
+    } else {
+        match rest.rsplit_once(':') {
+            Some((h, p)) => (h.to_string(), p.parse::<u16>().ok()?),
+            None => (rest.to_string(), 22),
+        }
     };
-    if host.is_empty() {
+    if host.is_empty() || port == 0 || host.chars().any(|c| c.is_control() || c.is_whitespace() || matches!(c, '@' | '/' | '\\' | '?' | '#' | '[' | ']')) {
         return None;
     }
     Some(JumpSpec {
@@ -94,6 +104,7 @@ fn open_sync(
 ) -> std::io::Result<ssh_relay::BoxedDuplex> {
     let (up_r, up_w) = std::io::pipe()?; // 远端 → 调用方
     let (dn_r, dn_w) = std::io::pipe()?; // 调用方 → 远端
+    let (ready, ready_rx) = std::sync::mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("jump-pump".into())
         .spawn(move || {
@@ -102,11 +113,17 @@ fn open_sync(
                 .build()
             {
                 Ok(rt) => rt,
-                Err(_) => return,
+                Err(error) => { let _ = ready.send(Err(ioe(format!("跳板机任务启动失败：{error}")))); return; },
             };
-            let _ = rt.block_on(pump(spec, target, config_dir, up_w, dn_r));
+            let notify_ready = ready.clone();
+            if let Err(error) = rt.block_on(pump(spec, target, config_dir, up_w, dn_r, notify_ready)) {
+                let _ = ready.send(Err(error));
+            }
         })
         .map_err(ioe)?;
+    // Do not turn a failed jump-host login into an unexplained EOF during the
+    // target's SSH handshake. Return the original setup failure to dial_any.
+    ready_rx.recv_timeout(Duration::from_secs(30)).map_err(|error| ioe(format!("跳板机连接或认证超时/中断：{error}")))??;
     Ok(Box::new(PipePair { rd: up_r, wr: dn_w }))
 }
 
@@ -116,6 +133,7 @@ async fn pump(
     config_dir: PathBuf,
     mut up_w: std::io::PipeWriter,
     mut dn_r: std::io::PipeReader,
+    ready: std::sync::mpsc::SyncSender<std::io::Result<()>>,
 ) -> std::io::Result<()> {
     let cfg = Arc::new(russh::client::Config {
         keepalive_interval: Some(Duration::from_secs(30)),
@@ -128,52 +146,54 @@ async fn pump(
         },
         log: Vec::new(),
     };
-    let mut session = russh::client::connect(cfg, (spec.host.as_str(), spec.port), handler)
-        .await
-        .map_err(ioe)?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut session = tokio::time::timeout_at(deadline, russh::client::connect(cfg, (spec.host.as_str(), spec.port), handler))
+        .await.map_err(|_| ioe("跳板机 DNS/TCP/SSH 握手超时"))?
+        .map_err(|error| ioe(format!("跳板机 {}:{} 连接或主机密钥验证失败：{error}", spec.host, spec.port)))?;
 
     // 认证：none → publickey → password（与主会话同序，省去 keyboard-interactive）
-    let mut authed = session
-        .authenticate_none(&spec.user)
-        .await
-        .map_err(ioe)?
+    let mut authed = tokio::time::timeout_at(deadline, session.authenticate_none(&spec.user))
+        .await.map_err(|_| ioe("跳板机认证协商超时"))?
+        .map_err(|error| ioe(format!("跳板机认证协商失败：{error}")))?
         .success();
+    let mut key_failure = String::new();
     if !authed {
         let kp = spec.key_path.clone().or_else(|| {
             std::env::var("HOME").ok().map(|h| format!("{h}/.ssh/id_ed25519"))
         });
         if let Some(kp) = kp {
-            if let Ok(key) = load_secret_key(expand(&kp), None) {
-                let pk = PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha512));
-                authed = session
-                    .authenticate_publickey(&spec.user, pk)
-                    .await
-                    .map_err(ioe)?
-                    .success();
+            match load_secret_key(expand(&kp), None) {
+                Ok(key) => {
+                    let pk = PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha512));
+                    authed = tokio::time::timeout_at(deadline, session.authenticate_publickey(&spec.user, pk))
+                        .await.map_err(|_| ioe("跳板机公钥认证超时"))?
+                        .map_err(|error| ioe(format!("跳板机公钥认证失败：{error}")))?
+                        .success();
+                },
+                Err(error) => { key_failure = format!("；私钥读取失败：{error}"); }
             }
         }
     }
     if !authed {
         if let Some(pw) = &spec.password {
-            authed = session
-                .authenticate_password(&spec.user, pw)
-                .await
-                .map_err(ioe)?
+            authed = tokio::time::timeout_at(deadline, session.authenticate_password(&spec.user, pw))
+                .await.map_err(|_| ioe("跳板机密码认证超时"))?
+                .map_err(|error| ioe(format!("跳板机密码认证失败：{error}")))?
                 .success();
         }
     }
     if !authed {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!("jump auth failed: {}@{}", spec.user, spec.host),
+            format!("跳板机认证失败（jump auth failed）：{}@{}，服务器未接受提供的认证方式{key_failure}", spec.user, spec.host),
         ));
     }
 
     // 跳板之上开 direct-tcpip 到真实目标
-    let ch = session
-        .channel_open_direct_tcpip(&target.host, target.port as u32, "127.0.0.1", 0u32)
-        .await
-        .map_err(ioe)?;
+    let ch = tokio::time::timeout_at(deadline, session.channel_open_direct_tcpip(&target.host, target.port as u32, "127.0.0.1", 0u32))
+        .await.map_err(|_| ioe("跳板机 direct-tcpip 打开目标通道超时"))?
+        .map_err(|error| ioe(format!("跳板机无法连接目标 {}:{}（direct-tcpip）：{error}", target.host, target.port)))?;
+    ready.send(Ok(())).map_err(|_| ioe("跳板机连接请求已取消"))?;
     let (mut rd, wr) = ch.split();
 
     // 远端 → up_w（阻塞写放进 blocking 池，避免卡住 current_thread runtime）
@@ -270,5 +290,18 @@ mod tests {
         assert!(parse_spec("@host", "root").is_none());
         assert!(parse_spec("user@", "root").is_none());
         assert!(parse_spec("host:notaport", "root").is_none());
+    }
+    #[test]
+    fn parse_rejects_invalid_configured_addresses_instead_of_suggesting_direct_fallback() {
+        for value in ["ops@host:0", "ops@host:65536", "ops@host:-1", "ops@host:", "ops@host name", "ops@user@host", "https://host:22", "ops@[::1", "ops@[bad]:22", "ops@[::1]:bad", "ops@host/path"] {
+            assert!(parse_spec(value, "root").is_none(), "invalid jump address accepted: {value}");
+        }
+    }
+    #[test]
+    fn parse_supports_ipv6_without_ambiguous_port_splitting() {
+        let spec = parse_spec("ops@[2001:db8::1]:2222", "root").unwrap();
+        assert_eq!(spec.host, "2001:db8::1"); assert_eq!(spec.port, 2222);
+        let spec = parse_spec("ops@2001:db8::1", "root").unwrap();
+        assert_eq!(spec.host, "2001:db8::1"); assert_eq!(spec.port, 22);
     }
 }

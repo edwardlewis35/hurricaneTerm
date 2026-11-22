@@ -164,6 +164,7 @@
       const actions = h('div', 'ht-home-actions');
       const action = (label, icon, run) => {
         const btn = h('button', 'ht-home-action'); btn.type = 'button';
+        btn.setAttribute('aria-label', label);
         btn.innerHTML = svg(icon); btn.append(h('span', null, label)); btn.onclick = run;
         actions.append(btn);
       };
@@ -214,7 +215,9 @@
         const box = h('div', 'ht-home-field ' + className);
         const lbl = h('label', null, label); lbl.htmlFor = id;
         const input = h('input'); input.id = id; input.placeholder = placeholder;
-        input.spellcheck = false; input.autocomplete = 'off'; input.setAttribute('aria-describedby', 'ht-home-hint');
+        input.spellcheck = false; input.autocomplete = 'off';
+        input.setAttribute('autocapitalize', 'none'); input.setAttribute('autocorrect', 'off');
+        input.setAttribute('aria-describedby', 'ht-home-hint');
         box.append(lbl, input); return { box, input, label: lbl };
       };
       const addr = field('连接地址', 'ht-home-address', PROTO_BY_VALUE.ssh.placeholder);
@@ -251,6 +254,7 @@
       const searchIcon = h('span'); searchIcon.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>';
       this.searchEl = h('input'); this.searchEl.type = 'search'; this.searchEl.placeholder = '搜索名称、地址或分组';
       this.searchEl.setAttribute('aria-label', '搜索已保存的连接'); this.searchEl.spellcheck = false;
+      this.searchEl.setAttribute('autocapitalize', 'none'); this.searchEl.setAttribute('autocorrect', 'off');
       this.searchEl.oninput = () => this.render();
       this.searchEl.onkeydown = e => {
         const rows = Array.from(this.listEl.querySelectorAll('.ht-home-row:not(:disabled)'));
@@ -292,6 +296,10 @@
       if (window.Profiles && Profiles.isOpen()) Profiles.close();
       const S = window.Settings;
       if (S && typeof S.isOpen === 'function' && S.isOpen() && typeof S.close === 'function') S.close();
+      // Opening the picker is a fresh request to see saved machines. Background
+      // render() calls keep the user's active filter and connection drafts.
+      this.view = 'saved';
+      if (this.searchEl) this.searchEl.value = '';
       this.el.hidden = false;            // 全局 [hidden]{display:none!important} 会压死 inline display，必须先清属性
       this.el.style.display = 'flex';
       this.render();
@@ -494,12 +502,16 @@
       }
       this.listEl.replaceChildren();
       if (!items.length) {
+        const filtered = all.length > 0 && (q || this.view === 'recent');
         const empty = h('div', 'ht-home-empty');
         empty.innerHTML = svg(q ? 'globe' : 'folder');
-        empty.append(h('div', null, q ? '没有匹配的连接' : this.view === 'recent' ? '暂无最近使用的连接' : '还没有添加机器'));
-        empty.append(h('p', null, q ? '试试机器名称、地址或分组。' : '使用快速连接，或保存常用的连接配置。'));
-        const btn = h('button', null, q ? '清除搜索' : '添加机器'); btn.type = 'button';
-        btn.onclick = () => { if (q) { this.searchEl.value = ''; this.render(); this.searchEl.focus(); } else this.openProfiles(); };
+        empty.append(h('div', null, filtered ? (q ? '没有匹配的连接' : '暂无最近使用的连接') : '还没有添加机器'));
+        empty.append(h('p', null, filtered ? '已保存 ' + all.length + ' 个连接，可清除筛选查看全部。' : '使用快速连接，或保存常用的连接配置。'));
+        const btn = h('button', null, filtered ? '显示全部连接' : '添加机器'); btn.type = 'button';
+        btn.onclick = () => {
+          if (filtered) { this.view = 'saved'; this.searchEl.value = ''; this.render(); this.searchEl.focus(); }
+          else this.openProfiles();
+        };
         empty.append(btn); this.listEl.append(empty);
       } else if (this.view === 'recent') {
         this.listEl.append(this.section('最近使用', items));

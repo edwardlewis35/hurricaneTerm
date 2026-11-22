@@ -1,6 +1,6 @@
 // hurricaneTerm — Tauri 2 backend: local PTY sessions + fs/state services.
-// Original implementation (Apache-2.0, see LICENSE); every module in this repo is
-// written from scratch (PTY/SSH/Telnet/serial sessions, dock panes, statusbar, triggers).
+// Application implementation is Apache-2.0 (see LICENSE). The vendored ZMODEM
+// state machine retains its upstream MIT/Apache-2.0 licenses and patch notice.
 #![allow(unused)]
 
 mod re;
@@ -8,12 +8,21 @@ mod jump;
 mod files;
 mod pty_child;
 mod terminal_io;
+mod modem_transport;
+mod modem_live;
 mod ssh_live;
 mod ssh_relay;
 #[cfg(unix)]
 mod serial_live;
 mod tcp_live;
 mod gist_sync;
+mod ai;
+mod harness_log;
+mod agent_exec;
+mod connection_error;
+mod credentials;
+mod mac_text_input;
+mod memory;
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -29,11 +38,14 @@ type SessionWriter = Arc<tokio::sync::Mutex<BoxedWriter>>;
 type BoxedResize = Box<dyn Fn(u16, u16) -> Result<(), String> + Send>;
 
 struct Entry {
+    gate: Arc<modem_transport::SessionGate>,
     writer: SessionWriter,
     resize: BoxedResize,
     killer: Option<pty_child::Killer>,
     closer: Option<Box<dyn Fn() + Send>>,
     sftp: Option<tokio::sync::mpsc::UnboundedSender<ssh_live::SftpReq>>,
+    exec: agent_exec::Target,
+    alive: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -41,6 +53,8 @@ struct PtyState(Mutex<HashMap<String, Entry>>);
 
 #[derive(Default)]
 struct TransferState(Mutex<HashMap<String, Arc<ssh_live::TransferControl>>>);
+#[derive(Default)]
+struct ModemPending(Mutex<std::collections::HashSet<(String,String)>>);
 
 #[derive(Clone, Serialize)]
 struct OutPayload {
@@ -129,6 +143,7 @@ fn default_shell() -> String {
 fn spawn(
     app: AppHandle,
     state: State<PtyState>,
+    executions: State<agent_exec::AgentExecState>,
     rows: u16,
     cols: u16,
     command: Option<String>,
@@ -181,6 +196,8 @@ fn spawn(
 
     let id = Uuid::new_v4().to_string();
     let output_stopped = Arc::new(AtomicBool::new(false));
+    let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), cfg!(unix));
 
     {
         let id2 = id.clone();
@@ -193,6 +210,7 @@ fn spawn(
                 if stopped.load(Ordering::Acquire) { break; }
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        modem_transport::disconnect(&id2);
                         let data = decoder.finish();
                         if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
@@ -200,7 +218,7 @@ fn spawn(
                     }
                     Ok(n) => {
                         if stopped.load(Ordering::Acquire) { break; }
-                        let data = decoder.push(&buf[..n]);
+                        let data = modem_transport::decode(&id2, &mut decoder, &buf[..n]);
                         if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                     }
                 }
@@ -210,7 +228,12 @@ fn spawn(
 
     let id3 = id.clone();
     let app3 = app.clone();
+    let executions = executions.inner().clone();
+    let child_alive = alive.clone();
     let killer = pty_child::monitor_child(child, move || {
+        child_alive.store(false, Ordering::Release);
+        modem_transport::disconnect(&id3);
+        executions.cancel_session(&id3);
         let _ = app3.emit("pty-exit", ExitPayload { id: id3 });
     });
 
@@ -221,11 +244,14 @@ fn spawn(
         .insert(
             id.clone(),
             Entry {
+                gate,
                 writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
                 resize,
                 killer: Some(killer),
                 closer: Some(Box::new(move || { output_stopped.store(true, Ordering::Release); })),
                 sftp: None,
+                exec: agent_exec::Target::Local { cwd: std::env::current_dir().ok() },
+                alive,
             },
         );
     Ok(id)
@@ -242,13 +268,15 @@ fn connect_telnet(
     use std::io::Write as _;
     use std::net::TcpStream;
     let stream = TcpStream::connect((host.as_str(), port))
-        .map_err(|e| format!("连接失败 {host}:{port}: {e}"))?;
+        .map_err(|e| connection_error::redact(&format!("Telnet TCP/DNS 连接失败 {host}:{port}：{e}"), &[]))?;
     let mut reader = stream.try_clone().map_err(|e| e.to_string())?;
     let mut resp_writer = stream.try_clone().map_err(|e| e.to_string())?;
     let killer = stream.try_clone().map_err(|e| e.to_string())?;
     let writer = stream;
 
     let id = Uuid::new_v4().to_string();
+    let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), false);
     let mut nego = re::telnet::Negotiator::client_default();
 
     // initOptions 等价：对带 0x10 标志的选项发 WILL/DO
@@ -264,6 +292,7 @@ fn connect_telnet(
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => {
+                        modem_transport::disconnect(&id2);
                         let data = decoder.finish();
                         if !data.is_empty() { let _ = app2.emit("pty-output", OutPayload { id: id2.clone(), data }); }
                         let _ = app2.emit("pty-exit", ExitPayload { id: id2.clone() });
@@ -296,6 +325,7 @@ fn connect_telnet(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate,
             writer: Arc::new(tokio::sync::Mutex::new(Box::new(writer))),
             resize: Box::new(|_r, _c| Ok(())),
             killer: None,
@@ -303,6 +333,8 @@ fn connect_telnet(
                 let _ = killer.shutdown(std::net::Shutdown::Both);
             })),
             sftp: None,
+            exec: agent_exec::Target::Unsupported,
+            alive,
         },
     );
     Ok(id)
@@ -347,9 +379,13 @@ fn connect_ssh(
 
     // 跳板机：proxy 为直连且填了 jump_host 时，走 Proxy::Jump（direct-tcpip 二级会话）
     let jh = jump_host.as_deref().unwrap_or("").trim().to_string();
+    let jump_spec = if jh.is_empty() { None } else {
+        Some(jump::parse_spec(&jh, user.as_deref().filter(|u| !u.is_empty()).unwrap_or("root"))
+            .ok_or("SSH 跳板机地址格式错误，请使用 user@host[:port] 或 user@[IPv6]:port，端口范围为 1–65535")?)
+    };
     let proxy_is_none = matches!(proxy, ssh_relay::Proxy::None);
-    let proxy = if !jh.is_empty() && proxy_is_none {
-        match jump::parse_spec(&jh, user.as_deref().unwrap_or("root")) {
+    let proxy = if proxy_is_none {
+        match jump_spec {
             Some(mut spec) => {
                 spec.password = password.clone().filter(|p| !p.is_empty());
                 spec.key_path = key_path.clone().filter(|k| !k.is_empty());
@@ -382,7 +418,7 @@ fn connect_ssh(
         config_dir,
         proxy,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| connection_error::redact(&format!("SSH 连接任务启动失败：{e}"), &[]))?;
 
     let ssh_in = ctl.input;
     let rz = ctl.resize;
@@ -390,6 +426,7 @@ fn connect_ssh(
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate: modem_transport::SessionGate::new(id.clone(), ctl.alive.clone(), true),
             writer: Arc::new(tokio::sync::Mutex::new(Box::new(ssh_live::SshInput(ssh_in)))),
             resize: Box::new(move |r, c| {
                 rz.send((c as u32, r as u32)).map_err(|_| "closed".to_string())
@@ -398,7 +435,9 @@ fn connect_ssh(
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
-            sftp: Some(ctl.sftp),
+            sftp: Some(ctl.sftp.clone()),
+            exec: agent_exec::Target::Ssh(ctl.sftp),
+            alive: ctl.alive,
         },
     );
     Ok(id)
@@ -443,18 +482,23 @@ fn connect_serial(
         opts.insert("serial.flowControl".into(), re::serial::OptVal::Str(v));
     }
     let id = Uuid::new_v4().to_string();
+    let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), true);
     let (host_label, ctl) =
         serial_live::spawn_session(app.clone(), id.clone(), target.trim(), &opts)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| connection_error::redact(&format!("串口打开或配置失败 {target}：{e}"), &[]))?;
     let _ = host_label; // 标题用会话名；host=portName 已在 serial_live 内处理
     let stop = ctl.stop;
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate,
             writer: Arc::new(tokio::sync::Mutex::new(Box::new(ctl.writer))), // Box<dyn SerialPort>: Write + Send
             resize: Box::new(|_r, _c| Ok(())), // 串口无窗口尺寸概念
             killer: None,
             sftp: None,
+            exec: agent_exec::Target::Unsupported,
+            alive,
             closer: Some(Box::new(move || {
                 let _ = stop.send(());
             })),
@@ -502,16 +546,23 @@ fn connect_tcp(
         proxy_env: String::new(),
     };
     let id = Uuid::new_v4().to_string();
+    let alive = Arc::new(AtomicBool::new(true));
+    let gate = modem_transport::SessionGate::new(id.clone(), alive.clone(), true);
+    let connection_label = params.target.clone();
+    let secrets = vec![params.proxy_password.clone(), params.proxy_command.clone()];
     let (_label, ctl) = tcp_live::spawn_session(app.clone(), id.clone(), params)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| connection_error::redact(&format!("TCP 连接或代理协商失败 {connection_label}：{e}"), &secrets))?;
     let tcp_live::TcpCtl { writer, stop, killer } = ctl;
     state.0.lock().unwrap().insert(
         id.clone(),
         Entry {
+            gate,
             writer: Arc::new(tokio::sync::Mutex::new(writer)),
             resize: Box::new(|_r, _c| Ok(())), // 裸 TCP 无尺寸语义
             killer: None,
             sftp: None,
+            exec: agent_exec::Target::Unsupported,
+            alive,
             closer: Some(Box::new(move || {
                 let _ = stop.send(()); // 通知 pump
                 killer(); // shutdown(Both)/kill child → 读线程退出 → detach 信号对
@@ -523,9 +574,10 @@ fn connect_tcp(
 
 #[tauri::command]
 async fn write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
-    let writer = {
+    let (writer, _write_lease) = {
         let map = state.0.lock().map_err(|e| e.to_string())?;
-        map.get(&id).ok_or("no such pty")?.writer.clone()
+        let entry = map.get(&id).ok_or("no such pty")?;
+        (entry.writer.clone(), entry.gate.begin_write()?)
     };
     // Only this session's writer is locked while IO can block. Other sessions,
     // close, resize and SFTP calls never wait on a global map lock held by IO.
@@ -588,8 +640,10 @@ fn resize(state: State<PtyState>, id: String, rows: u16, cols: u16) -> Result<()
 }
 
 #[tauri::command]
-async fn kill(state: State<'_, PtyState>, id: String) -> Result<(), String> {
+async fn kill(state: State<'_, PtyState>, executions: State<'_, agent_exec::AgentExecState>, id: String) -> Result<(), String> {
     let entry = state.0.lock().map_err(|e| e.to_string())?.remove(&id);
+    executions.cancel_session(&id);
+    modem_transport::disconnect(&id);
     // Removing the entry is idempotent; release the global map before any
     // signal, socket shutdown or destructor runs. None run on the UI thread.
     if let Some(mut entry) = entry {
@@ -704,6 +758,36 @@ async fn sftp_chmod(state: State<'_, PtyState>, id: String, path: String, mode: 
     sftp_call(&state, id, |reply| ssh_live::SftpReq::Chmod { path, mode, reply }).await
 }
 
+#[tauri::command]
+fn modem_capabilities(state: State<'_, PtyState>, session_id:String)->Result<serde_json::Value,String>{
+    let entries=state.0.lock().map_err(|_|"会话状态不可用")?;
+    let entry=entries.get(&session_id).ok_or("目标连接不存在")?;
+    let available=entry.gate.is_alive()&&entry.gate.binary_supported();
+    let reason=if !entry.gate.is_alive(){"目标连接已断开"}else if !entry.gate.binary_supported(){"此通道无法保证二进制保真；请使用 SSH、原始 TCP、Unix 本地终端或串口"}else{"X/Y/ZMODEM 已内置，请先在对端启动相应收发程序"};
+    let protocols=["xmodem","ymodem","zmodem"].iter().map(|p|serde_json::json!({"protocol":p,"available":available})).collect::<Vec<_>>();
+    Ok(serde_json::json!({"available":available,"reason":reason,"protocols":protocols}))
+}
+#[tauri::command]
+async fn modem_transfer_start(app:AppHandle,state:State<'_,PtyState>,pending:State<'_,ModemPending>,request:modem_live::Request)->Result<modem_live::Outcome,String>{
+    modem_live::validate(&request)?;
+    let (writer,_lease,input,cancel)={
+        let entries=state.0.lock().map_err(|_|"会话状态不可用")?;
+        let entry=entries.get(&request.session_id).ok_or("目标连接不存在")?;
+        let mut cancelled=pending.0.lock().map_err(|_|"传输状态不可用")?;
+        if cancelled.remove(&(request.session_id.clone(),request.transfer_id.clone())) {return Err("传输在启动前已取消".into())}
+        let (lease,input,cancel)=entry.gate.begin_modem(request.transfer_id.clone())?;
+        (entry.writer.clone(),lease,input,cancel)
+    };
+    let sink:modem_live::Sink=Arc::new(move|progress|{let _=app.emit("modem-transfer-progress",progress);});
+    modem_live::run(request,input,cancel,writer,sink).await
+}
+#[tauri::command]
+fn modem_transfer_cancel(state:State<'_,PtyState>,pending:State<'_,ModemPending>,session_id:String,transfer_id:String)->Result<(),String>{
+    if transfer_id.is_empty()||transfer_id.len()>200{return Err("传输编号无效".into())}
+    let entries=state.0.lock().map_err(|_|"会话状态不可用")?;
+    let entry=entries.get(&session_id).ok_or("目标连接已关闭")?;
+    if !entry.gate.cancel(&transfer_id){let mut cancelled=pending.0.lock().map_err(|_|"传输状态不可用")?;if cancelled.len()>=256{cancelled.clear()}cancelled.insert((session_id,transfer_id));}Ok(())
+}
 #[tauri::command]
 async fn sftp_transfer_start(
     state: State<'_, PtyState>, transfers: State<'_, TransferState>,
@@ -1090,13 +1174,125 @@ async fn gist_request(request: gist_sync::GistRequest) -> Result<gist_sync::Gist
     gist_sync::gist_request(request).await
 }
 
+#[tauri::command]
+async fn ai_chat(app: AppHandle, state: State<'_, ai::AiState>, request: ai::AiChatRequest) -> Result<ai::AiChatResponse, String> {
+    ai::chat(&state, request, move |delta| {
+        app.emit("ai-chat-delta", delta).map_err(|_| "AI 界面无法接收回复".to_owned())
+    }).await
+}
+
+#[tauri::command]
+async fn ai_agent_step(app: AppHandle, state: State<'_, ai::AiState>, request: ai::AiAgentRequest) -> Result<ai::AiAgentResponse, String> {
+    ai::agent_step(&state, request, move |delta| {
+        app.emit("ai-chat-delta", delta).map_err(|_| "AI 界面无法接收回复".to_owned())
+    }).await
+}
+
+#[tauri::command]
+async fn harness_create(state: State<'_, harness_log::HarnessStore>, id: String, metadata: serde_json::Value) -> Result<harness_log::SessionRecord, String> { state.create(id, metadata).await }
+#[tauri::command]
+async fn harness_append(state: State<'_, harness_log::HarnessStore>, id: String, expected_seq: u64, kind: String, data: serde_json::Value) -> Result<harness_log::SessionEvent, String> { state.append(id, expected_seq, kind, data).await }
+#[tauri::command]
+async fn harness_read(state: State<'_, harness_log::HarnessStore>, id: String) -> Result<harness_log::SessionRecord, String> { state.read(id).await }
+#[tauri::command]
+async fn harness_list(state: State<'_, harness_log::HarnessStore>) -> Result<Vec<harness_log::SessionSummary>, String> { state.list().await }
+#[tauri::command]
+fn harness_fingerprint(identity: String) -> Result<String, String> { harness_log::fingerprint(&identity) }
+
+#[tauri::command]
+async fn agent_exec(
+    app: AppHandle, state: State<'_, PtyState>, executions: State<'_, agent_exec::AgentExecState>,
+    request: agent_exec::ExecRequest,
+) -> Result<agent_exec::ExecResult, String> {
+    // Registration and target lookup share the PTY-map lock. A concurrent
+    // close either prevents registration or cancels the newly registered job.
+    let (target, lease, _write_lease) = {
+        let entries = state.0.lock().map_err(|_| "会话状态不可用")?;
+        let entry = entries.get(&request.session_id).filter(|entry| entry.alive.load(Ordering::Acquire))
+            .ok_or("目标会话已退出或断开，请先重新连接")?;
+        let target = entry.exec.clone();
+        if matches!(target, agent_exec::Target::Unsupported) { return Err("该协议不支持 AI 运维命令，仅支持本地终端和 SSH".into()); }
+        let write_lease = entry.gate.begin_write()?;
+        let lease = executions.begin(&request)?;
+        if !entry.alive.load(Ordering::Acquire) {
+            lease.control.session_closed();
+            return Err("目标会话已退出或断开，请先重新连接".into());
+        }
+        (target, lease, write_lease)
+    };
+    let sink: agent_exec::OutputSink = Arc::new(move |output| { let _ = app.emit("agent-exec-output", output); });
+    agent_exec::execute(target, request, lease.control.clone(), sink).await
+}
+
+#[tauri::command]
+fn agent_exec_cancel(executions: State<'_, agent_exec::AgentExecState>, request_id: String) -> bool {
+    executions.cancel(&request_id)
+}
+
+#[tauri::command]
+fn ai_cancel(state: State<'_, ai::AiState>, request_id: String) -> bool {
+    state.cancel(&request_id)
+}
+
+#[tauri::command]
+async fn ai_key_read(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<Option<String>, String> {
+    state.read(endpoint).await
+}
+
+#[tauri::command]
+async fn ai_key_write(state: State<'_, credentials::Credentials>, endpoint: String, api_key: String) -> Result<(), String> {
+    state.write(endpoint, api_key).await
+}
+
+#[tauri::command]
+async fn ai_key_delete(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<(), String> {
+    state.delete(endpoint).await
+}
+
+#[tauri::command]
+async fn memory_list(state: State<'_, memory::MemoryState>, scope: String) -> Result<Vec<memory::MemoryDoc>, String> { state.list(scope).await }
+#[tauri::command]
+async fn memory_get(state: State<'_, memory::MemoryState>, scope: String, path: String, from_line: Option<usize>, lines: Option<usize>) -> Result<memory::MemoryFile, String> { state.get(scope, path, from_line, lines).await }
+#[tauri::command]
+async fn memory_write(state: State<'_, memory::MemoryState>, request: memory::MemoryWriteRequest) -> Result<memory::MemoryDoc, String> { state.write(request).await }
+#[tauri::command]
+async fn memory_delete(state: State<'_, memory::MemoryState>, request: memory::MemoryDeleteRequest) -> Result<memory::MemoryDeleteResponse, String> { state.delete(request).await }
+#[tauri::command]
+async fn memory_search(state: State<'_, memory::MemoryState>, request: memory::MemorySearchRequest) -> Result<memory::MemorySearchResponse, String> { state.search(request).await }
+#[tauri::command]
+async fn memory_reindex(state: State<'_, memory::MemoryState>, request: memory::MemoryReindexRequest) -> Result<memory::MemoryStatus, String> { state.reindex(request).await }
+#[tauri::command]
+async fn memory_status(state: State<'_, memory::MemoryState>, scope: String) -> Result<memory::MemoryStatus, String> { state.status(scope).await }
+#[tauri::command]
+async fn memory_embedding_test(state: State<'_, memory::MemoryState>, embedding: memory::EmbeddingConfig) -> Result<memory::EmbeddingTestResponse, String> { state.embedding_test(embedding).await }
+#[tauri::command]
+async fn memory_key_read(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<Option<String>, String> { state.read_embedding(endpoint).await }
+#[tauri::command]
+async fn memory_key_write(state: State<'_, credentials::Credentials>, endpoint: String, api_key: String) -> Result<(), String> { state.write_embedding(endpoint, api_key).await }
+#[tauri::command]
+async fn memory_key_delete(state: State<'_, credentials::Credentials>, endpoint: String) -> Result<(), String> { state.delete_embedding(endpoint).await }
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    mac_text_input::configure();
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(mac_text_input::init());
+    builder
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(PtyState::default())
         .manage(TransferState::default())
+        .manage(ModemPending::default())
         .manage(TriggersState::default())
         .manage(LogState::default())
+        .manage(ai::AiState::default())
+        .manage(agent_exec::AgentExecState::default())
+        .manage(credentials::Credentials::default())
+        .setup(|app| {
+            app.manage(memory::MemoryState::new(app.path().app_config_dir()?.join("ai-memory")));
+            app.manage(harness_log::HarnessStore::new(app.path().app_config_dir()?.join("ai-runs")));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             spawn,
             write,
@@ -1119,11 +1315,38 @@ pub fn run() {
             sftp_read_file,
             sftp_write_file,
             sftp_chmod,
+            modem_capabilities,
+            modem_transfer_start,
+            modem_transfer_cancel,
             sftp_transfer_start,
             sftp_transfer_control,
             sessions_load,
             sessions_save,
             gist_request,
+            harness_create,
+            harness_append,
+            harness_read,
+            harness_list,
+            harness_fingerprint,
+            ai_chat,
+            ai_agent_step,
+            ai_cancel,
+            ai_key_read,
+            ai_key_write,
+            ai_key_delete,
+            memory_list,
+            memory_get,
+            memory_write,
+            memory_delete,
+            memory_search,
+            memory_reindex,
+            memory_status,
+            memory_embedding_test,
+            memory_key_read,
+            memory_key_write,
+            memory_key_delete,
+            agent_exec,
+            agent_exec_cancel,
             ui_state_save,
             ui_state_load,
             complete_input,

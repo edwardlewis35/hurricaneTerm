@@ -14,7 +14,7 @@
     { id: 'explorer', icon: 'plug', label: '会话', key: 'Ctrl+1' },
     { id: 'filer', icon: 'folder', label: '文件浏览器 (SFTP)', key: 'Ctrl+2' },
     { id: 'sender', icon: 'send', label: '发送文本', key: 'Ctrl+3' },
-    { id: 'transfer', icon: 'transfer', label: '传输', key: 'Ctrl+4' },
+    { id: 'transfer', icon: 'transfer', label: '传输队列', key: 'Ctrl+4' },
     { id: 'outline', icon: 'terminal', label: '输入大纲', key: 'Ctrl+5' },
     { id: 'output', icon: 'output', label: '日志', key: 'Ctrl+6' },
   ];
@@ -114,13 +114,25 @@
         });
         b.dataset.pane = p.id;
         b.setAttribute('aria-haspopup', 'dialog');
-        b.setAttribute('aria-controls', p.id === 'filer' ? 'sftp-panel' : 'dock');
+        b.setAttribute('aria-controls', p.id === 'filer' ? 'sftp-panel' : p.id === 'transfer' ? 'transfer-queue-panel' : 'dock');
         btns[p.id] = b;
         // 传输/日志有数量徽标
         if (p.id === 'transfer' || p.id === 'output') addBadge(b, p.id);
       }
 
       // 查询、命令与外观入口集中在同一条工具栏，设置仍位于右上角。
+      const split = mkBtn(extras, { icon: 'splitH', label: '分屏', cls: 'ab-split ht-split',
+        onClick: button => window.TabBar?.toggleSplitMenu(button) });
+      split.setAttribute('aria-haspopup', 'menu'); split.setAttribute('aria-expanded', 'false');
+      split.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowDown') return;
+        event.preventDefault(); event.stopPropagation();
+        if (split.getAttribute('aria-expanded') !== 'true') window.TabBar?.toggleSplitMenu(split);
+        document.querySelector('.ht-menu > .mi:not(.dis)')?.focus();
+      });
+      const ai = mkBtn(extras, { icon: 'sparkles', label: 'AI 助手',
+        onClick: () => window.AiPanel?.toggle() });
+      ai.dataset.aiToggle = ''; ai.setAttribute('aria-controls', 'ai-panel'); ai.setAttribute('aria-expanded', 'false');
       mkBtn(extras, { icon: 'search', label: '查找', key: 'Ctrl+F',
         onClick: () => { if (T.ui) { T.ui.closeDock(); T.ui.toggleSearch(); } } });
       mkBtn(extras, { icon: 'terminal', label: '命令面板', key: 'Ctrl+Shift+P',
@@ -142,10 +154,21 @@
         if (palette) panelObserver.observe(palette, { attributes: true, attributeFilter: ['hidden'] });
       }
       this.render();
+      if (!this._queueListener) {
+        this._queueListener = event => {
+          const count = Math.max(0, Number(event.detail?.active) || 0), badge = badges.transfer;
+          if (badge) { badge.textContent = count > 99 ? '99+' : String(count); badge.hidden = !count; badge.dataset.n = String(count); }
+          this.render();
+        };
+        window.addEventListener('transfer-queue-change', this._queueListener);
+      }
     },
 
     /* 点按开合：同 Tabby，再点当前窗格则收起整条侧栏 */
     toggle(paneId) {
+      if (paneId === 'transfer' && window.TransferQueue) {
+        T.ui?.closeDock(); TransferQueue.toggle(); this.render(); return;
+      }
       if (paneId === 'filer' && window.SftpPanel) {
         if (T.ui) {
           T.ui.closeDock();
@@ -194,12 +217,14 @@
 
     render() {
       if (!root) return;
+      const ai = root.querySelector('[data-ai-toggle]');
+      if (ai) { const active = !!window.AiPanel?.isOpen(); ai.classList.toggle('on', active); ai.setAttribute('aria-expanded', String(active)); }
       const open = !!T.s.dockVisible;
       const cur = open ? T.s.dockPane : null;
       for (const p of PANES) {
         const b = btns[p.id];
         if (b) {
-          const active = p.id === 'filer' ? !!(window.SftpPanel && SftpPanel.isOpen()) : p.id === cur;
+          const active = p.id === 'filer' ? !!(window.SftpPanel && SftpPanel.isOpen()) : p.id === 'transfer' && window.TransferQueue ? TransferQueue.isOpen() : p.id === cur;
           b.classList.toggle('on', active);
           b.setAttribute('aria-expanded', String(active));
         }

@@ -121,10 +121,12 @@
       (!T.term.isLive || T.term.isLive(tab)));
   const nativeId = (tab) => T.term.ptyId ? T.term.ptyId(tab) : tab?.id;
   const connectionChanged = "SSH 连接已断开或重新连接，请重新发起操作";
-  const contextKey = (tab) =>
-    tab?.session?.protocol === "ssh"
-      ? `${tab.session.user || ""}@${tab.session.host}:${tab.session.port || 22}`
+  const contextKey = (tab) => {
+    const identity = tab?._connectionIdentity || tab?.session;
+    return identity?.protocol === "ssh"
+      ? `${identity.user || ""}@${identity.host}:${identity.port || 22}`
       : "local";
+  };
   function newPane(path) {
     return {
       path,
@@ -1183,6 +1185,7 @@
         policy: null,
         started: 0,
         speed: 0,
+        machine: remote.key,
       });
     }
     renderQueue();
@@ -1293,6 +1296,9 @@
     }
   }
   async function control(task, action) {
+    if (!task || !["pause", "resume", "cancel"].includes(action)) throw new Error("无效的传输操作");
+    if (task.controlPending) return;
+    if (["completed", "skipped", "failed", "cancelled"].includes(task.status)) throw new Error("该传输已结束");
     if (!task.started) {
       task.status =
         action === "cancel"
@@ -1309,16 +1315,72 @@
       pump();
       return;
     }
+    const previousStatus = task.status;
     task.status =
       action === "cancel"
         ? "cancelling"
         : action === "pause"
           ? "pausing"
           : "running";
+    const pendingStatus = task.status;
+    task.controlPending = true;
     renderQueue();
-    await T.invoke("sftp_transfer_control", { transferId: task.id, action });
+    try {
+      await T.invoke("sftp_transfer_control", { transferId: task.id, action });
+    } catch (error) {
+      // A rejected native control must not leave an otherwise live transfer
+      // permanently stuck in a UI-only pausing/cancelling state.
+      if (task.status === pendingStatus) task.status = previousStatus;
+      task.error = String(error?.message || error);
+      throw error;
+    } finally {
+      task.controlPending = false;
+      renderQueue();
+    }
+  }
+  function retryTask(task) {
+    if (!task || task.working) return;
+    if (!["failed", "cancelled"].includes(task.status)) throw new Error("仅可重试失败或取消的传输");
+    if (!connected(task.context)) throw new Error(connectionChanged);
+    if (task.machine && task.machine !== contextKey(task.context.tab)) throw new Error("目标机器已更改，请重新发起传输");
+    task.sessionId = nativeId(task.context.tab);
+    task.connectionLost = false;
+    task.id = uuid();
+    task.status = "queued";
+    task.claimed = false;
+    task.done = 0;
+    task.started = 0;
+    task.speed = 0;
+    task.resumeWaiter = null;
+    task.error = "";
+    renderQueue();
+    pump();
+  }
+  function syncGlobalQueue() {
+    const queue = window.TransferQueue;
+    if (!queue) return;
+    for (const task of tasks) {
+      // The native transferId changes on retry; the global activity entry and
+      // its controls continue to refer to the same user-requested operation.
+      task.queueId ||= "sftp:" + task.id;
+      const value = {
+        id: task.queueId, sessionId: task.sessionId, protocol: "SFTP", name: task.name,
+        direction: task.direction, machine: task.machine || task.context.key,
+        source: task.source, target: task.target, done: task.done, total: task.total,
+        status: task.status, speed: task.speed, error: task.error || "", retryDisabled: !!task.working,
+      };
+      const fingerprint = JSON.stringify(value);
+      if (fingerprint === task.queueFingerprint) continue;
+      task.queueFingerprint = fingerprint;
+      queue.upsert(value, { controls: {
+        pause: () => control(task, "pause"), resume: () => control(task, "resume"),
+        cancel: () => control(task, "cancel"), retry: () => retryTask(task),
+      } });
+    }
   }
   function renderQueue() {
+    // File browsing may be closed while workers and progress events continue.
+    syncGlobalQueue();
     if (!root) return;
     const queue = root.querySelector(".sftp-queue");
     if (!queue) return;
@@ -1337,8 +1399,10 @@
       .join("")}`;
     queue.querySelector("[data-clear]").onclick = () => {
       for (let i = tasks.length - 1; i >= 0; i--)
-        if (["completed", "cancelled", "skipped"].includes(tasks[i].status))
+        if (["completed", "cancelled", "skipped"].includes(tasks[i].status) && !tasks[i].working) {
+          window.TransferQueue?.remove(tasks[i].queueId);
           tasks.splice(i, 1);
+        }
       renderQueue();
     };
     queue.querySelectorAll("[data-task] [data-action]").forEach(
@@ -1348,20 +1412,7 @@
             (t) => t.id === b.closest("[data-task]").dataset.task,
           );
           if (b.dataset.action === "retry") {
-            if (t.working) return;
-            if (!connected(t.context)) throw new Error(connectionChanged);
-            t.sessionId = nativeId(t.context.tab);
-            t.connectionLost = false;
-            t.id = uuid();
-            t.status = "queued";
-            t.claimed = false;
-            t.done = 0;
-            t.started = 0;
-            t.speed = 0;
-            t.resumeWaiter = null;
-            t.error = "";
-            renderQueue();
-            pump();
+            return retryTask(t);
           } else return control(t, b.dataset.action);
         })),
     );
@@ -1632,6 +1683,7 @@
     permissions,
     enqueue,
     control,
+    retry: retryTask,
     preview,
   };
   // Populate log after dialog creation without rendering untrusted names as HTML.

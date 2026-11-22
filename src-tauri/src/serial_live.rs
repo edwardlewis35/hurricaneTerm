@@ -274,7 +274,7 @@ pub fn pump<R: Read>(mut reader: R, sink: &Sink, id: &str, stop: &mut mpsc::Unbo
         match reader.read(&mut buf) {
             Ok(0) => {} // 空读节拍
             Ok(n) => {
-                let data = decoder.push(&buf[..n]);
+                let data = crate::modem_transport::decode(id, &mut decoder, &buf[..n]);
                 if !data.is_empty() { sink.emit("pty-output", id.to_string(), data); }
             }
             Err(e)
@@ -287,6 +287,7 @@ pub fn pump<R: Read>(mut reader: R, sink: &Sink, id: &str, stop: &mut mpsc::Unbo
             break;
         }
     }
+    crate::modem_transport::disconnect(id);
     let tail = decoder.finish();
     if !tail.is_empty() { sink.emit("pty-output", id.to_string(), tail); }
 }

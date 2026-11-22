@@ -46,9 +46,19 @@ try {
   TM.runHighlights(t);
   check('T2 未变化的可见行不重复创建装饰', t.calls.length === 1);
   const faded = t._highlightEntries[0]; faded.expires = 0; TM.expireHighlights(t); TM.runHighlights(t);
-  check('T3 已消退关键词不因后续扫描重新亮起', t._hls.length === 0 && t.calls.length === 1);
+  check('T3 关键词不再定时消退，后续扫描保留原装饰且不重复创建', t._hls.length === 1 && t.calls.length === 1 && t._highlightTimer === null);
   await write(t, '\r\x1b[2Kplain'); TM.runHighlights(t);
   check('T4 进度行原位改写后清除旧关键词与marker', t._highlightEntries.length === 0 && t.term.markers.length === 0);
+  await TM.close(t.id);
+
+  t = tab(80, 8);
+  await write(t, 'Error persistent row\r\n'); TM.runHighlights(t);
+  const persistent = t._highlightEntries[0];
+  await write(t, 'ordinary output\r\n'.repeat(30)); TM.runHighlights(t);
+  check('T24 关键词进入滚动历史后持续着色，不随新输出离开底部viewport而清除', t._highlightEntries.includes(persistent) && !persistent.anchor.isDisposed && t._hls.includes(persistent.decorations[0]));
+  t.term.options.scrollback = 5;
+  await write(t, 'new output\r\n'.repeat(40)); TM.runHighlights(t);
+  check('T25 输出真正被滚动缓冲移除后释放关键词装饰，不无限保留marker', persistent.anchor.isDisposed && !t._highlightEntries.includes(persistent));
   await TM.close(t.id);
 
   t = tab(12);
@@ -109,6 +119,19 @@ try {
   TM.runTriggers(t, 'late'); await TM.close(t.id); rejectTrigger(new Error('closed backend')); await new Promise(r => setTimeout(r, 5));
   check('T17 异步触发器失败回退不对已关闭标签执行动作', t._closing && !TM.tabs[t.id]);
   interceptor = null; T.s.triggers = [];
+
+  t = tab(80, 24); T.s.triggers = [{ pattern: 'AGENT', action: 'send', send: 'unsafe\r' }];
+  const triggerCount = invocations.filter(([command]) => command === 'triggers_feed').length;
+  interceptor = command => command === 'triggers_feed' ? Promise.resolve([]) : null;
+  TM.receiveOutput(t, 'AGENT' + 'a'.repeat(70000) + '🙂', { triggers: false });
+  await until(() => !t._outputTimer && !t._outputWriting && !t._outputParts.length);
+  check('T22 Agent大输出分块显示但不会进入自动发送触发器', invocations.filter(([command]) => command === 'triggers_feed').length === triggerCount);
+  const beforeMixed = invocations.length;
+  TM.receiveOutput(t, 'REAL'); TM.receiveOutput(t, 'AGENT', { triggers: false }); TM.receiveOutput(t, 'TAIL');
+  await until(() => !t._outputTimer && !t._outputWriting && !t._outputParts.length);
+  const genuine = invocations.slice(beforeMixed).filter(([command]) => command === 'triggers_feed');
+  check('T23 混合输出保留真实PTY触发器且不把Agent数据传给引擎', genuine.length === 1 && genuine[0][1].data === 'REAL\nTAIL');
+  interceptor = null; T.s.triggers = []; await TM.close(t.id);
 
   t = tab(); TM.highlightHit(t);
   check('T18 自定义触发器高亮有独立可回收marker', t.term.markers.length === 1);

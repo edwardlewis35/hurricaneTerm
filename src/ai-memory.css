@@ -1,0 +1,41 @@
+/* Memory management uses the same theme tokens as the assistant. */
+#ai-memory { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg2, var(--window-panel-bg)); color: var(--fg); border-left: 1px solid var(--border); }
+#ai-memory[hidden], #ai-memory [hidden] { display: none !important; }
+.aim-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex: none; height: 46px; padding: 0 14px; border-bottom: 1px solid var(--border); }
+.aim-head strong { font-size: 13px; color: var(--fg3); }
+#ai-memory button { font-size: 11px; padding: 5px 8px; border-radius: 5px; color: var(--fg2); background: var(--surface); border: 1px solid var(--border); }
+#ai-memory button:hover { color: var(--fg3); border-color: var(--accent); background: var(--surface-hover); }
+#ai-memory button:focus-visible, #ai-memory :is(input, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#ai-memory button:disabled { opacity: .5; cursor: default; }
+.aim-scroll { padding: 12px 14px 20px; overflow: auto; min-height: 0; flex: 1; }
+.aim-muted, .aim-empty { color: var(--fg2); font-size: 10px; line-height: 1.6; margin: 0 0 8px; overflow-wrap: anywhere; }
+.aim-config { display: flex; flex-direction: column; gap: 5px; margin: 10px 0 14px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.aim-config > label:not(.aim-check), .aim-editor > label { font-size: 10px; color: var(--fg3); margin-top: 7px; }
+.aim-notice { font-size: 10px; line-height: 1.6; padding: 8px; border-radius: 5px; background: var(--accent-bg); color: var(--fg2); margin: 2px 0 6px; }
+#ai-memory :is(input:not([type=checkbox]), textarea) { width: 100%; min-width: 0; color: var(--fg3); background: var(--input-bg); font-size: 11px; border: 1px solid var(--border); border-radius: 5px; padding: 7px 8px; box-sizing: border-box; }
+.aim-config small { color: var(--fg2); font-size: 9px; line-height: 1.6; overflow-wrap: anywhere; }
+.aim-check { display: flex; align-items: flex-start; gap: 6px; font-size: 10px; line-height: 1.6; color: var(--fg2); margin-top: 5px; }
+.aim-check input { margin: 2px 0 0; width: 13px; height: 13px; flex: none; accent-color: var(--accent); }
+.aim-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+#aim-config-save, #aim-write { margin-left: auto; color: var(--accent); border-color: var(--accent); }
+.aim-scopes { display: flex; gap: 5px; margin: 14px 0 12px; }
+#ai-memory .aim-scopes .on { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
+#aim-title { font-size: 12px; font-weight: 600; margin: 8px 0 5px; color: var(--fg3); }
+.aim-search { display: flex; gap: 6px; margin-top: 9px; }
+.aim-search input { flex: 1; }
+.aim-documents { display: flex; flex-direction: column; gap: 5px; margin: 12px 0; }
+#ai-memory .aim-document { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; color: var(--fg3); padding: 8px 9px; overflow-wrap: anywhere; }
+.aim-document small { white-space: nowrap; font-size: 9px; color: var(--fg2); }
+#ai-memory .aim-document.on { border-color: var(--accent); }
+.aim-hit { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; overflow: hidden; }
+#ai-memory .aim-hit button { display: block; text-align: left; width: 100%; border: 0; border-radius: 0; color: var(--accent); overflow-wrap: anywhere; }
+.aim-hit pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 8px; font: 10px/1.6 var(--font-mono); color: var(--fg2); max-height: 180px; overflow-y: auto; user-select: text; }
+.aim-editor { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 15px; display: flex; flex-direction: column; gap: 6px; }
+#aim-original { color: var(--fg2); font-size: 10px; }
+#ai-memory #aim-content { font: 11px/1.7 var(--font-mono); min-height: 170px; resize: vertical; user-select: text; }
+#ai-memory #aim-delete { color: var(--danger); }
+.aim-confirm { border: 1px solid var(--warn, var(--accent)); border-radius: 6px; padding: 8px; font-size: 11px; color: var(--fg2); }
+.aim-confirm p { margin: 0 0 8px; }
+.aim-status { flex: none; padding: 9px 14px; color: var(--fg2); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; border-top: 1px solid var(--border); max-height: 100px; overflow-y: auto; }
+.aim-status.error { color: var(--danger); }
+@media (max-height: 550px) { .aim-head { height: 38px; } .aim-scroll { padding-top: 8px; } }

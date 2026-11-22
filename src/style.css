@@ -498,3 +498,13 @@ body.no-status #statusbar { display: none; }
   #tb-actions .tb-btn:not(.tb-settings):not(.tb-sidebar) { display: none; }
   #statusbar { overflow-x: auto; }
 }
+
+/* Persistent connection failure details, shared by every connection entry. */
+.connection-error-overlay { position: fixed; inset: 0; z-index: 1300; display: flex; align-items: center; justify-content: center; padding: 18px; background: var(--overlay-bg); }
+.connection-error-box { display: flex; flex-direction: column; width: min(600px, 100%); max-height: calc(100vh - 36px); padding: 22px; gap: 12px; border: 1px solid var(--border-solid); border-radius: var(--r-lg, 12px); background: var(--bg2); color: var(--fg); box-shadow: var(--shadow-lg); }
+.connection-error-box h3 { margin: 0; color: var(--fg3); font-size: 17px; }
+.connection-error-box > p { margin: 0; color: var(--fg2); font-size: 12px; }
+.connection-error-box pre { margin: 0; padding: 12px; min-height: 80px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--input-bg); color: var(--fg); user-select: text; font: 12px/1.7 var(--font-mono); }
+.connection-error-box .connection-error-feedback { min-height: 16px; color: var(--accent); }
+.connection-error-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.connection-error-actions button { min-height: 32px; padding: 6px 12px; }

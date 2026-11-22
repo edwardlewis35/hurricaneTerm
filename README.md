@@ -11,7 +11,7 @@
 界面为 Tabby 风格的无边框窗口、顶部扁平标签栏、新建连接页与全页设置，
 配色令牌取自 [Tabby](https://github.com/eugeny/tabby) 上游 `theme.vars.scss` / `colorSchemes.ts`。
 
-标签末尾的 `+` 新建本地终端，旁边可选择连接或分屏；设置入口位于右上角。
+标签末尾的 `+` 新建本地终端，旁边的连接菜单按最近使用和其他已保存机器分组，未使用过的保存连接也可直接打开；分屏入口位于标签下方第二行功能栏，设置入口位于右上角。
 标签统一最大 180 px，数量增加时等宽压缩到 110 px，再沿单行滚动；滚轮、触控板和键盘可选择标签，新建按钮始终可见。工具浮窗支持 Esc、外点和关闭按钮；新建或切换会话会收起浮窗。
 
 应用图标为原创晚霞红 Huricano 拟人云朵飓风，macOS 图标主体宽度约占画布 84%，比本机 ChatGPT 图标参考略大；高分辨率 ICNS、Windows ICO、主页与 favicon 使用同一素材。生成提示与源图在 `assets/`。
@@ -20,9 +20,19 @@
 工具栏位于标签下方第二行并靠右排列，六个工具窗格以浮窗打开。状态栏默认关闭，可在外观设置中开启。
 机器管理使用全页的连接列表与编辑表单。六套主题统一驱动输入框、下拉菜单、浮层与滚动条。
 同一工具按钮和最近机器箭头再次点击可关闭窗口。每个标签可独立保存左右或上下两个分屏、比例和聚焦位置；分屏关闭按钮只关闭该终端，顶部标签关闭整个工作区。新安装默认 dige-black，保留已有主题选择；输入光标默认闪烁，关键词高亮只改变字体颜色。
+连接失败会显示包含目标、阶段和底层原因的持续详情窗口，支持复制、关闭和在原窗格重试；DNS、连接拒绝、认证、私钥、主机密钥、代理/跳板、PTY与Shell拒绝分别保留原因。密码、令牌和私钥内容过滤后再显示。成功连接不再弹出打开SFTP的提示。
+选中终端文字会自动写入系统剪贴板；桌面使用官方原生剪贴板插件，只授权写入文本。拖动选择合并更新，松开鼠标立即复制，清空选择/关闭终端不会把旧选区写回；可在设置中关闭此行为。
 SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键重新连接”。按键使用原连接配置重新连接，保留标签、分屏及已有输出；触发按键不会发送到远端。连接失败可以再次按键重试，关闭快捷键仍正常工作。SFTP 随新连接更新，旧传输不会自动重放，需要显式重试。
 
 设置中的 [GitHub Gist 同步](docs/GIST_SYNC.md) 提供 Gist ID、访问 Token 和加密密钥，支持 Tabby Cloud Sync Settings 的文件名、V1 读取和 V2 加密格式。同步机器连接前展示差异并确认，保留云端其他设置；默认排除本机密码和私钥内容。
+
+[AI 助手](docs/AI_ASSISTANT.md) 位于终端右侧，工具栏按钮可开合，宽度可拖动。支持自定义 Chat Completions 兼容服务地址、模型和可选 API Key，包括本地服务；提供流式回答、停止生成、新对话、主动附加选区/最近输出预览。密钥可保存在本机系统凭据库，普通聊天只在当前运行中保留。上下文显示估算占用，支持手动与自动模型摘要压缩。运维模式默认逐命令确认，可关闭普通命令确认；危险操作仍强制确认。命令和输出先于最终总结，完成后返回原目标终端输入；任务持续运行到完成或停止，不再固定思考轮数。
+
+[AI 长期记忆](docs/AI_MEMORY.md) 参考 OpenClaw，提供当前机器/全局 Markdown 记忆、SQLite 混合检索、文件与行号来源、自定义独立 Embedding 地址/模型/系统凭据密钥。记忆默认关闭；开启后可自动召回，接口异常明确显示关键词降级。回复可先生成记忆草稿，Agent 写记忆始终逐次确认；压缩前自动整理并追加当日记忆需单独开启。跨机器隔离，记忆库不随 Gist 机器同步上传。
+
+[运维 Agent](docs/OPS_AGENT.md) 在右侧面板切换启用，支持 SSH 和本地机器。描述任务后，模型通过 `run_command` 调用独立执行通道，读取真实输出、退出码与超时状态，再决定修正、继续检查或总结。目标锁定到启动时的连接，切换标签不会改变目标；支持逐步记录、停止和已知高影响命令的单次确认。模型服务需支持原生工具调用；每条命令是独立 Shell，使用连接用户权限，不继承交互终端的 `cd` 或环境变量。
+
+[AI 运行框架与恢复](docs/AI_HARNESS.md) 参考 DeepSeek Harness，将模型、工具、审批、上下文、记忆、会话、界面事件和执行循环组成内置插件。运维任务持久保存本机 JSONL 运行记录；中断后可在原机器显式继续，区分结果未知与尚未执行，不自动重放命令，恢复后的新命令逐条确认。
 
 | 模块 | 状态 |
 |---|---|
@@ -35,6 +45,10 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 | 极简状态栏（模式、同步输入、尺寸、编码、EOL、缩放、主题、时钟），可在设置页关闭 | ✅ |
 | 多标签终端 + 标签内左右/上下分屏、独立关闭、比例记忆 + OSC 标题跟随 | ✅ |
 | GitHub Gist 机器配置同步、加密与 Tabby 配置格式互通 | ✅ |
+| 右侧 AI 助手：自定义端点/模型/密钥、流式对话、主动附加终端上下文 | ✅ |
+| AI 运维 Agent：工具执行、结果观察、失败修正、目标锁定、停止与步骤记录 | ✅ |
+| AI 运行框架：内置插件、持久事件、轨迹查看、同机器恢复与防重放 | ✅ |
+| AI 长期记忆：Markdown 原文、独立 Embedding、混合检索、来源与确认写入 | ✅ |
 | 主题 6 套（tabby-dark / tabby-light + 4 套内置深浅色方案） | ✅ |
 | 命令面板（Ctrl+Shift+P，分组 + 图标）+ 浮动搜索卡 | ✅ |
 | 触发器引擎（后端 `re/triggers.rs`；前端映射高亮 / 响铃 / 发送文本） | ✅ |
@@ -48,6 +62,8 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 | 语法高亮方案、命令库补全、vim 键位层、i18n | ⏳ |
 
 ## SFTP 文件管理
+
+[统一传输队列与 X/Y/ZMODEM](docs/XYZMODEM.md)：工具栏“传输队列”（Ctrl/Cmd+4）集中查看 SFTP 与终端文件传输，提供分类筛选、实时进度、速度、详细错误和取消/重试。SFTP 支持暂停/继续；X/Y/ZMODEM 手动选择当前连接与收发方向，同一终端串行，二进制数据直接进入协议通道，传输期间暂停普通键盘及运维命令。应用内置协议实现，无需本机安装 `rz/sz`，对端需要对应收发程序。Telnet 和 Windows 本地 ConPTY 暂不支持。
 
 点击标题栏文件夹按钮或按 `Ctrl+2` 打开文件管理。界面参考 [Tabby-SFTP-Plus](https://github.com/10D24D/Tabby-SFTP-Plus)，由本项目独立实现，使用现有 SSH 会话的 SFTP 子系统。
 
@@ -65,7 +81,7 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 ## 外观与会话生命周期
 
-默认界面采用 Tabby 上游默认蓝色控件配色和 `Tabby Default` 终端调色板。设置 → 外观提供“界面背景不透明度”和“终端背景不透明度”两个独立的 20–100% 滑杆，默认 100%；终端背景由完整宿主单层绘制，文字、光标与 ANSI 显式背景保持清晰。旧配置的终端值继承原不透明度。桌面版使用透明窗口，浏览器演示使用明确的棋盘预览。动态下拉框统一为支持键盘与主题切换的现代控件。
+新配置默认使用 `dige-black`，可切换 Tabby 默认深浅主题等方案，已有主题选择继续保留。设置 → 外观提供“界面背景不透明度”和“终端背景不透明度”两个独立的 20–100% 滑杆，默认 100%；终端背景由完整宿主单层绘制，文字、光标与 ANSI 显式背景保持清晰。旧配置的终端值继承原不透明度。桌面版使用透明窗口，浏览器演示使用明确的棋盘预览。动态下拉框统一为支持键盘与主题切换的现代控件。
 
 终端输出按实际 xterm 字符单元短暂高亮关键词，正确处理 ANSI、中文及换行，不绘制整行色带。输出合并后按最多 64 KiB 顺序交给解析器；单个大型事件也会拆分，关闭标签后丢弃该标签的迟到事件。
 
@@ -75,6 +91,12 @@ SSH / Telnet / TCP / 串口退出或断开后，原窗格提示“按任意键�
 
 前端验证：`npm run test:sftp` 和 `npm run test:ui`。后端安全测试：`cargo test sftp_safety_tests`、`cargo test files::tests`（需要构建依赖）。
 控件与终端回归：`npm run test:controls`、`npm run test:terminal`。独立透明度、工具浮窗与标签、macOS 窗口按钮、图标格式回归：`npm run test:appearance`、`npm run test:layout`、`npm run test:mac-controls`、`npm run test:icons`。快速连接与连续标题栏：`npm run test:quick-connect`、`npm run test:header`。发布 CI 额外在 macOS 运行真实 PTY 的空闲 / 连续输出 / 忽略 HUP 关闭测试，以及跨字节读取的 UTF-8 测试。
+
+连接菜单与报错/复制回归：`npm run test:connections`、`npm run test:connection-feedback`；原生错误与SSH失败场景：`cargo test --manifest-path src-tauri/Cargo.toml connection_error::tests`、`cargo test --manifest-path src-tauri/Cargo.toml ssh_live::session_tests`。
+
+AI 前端回归：`npm run test:ai`、`npm run test:ai-agent`、`npm run test:ai-ops`；原生命令测试：`cargo test --manifest-path src-tauri/Cargo.toml agent_exec::tests`；原生传输测试：`cargo test --manifest-path src-tauri/Cargo.toml ai::tests`。后者使用真实本地 HTTP mock，不访问用户模型账号。
+
+长期记忆回归：`npm run test:ai-memory`、`npm run test:ai-memory-integration`；原生记忆测试：`cargo test --manifest-path src-tauri/Cargo.toml memory::tests`。测试使用临时记忆库和受控传输，不访问用户真实记忆或模型账号；实际端点与系统凭据库仍需按[验证范围](docs/AI_MEMORY.md#验证范围)验收。
 
 ## 构建
 
@@ -202,3 +224,5 @@ src-tauri/      Rust 后端
 ## 许可
 
 Apache-2.0（见 [LICENSE](LICENSE)）。hurricaneTerm 是独立项目，代码与本仓库内全部实现均为原创。
+
+AI Harness 回归：`npm run test:ai-harness`、`npm run test:ai-harness-agent`、`npm run test:ai-harness-ui`；原生日志测试：`cargo test --locked --manifest-path src-tauri/Cargo.toml harness_log::tests`。

@@ -1,6 +1,6 @@
 [package]
 name = "hurricane-term"
-version = "0.7.16"
+version = "0.11.0"
 description = "hurricaneTerm — cross-platform Tauri 2 terminal (SSH/Telnet/serial/TCP + SFTP)"
 edition = "2021"
 
@@ -9,13 +9,14 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-clipboard-manager = "=2.3.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
 portable-pty = "0.8"
 uuid = { version = "1", features = ["v4"] }
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "net", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "net", "fs", "process"] }
 futures-util = "0.3"
 dirs = "6"
 russh-sftp = "3"
@@ -30,6 +31,9 @@ md5 = "0.8"
 scrypt = "0.11"
 rand = "0.8"
 serde_yaml = "0.9"
+sha2 = "=0.10.9"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+zmodem2 = { version = "=0.5.0", path = "vendor/zmodem2" }
 
 [profile.release]
 opt-level = 2
@@ -40,3 +44,13 @@ strip = true
 [target.'cfg(unix)'.dependencies]
 termios = "0.3"
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSUserDefaults", "NSString", "NSObject"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"] }

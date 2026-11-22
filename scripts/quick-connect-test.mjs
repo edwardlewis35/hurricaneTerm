@@ -151,6 +151,42 @@ check('Q49 SSH without a port retains backend default semantics', calls.at(-1).p
 protocol('telnet'); resetFields(); input(H.inputEl, 'telnet.example'); submit(); await settle();
 check('Q50 Telnet without a port retains backend default semantics', calls.at(-1).protocol === 'telnet' && calls.at(-1).host === 'telnet.example' && calls.at(-1).port === 0);
 
+check('Q51 Connection fields and saved search retain native lowercase/autocorrect settings', [H.inputEl, H.userEl, H.portEl, H.searchEl].every(field => field.getAttribute('autocapitalize') === 'none' && field.getAttribute('autocorrect') === 'off' && field.spellcheck === false));
+const originalSessions = w.WT.s.sessions;
+const unusedMachines = [
+  { name: 'Never-used gateway', protocol: 'ssh', host: 'gateway.saved.example', user: 'ops' },
+  { name: 'Never-used lab', protocol: 'ssh', host: 'lab.saved.example', user: 'dev' },
+  { name: 'Storage', protocol: 'ssh', host: 'storage.saved.example', user: 'backup' },
+];
+w.WT.s.sessions = unusedMachines;
+input(H.searchEl, ''); q('[data-view="saved"]').click();
+check('Q52 All three saved machines render even without successful-use timestamps', rows().length === 3 && unusedMachines.every(machine => rows().some(row => row.textContent.includes(machine.name))) && unusedMachines.every(machine => !machine.lastUsed));
+q('[data-view="recent"]').click();
+check('Q53 Empty recent view distinguishes filtering from missing saved data', rows().length === 0 && q('.ht-home-empty').textContent.includes('暂无最近') && q('.ht-home-empty').textContent.includes('已保存 3') && q('.ht-home-empty button').textContent === '显示全部连接');
+q('.ht-home-empty button').click();
+check('Q54 Show-all action restores saved machines without requiring a recent timestamp', rows().length === 3 && H.view === 'saved' && H.searchEl.value === '' && q('[data-view="saved"]').getAttribute('aria-selected') === 'true');
+protocol('ssh'); resetFields(); input(H.inputEl, 'draft.saved.example'); input(H.userEl, 'pending-user'); input(H.portEl, '2244');
+const draftValues = () => [H.protoEl.value, H.inputEl.value, H.userEl.value, H.portEl.value].join('|');
+const savedDraft = draftValues(), beforeListCreates = calls.length, beforeListPersists = persists;
+q('[data-view="recent"]').click(); input(H.searchEl, 'stale unmatched search'); H.hide(); H.show();
+check('Q55 Reopening the connection page clears stale search/recent filters and preserves drafts', H.view === 'saved' && H.searchEl.value === '' && rows().length === 3 && draftValues() === savedDraft && !H.el.hidden);
+q('[data-view="recent"]').click(); input(H.searchEl, 'storage'); H.render();
+check('Q56 Background refresh retains active recent/search filters and editable connection draft', H.view === 'recent' && H.searchEl.value === 'storage' && rows().length === 0 && draftValues() === savedDraft);
+unusedMachines[2].lastUsed = 100; H.render();
+check('Q57 Background data refresh updates matching rows without clearing filters or draft', rows().length === 1 && rows()[0].textContent.includes('Storage') && H.view === 'recent' && H.searchEl.value === 'storage' && draftValues() === savedDraft);
+input(H.searchEl, 'no saved match'); q('.ht-home-empty button').click();
+check('Q58 Empty-state show-all clears combined search and recent restrictions together', H.view === 'saved' && H.searchEl.value === '' && rows().length === 3 && d.activeElement === H.searchEl);
+protocol('serial'); input(H.inputEl, '/dev/cu.retained-draft'); protocol('ssh');
+H.hide(); H.render();
+check('Q59 Hidden background rendering preserves the hidden page and all quick-connect values', H.el.hidden && draftValues() === savedDraft);
+H.show(); protocol('serial'); const serialDraft = H.inputEl.value; protocol('ssh');
+check('Q60 Reopening preserves independent protocol drafts while restoring the saved list', serialDraft === '/dev/cu.retained-draft' && draftValues() === savedDraft && rows().length === 3 && H.view === 'saved');
+w.WT.s.sessions = []; H.render(); const managerBeforeEmpty = managerCalls;
+check('Q61 A genuinely empty data source still offers machine creation instead of false filter recovery', rows().length === 0 && q('.ht-home-empty').textContent.includes('还没有添加机器') && q('.ht-home-empty button').textContent === '添加机器');
+q('.ht-home-empty button').click();
+check('Q62 List recovery never rewrites machine storage or creates a connection', managerCalls === managerBeforeEmpty + 1 && calls.length === beforeListCreates && persists === beforeListPersists);
+w.WT.s.sessions = originalSessions; H.render();
+
 for (const [passed, name] of results) console.log((passed ? 'PASS' : 'FAIL') + ' ' + name);
 for (const error of errors) console.log('ERROR ' + error);
 console.log(`Quick connection: ${results.filter(r => r[0]).length}/${results.length} passed; ${errors.length} JavaScript errors`);

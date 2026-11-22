@@ -207,6 +207,7 @@
     canReconnect(tab) { return !!(tab?.session && ['ssh', 'telnet', 'tcp', 'serial'].includes(String(tab.session.protocol || '').toLowerCase())); },
     writeTo(tab, data) {
       if (!this.isLive(tab) || !data) return Promise.resolve(false);
+      if (window.ModemTransfer?.isBusy(tab)) return Promise.resolve(false);
       return T.invoke('write', { id: this.ptyId(tab), data }).then(() => true).catch(() => false);
     },
     beginConnection() { this._pendingConnections = (this._pendingConnections || 0) + 1; },
@@ -223,6 +224,7 @@
       const entry = events.get(id) || { parts: [], length: 0, exited: false, omitted: false };
       events.set(id, entry);
       if (type === 'exit') { entry.exited = true; return; }
+      if (type === 'error') { entry.error ||= data; return; }
       if (!entry.exited && data) {
         let length = Math.min(String(data).length, 65536 - entry.length);
         if (length < String(data).length && /[\uD800-\uDBFF]/.test(String(data).charAt(length - 1))) length--;
@@ -239,18 +241,47 @@
         if (tab.logging) tab.logBuf = (tab.logBuf || '') + data;
       }
       if (entry.omitted) this.receiveOutput(tab, '\r\n\x1b[2m[连接建立前的初始输出过多，部分内容已省略]\x1b[0m\r\n');
+      if (entry.error) this.handleConnectionError(tab, nativeId, entry.error);
       if (entry.exited) this.handleExit(tab, nativeId);
+    },
+    connectionErrorText(session, error) {
+      let text = typeof error === 'string' ? error : String(error?.error || error?.message || error || '未返回具体原因');
+      const seen = new Set(); let cause = error?.cause;
+      while (cause && !seen.has(cause) && seen.size < 4) { seen.add(cause); text += '\n原因：' + String(cause.message || cause); cause = cause.cause; }
+      text = text.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, '').replace(/\x1b(?:\[[0-?]*[ -/]*[@-~]|[^\[\]])/g, '')
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
+      for (const key of ['password', 'proxyPassword', 'passphrase', 'keyPassphrase', 'privateKey', 'token']) {
+        const secret = session?.[key]; if (typeof secret === 'string' && secret) text = text.split(secret).join('[已隐藏]');
+      }
+      text = text.replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, '[私钥已隐藏]')
+        .replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/@:]+:[^\s/@]*@/gi, '$1[凭据已隐藏]@')
+        .replace(/\b(Authorization\s*[:=]\s*)(?:Basic|Bearer)\s+\S+/gi, '$1[已隐藏]')
+        .replace(/\b(password|passwd|token|api[_-]?key|secret)\s*[:=]\s*("[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi, '$1=[已隐藏]');
+      if (text.length > 8192) { let end = 8192; if (/[\uD800-\uDBFF]/.test(text[end - 1])) end--; text = text.slice(0, end) + '\n[错误详情过长，已截断]'; }
+      return text.trim() || '未返回具体原因';
+    },
+    handleConnectionError(tab, nativeId, details) {
+      if (!tab || tab._closing || tab.exited || this.tabs[tab.id] !== tab || this.ptyId(tab) !== nativeId) return false;
+      const message = this.connectionErrorText(tab.session, details);
+      tab.connectionError = { nativeId, message, stage: details?.stage || '' };
+      this.receiveOutput(tab, '\r\n[连接失败]\r\n' + message.replace(/\r?\n/g, '\r\n') + '\r\n', { triggers: false });
+      UI.log('连接失败 · ' + tab.title + '：' + message);
+      this.handleExit(tab, nativeId);
+      UI.showConnectionError?.(tab.session, message, { tab, stage: details?.stage });
+      return true;
     },
     handleExit(tab, nativeId) {
       if (!tab || tab._closing || tab.exited || this.tabs[tab.id] !== tab || this.ptyId(tab) !== nativeId) return false;
       T.flushLogs(tab);
       tab.exited = true; tab.ptyId = null;
+      window.OpsAgent?.checkTarget?.();
       tab._connectionGeneration = (tab._connectionGeneration || 0) + 1;
       tab._resetInput?.();
       const text = this.canReconnect(tab) ? '[远程会话已退出或断开，按任意键重新连接]' : '[本地进程已退出，可新建标签重新打开]';
       this.receiveOutput(tab, '\r\n\x1b[0m\x1b[2m' + text + '\x1b[0m\r\n');
       this.renderTabbar();
       window.SftpPanel?.onConnectionChange?.(tab);
+      window.ModemTransfer?.onConnectionChange?.(tab);
       UI.status();
       // The backend's exit signal does not carry a cause. Do not call it a
       // timeout, and release the old entry without ever translating its ID.
@@ -269,29 +300,39 @@
         let nativeId;
         this.beginConnection();
         try {
-          nativeId = await this.connectSession(tab.session, tab.term);
+          // Capture the request and its public identity together. The profile
+          // may be edited while native authentication is still in progress.
+          const connectionSession = tab.session ? { ...tab.session } : null;
+          const connectionIdentity = this.connectionIdentity(connectionSession);
+          nativeId = await this.connectSession(connectionSession, tab.term);
           if (typeof nativeId !== 'string' || !nativeId) throw new Error('连接未返回有效会话');
           if (tab._closing || this.tabs[tab.id] !== tab || tab._reconnectAttempt !== attempt) {
             await T.invoke('kill', { id: nativeId }).catch(() => {});
             return null;
           }
-          tab.ptyId = nativeId; tab.exited = false; tab._reconnecting = false;
+          tab.ptyId = nativeId; tab._connectionIdentity = connectionIdentity;
+          tab.exited = false; tab._reconnecting = false;
           tab._connectionGeneration = (tab._connectionGeneration || 0) + 1;
           tab.cwd = null;
-          this.receiveOutput(tab, '\x1b[2m[已重新连接]\x1b[0m\r\n');
+          tab.connectionError = null;
+          this.receiveOutput(tab, '\x1b[2m[连接请求已发送]\x1b[0m\r\n');
           this.consumePendingEvents(tab, nativeId);
           if (!this.isLive(tab)) return null;
           if (tab.session) { tab.session.lastUsed = Date.now(); T.persistSessions(); }
           if (String(tab.session?.protocol).toLowerCase() === 'ssh') window.UI?.onSshConnected?.(tab);
           window.SftpPanel?.onConnectionChange?.(tab);
+          window.ModemTransfer?.onConnectionChange?.(tab);
           this.renderPaneControls(); this.renderTabbar(); UI.status();
           if (this.active === tab.id) tab.term.focus();
           return tab;
-        } catch (_) {
+        } catch (error) {
           if (!tab._closing && this.tabs[tab.id] === tab && tab._reconnectAttempt === attempt) {
             tab.exited = true; tab.ptyId = null;
-            // Raw network errors can include private endpoint or auth details.
-            this.receiveOutput(tab, '\r\n\x1b[2m[重新连接失败，请检查连接配置或网络，按任意键重试]\x1b[0m\r\n');
+            const message = this.connectionErrorText(tab.session, error);
+            tab.connectionError = { message };
+            this.receiveOutput(tab, '\r\n[重新连接失败]\r\n' + message.replace(/\r?\n/g, '\r\n') + '\r\n[按任意键重试]\r\n', { triggers: false });
+            UI.log('重新连接失败 · ' + tab.title + '：' + message);
+            UI.showConnectionError?.(tab.session, message, { tab });
             window.SftpPanel?.onConnectionChange?.(tab);
             this.renderTabbar(); UI.status();
           }
@@ -314,6 +355,15 @@
       return base ? `${base}, ${fallback}` : fallback;
     },
 
+    // A live connection's public identity belongs to that PTY, not to the
+    // mutable saved profile. Never copy credentials into this metadata.
+    connectionIdentity(session) {
+      const protocol = String(session?.protocol || 'local').toLowerCase();
+      return Object.freeze({ protocol, host: String(protocol === 'serial' ? session?.target || session?.host || '' : session?.host || (protocol === 'tcp' ? session?.target : '') || ''),
+        port: Number(session?.port) || (protocol === 'ssh' ? 22 : protocol === 'telnet' ? 23 : 0),
+        user: String(session?.user || '') });
+    },
+
     // The same protocol contract is used for the initial connection and retry.
     async connectSession(session, term) {
       const proto = String(session?.protocol || '').toLowerCase();
@@ -326,6 +376,9 @@
           user: session.user || null, password: session.password || null,
           keyPath: session.identityFile || null,
           jumpHost: session.jumpHost || null,
+          proxyType: session.proxyType || null, proxyHost: session.proxyHost || null,
+          proxyPort: session.proxyPort || null, proxyUser: session.proxyUser || null,
+          proxyPassword: session.proxyPassword || null, proxyCommand: session.proxyCommand || null,
         });
       } else if (proto === 'telnet' && session.host) {
         return T.invoke('connect_telnet', { host: session.host, port: session.port || 23 });
@@ -386,13 +439,17 @@
 
       const proto = ((session && session.protocol) || '').toLowerCase();
       let id;
+      const connectionSession = session ? { ...session } : null;
+      const connectionIdentity = this.connectionIdentity(connectionSession);
       this.beginConnection();
       try {
-        id = await this.connectSession(session, term);
+        id = await this.connectSession(connectionSession, term);
       } catch (e) {
         this.endConnection();
         term.dispose(); wrap.remove();
-        UI.log('连接失败: ' + (e && e.message ? e.message : String(e)));
+        const message = this.connectionErrorText(session, e);
+        UI.log('连接失败：' + message);
+        UI.showConnectionError?.(session, message);
         return null;
       }
 
@@ -406,6 +463,7 @@
       const tab = {
         id, ptyId: id, workspaceId: workspaceId || id, title: (session && session.name) || (session && session.host ? session.host : `shell ${this.order.length + 1}`),
         term, fit, search, wrap, group: g, exited: false, outline: [], session: session || null,
+        _connectionIdentity: connectionIdentity,
         _inputSubscriptions: [], _connectionGeneration: 0,
         // Tabby 风格标签属性（tabbar.js 消费）
         color: (session && session.color) || null, pinned: false, notify: false, activity: false,
@@ -442,6 +500,7 @@
         if (tab._closing || this.tabs[tab.id] !== tab) return;
         if (tab.exited || tab._reconnecting) { if (!tab._reconnecting) this.reconnect(tab); return; }
         if (!this.isLive(tab)) return;
+        if (window.ModemTransfer?.isBusy(tab)) return;
         let submitted = null;
         for (const ch of data) {
           if (ch === '\r') { submitted = inputLine; inputLine = ''; }
@@ -473,13 +532,27 @@
       }));
       wrap.addEventListener('mousedown', () => this.activate(id));
 
-      // 选中自动复制（设置页可关）
+      // Coalesce drag updates; preserve ordering with explicit copy operations.
+      let selectionTimer = null, selectionVersion = 0, copyFailureShown = false;
+      const clearSelectionCopy = () => { clearTimeout(selectionTimer); selectionTimer = null; selectionVersion++; };
+      const copySelection = () => {
+        clearTimeout(selectionTimer); selectionTimer = null;
+        const value = term.getSelection(), version = selectionVersion;
+        const valid = () => !tab._closing && this.tabs[tab.id] === tab && T.s.copyOnSelect !== false && selectionVersion === version && term.getSelection() === value;
+        if (!value || !valid()) return;
+        const copying = T.copyText ? T.copyText(value, { shouldWrite: valid }) : navigator.clipboard?.writeText(value);
+        Promise.resolve(copying).then(done => { if (done !== false) copyFailureShown = false; }).catch(() => {
+          if (valid() && !copyFailureShown) { copyFailureShown = true; UI.toast?.('自动复制失败，可用 Ctrl+Shift+C 重试', 3500, 'err'); }
+        });
+      };
       subscribe(term.onSelectionChange(() => {
-        if (T.s.copyOnSelect === false) return;
-        const sel = term.getSelection();
-        if (!sel) return;
-        try { navigator.clipboard && navigator.clipboard.writeText(sel).catch(() => {}); } catch (e) {}
+        clearSelectionCopy();
+        if (T.s.copyOnSelect === false || !term.getSelection() || tab._closing) return;
+        selectionTimer = setTimeout(copySelection, 60);
       }));
+      const finishSelectionCopy = () => { if (selectionTimer !== null) copySelection(); };
+      document.addEventListener('mouseup', finishSelectionCopy, true);
+      subscribe({ dispose() { clearSelectionCopy(); document.removeEventListener('mouseup', finishSelectionCopy, true); } });
 
       // PuTTY 习惯：中键粘贴；右键粘贴（可关，关闭时右键留给上下文菜单）
       const pasteHere = async () => {
@@ -639,6 +712,8 @@
       t._closing = true;
       t._reconnectAttempt = null; t._reconnectPromise = null; t._reconnecting = false;
       t.ptyId = null; t.exited = true;
+      window.ModemTransfer?.onConnectionChange?.(t);
+      window.OpsAgent?.checkTarget?.();
       t._resetInput?.(); t._reconnectKey = null;
       for (const subscription of t._inputSubscriptions || []) subscription?.dispose?.();
       t._inputSubscriptions = [];
@@ -680,9 +755,9 @@
 
     // One xterm write at a time, coalescing short IPC bursts. Preserve order and
     // all output; callbacks from a closed tab can never re-enter its renderer.
-    receiveOutput(tab, data) {
+    receiveOutput(tab, data, options = {}) {
       if (tab._closing || this.tabs[tab.id] !== tab || !data) return;
-      (tab._outputParts ||= []).push(data);
+      (tab._outputParts ||= []).push(options.triggers === false ? { data, triggers: false } : data);
       if (!tab._outputWriting && !tab._outputTimer)
         tab._outputTimer = setTimeout(() => this.flushOutput(tab), 16);
     },
@@ -691,16 +766,21 @@
       if (tab._closing || this.tabs[tab.id] !== tab || tab._outputWriting) return;
       const parts = tab._outputParts || [];
       let index = tab._outputIndex || 0, length = 0;
-      const batch = [];
+      const batch = [], triggerParts = []; let hasTriggerData = false;
+      const append = (value, triggers) => {
+        batch.push(value);
+        if (triggers) { hasTriggerData = true; triggerParts.push(value); }
+        else triggerParts.push('\n'); // Keep genuine output on either side separate.
+      };
       while (index < parts.length && length < 65536) {
-        const part = parts[index], room = 65536 - length;
-        if (part.length <= room) { index++; batch.push(part); length += part.length; }
+        const entry = parts[index], part = typeof entry === 'string' ? entry : entry.data, triggers = typeof entry === 'string' || entry.triggers !== false, room = 65536 - length;
+        if (part.length <= room) { index++; append(part, triggers); length += part.length; }
         else {
           let take = room;
           // A UTF-16 emoji must not be cut between its surrogate code units.
           const lead = part.charCodeAt(take - 1), trail = part.charCodeAt(take);
           if (lead >= 0xd800 && lead <= 0xdbff && trail >= 0xdc00 && trail <= 0xdfff) take--;
-          if (take) { batch.push(part.slice(0, take)); parts[index] = part.slice(take); length += take; }
+          if (take) { append(part.slice(0, take), triggers); parts[index] = triggers ? part.slice(take) : { data: part.slice(take), triggers: false }; length += take; }
           break;
         }
       }
@@ -717,7 +797,7 @@
         if ((tab._outputParts || []).length > (tab._outputIndex || 0))
           tab._outputTimer = setTimeout(() => this.flushOutput(tab), 0);
       });
-      this.runTriggers(tab, data);
+      if (hasTriggerData) this.runTriggers(tab, triggerParts.join(''));
     },
 
     renderTabbar() {
@@ -934,7 +1014,7 @@
         d.onRender((el) => el.classList.add('wt-hit'));
         const entry = { d, m };
         (tab._hitHighlights ||= new Set()).add(entry);
-        entry.timer = setTimeout(() => { d.dispose(); m.dispose(); tab._hitHighlights.delete(entry); }, 4000);
+        m.onDispose?.(() => { d.dispose(); tab._hitHighlights?.delete(entry); });
       } catch (e) {}
     },
 
@@ -971,19 +1051,12 @@
     },
     expireHighlights(tab) {
       clearTimeout(tab._highlightTimer);
-      const now = Date.now();
       tab._highlightEntries = (tab._highlightEntries || []).filter((entry) => {
         if (entry.anchor.isDisposed) { this.disposeHighlight(entry); return false; }
-        if (entry.expires <= now && entry.decorations.length) {
-          for (const d of entry.decorations) { d.dispose(); d.marker.dispose(); }
-          entry.decorations = [];
-        }
-        return true; // retain visible row identity so faded text cannot relight
+        return true; // Keep colors until the underlying scrollback row is removed.
       });
       tab._hls = tab._highlightEntries.flatMap(e => e.decorations);
-      const pending = tab._highlightEntries.filter(e => e.decorations.length);
-      tab._highlightTimer = pending.length && !tab._closing
-        ? setTimeout(() => this.expireHighlights(tab), Math.max(1, Math.min(...pending.map(e => e.expires)) - now)) : null;
+      tab._highlightTimer = null;
     },
     runHighlights(tab) {
       if (tab._closing || T.s.builtinHighlight === false) { this.clearHighlights(tab); return; }
@@ -997,10 +1070,7 @@
       const last = Math.min(buffer.length - 1, buffer.baseY + (term.rows || 24) - 1);
       let first = Math.max(buffer.baseY, last - 119);
       while (first > 0 && last - first < 119 && buffer.getLine(first)?.isWrapped) first--;
-      tab._highlightEntries = tab._highlightEntries.filter(entry => {
-        if (entry.anchor.line >= first && entry.anchor.line <= last) return true;
-        this.disposeHighlight(entry); return false;
-      });
+      const byLine = new Map(tab._highlightEntries.map(entry => [entry.anchor.line, entry]));
       for (let row = first; row <= last;) {
         const start = row, lines = []; let text = '';
         do {
@@ -1010,7 +1080,7 @@
           lines.push({ row, line, value }); text += value; row++;
         } while (row <= last && buffer.getLine(row)?.isWrapped);
         if (row === start) break;
-        const old = tab._highlightEntries.find(e => e.anchor.line === start);
+        const old = byLine.get(start);
         if (old?.text === text) continue;
         if (old) { this.disposeHighlight(old); tab._highlightEntries.splice(tab._highlightEntries.indexOf(old), 1); }
         const rule = this.HIGHLIGHT_RULES.find(r => r.re.test(text));
@@ -1033,11 +1103,9 @@
           }
           if (x >= 0) { const d = this.highlightLine(tab, rule.cls, item.row - cursor, x, end - x); if (d) decorations.push(d); }
         }
-        if (decorations.length) tab._highlightEntries.push({ anchor, text, decorations, expires: Date.now() + 6000 });
+        if (decorations.length) tab._highlightEntries.push({ anchor, text, decorations });
         else anchor.dispose();
       }
-      while (tab._highlightEntries.reduce((n, e) => n + e.decorations.length, 0) > 240)
-        this.disposeHighlight(tab._highlightEntries.shift());
       this.expireHighlights(tab);
     },
 
