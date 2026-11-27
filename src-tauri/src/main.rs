@@ -174,6 +174,8 @@ fn spawn(
     }
     cb.env("TERM", "xterm-256color");
     cb.env("COLORTERM", "truecolor");
+    #[cfg(target_os = "macos")]
+    pty_child::ensure_utf8_locale(&mut cb);
 
     let child = pair.slave.spawn_command(cb).map_err(|e| e.to_string())?;
     drop(pair.slave);

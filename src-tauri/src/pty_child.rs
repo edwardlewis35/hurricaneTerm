@@ -10,6 +10,18 @@ use std::time::Duration;
 
 pub type Killer = Box<dyn ChildKiller + Send + Sync>;
 
+#[cfg(target_os = "macos")]
+pub(crate) fn ensure_utf8_locale(command: &mut portable_pty::CommandBuilder) {
+    // Finder and Dock launches can leave the PTY with the ASCII default.
+    // LANG allows login shell startup files to override the fallback.
+    if ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .all(|key| command.get_env(key).map_or(true, |value| value.is_empty()))
+    {
+        command.env("LANG", "en_US.UTF-8");
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CloseHandle(mpsc::Sender<()>);
 
@@ -59,6 +71,54 @@ mod tests {
     use std::io::Read;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_pty_uses_utf8_when_locale_is_missing_or_empty() {
+        use std::io::{BufRead, BufReader};
+
+        for empty in [false, true] {
+            let pair = native_pty_system()
+                .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+                .unwrap();
+            let mut command = CommandBuilder::new("/usr/bin/locale");
+            command.arg("charmap");
+            command.env_clear();
+            if empty {
+                for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
+                    command.env(key, "");
+                }
+            }
+
+            ensure_utf8_locale(&mut command);
+            let mut child = pair.slave.spawn_command(command).unwrap();
+            drop(pair.slave);
+            let mut reader = BufReader::new(pair.master.try_clone_reader().unwrap());
+            let mut charmap = String::new();
+            reader.read_line(&mut charmap).unwrap();
+            assert!(child.wait().unwrap().success());
+            assert_eq!(charmap.trim(), "UTF-8");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn local_pty_preserves_explicit_locale() {
+        use std::ffi::OsStr;
+
+        for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
+            let mut command = CommandBuilder::new("/usr/bin/locale");
+            command.env_clear();
+            command.env(key, "C");
+
+            ensure_utf8_locale(&mut command);
+
+            assert_eq!(command.get_env(key), Some(OsStr::new("C")));
+            if key != "LANG" {
+                assert_eq!(command.get_env("LANG"), None);
+            }
+        }
+    }
 
     fn closes_real_pty(command: &str) {
         let pair = native_pty_system().openpty(PtySize {
